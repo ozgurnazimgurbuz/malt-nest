@@ -1,0 +1,57 @@
+# live log 2026-08-10T09:14:42.630Z
+parts=16 svgMm=2583.735625×1958.7897916666668
+inv #1 part-0 verts=15 holes=0 area=64042 bbox=428.6×332.4
+inv #2 part-3 verts=12 holes=0 area=57870 bbox=340.2×332.4
+inv #3 part-5 verts=64 holes=0 area=42756 bbox=331.6×330.6
+inv #4 part-1 verts=8 holes=0 area=38233 bbox=411.6×334.5
+inv #5 part-6 verts=10 holes=0 area=36979 bbox=406.3×333.2
+inv #6 part-4 verts=8 holes=0 area=35717 bbox=349.5×330.6
+inv #7 part-14 verts=4 holes=0 area=30379 bbox=45.0×675.0
+inv #8 part-15 verts=4 holes=0 area=30379 bbox=45.0×675.0
+inv #9 part-10 verts=30 holes=1 area=11960 bbox=122.3×152.8
+inv #10 part-12 verts=110 holes=0 area=11887 bbox=141.4×158.1
+inv #11 part-8 verts=110 holes=0 area=11887 bbox=141.4×158.1
+inv #12 part-11 verts=9 holes=1 area=10235 bbox=144.2×152.8
+inv #13 part-9 verts=9 holes=1 area=10235 bbox=144.2×152.8
+inv #14 part-13 verts=12 holes=0 area=10179 bbox=101.2×152.8
+inv #15 part-2 verts=3 holes=0 area=4775 bbox=110.8×86.2
+inv #16 part-7 verts=3 holes=0 area=4630 bbox=109.2×84.9
+--- BLF profile start ---
+BLF part#1 part-0 verts=15 place=0ms nfp=0ms cand=12 col=0/0ms placed=true | 0°:0ms nfp=0 cand=3 col=0* | 90°:0ms nfp=0 cand=3 col=0* | 180°:0ms nfp=0 cand=3 col=0* | 270°:0ms nfp=0 cand=3 col=0*
+BLF part#2 part-3 verts=12 place=159ms nfp=148ms cand=1362 col=473/6ms placed=true | 0°:63ms nfp=59 cand=416 col=130* | 90°:34ms nfp=32 cand=261 col=104* | 180°:35ms nfp=33 cand=417 col=140* | 270°:26ms nfp=24 cand=268 col=99*
+BLF part#3 part-5 verts=64 place=1367ms nfp=1351ms cand=4066 col=815/7ms placed=true | 0°:277ms nfp=273 cand=897 col=170* | 90°:393ms nfp=389 cand=1119 col=262* | 180°:284ms nfp=281 cand=917 col=231* | 270°:413ms nfp=409 cand=1133 col=152*
+BLF part#4 part-1 verts=8 place=300ms nfp=284ms cand=4008 col=2550/9ms placed=true | 0°:78ms nfp=75 cand=967 col=639* | 90°:70ms nfp=68 cand=972 col=571* | 180°:82ms nfp=74 cand=1044 col=964* | 270°:69ms nfp=67 cand=1025 col=376*
+BLF part#5 part-6 verts=10 place=401ms nfp=353ms cand=5669 col=4102/39ms placed=true | 0°:103ms nfp=94 cand=1424 col=1200* | 90°:96ms nfp=83 cand=1380 col=1109* | 180°:100ms nfp=92 cand=1454 col=867* | 270°:101ms nfp=83 cand=1411 col=926*
+BLF part#6 part-4 verts=8 place=304ms nfp=220ms cand=6606 col=8589/73ms placed=true | 0°:67ms nfp=51 cand=1465 col=1182* | 90°:115ms nfp=65 cand=1690 col=2626* | 180°:59ms nfp=48 cand=1775 col=2586* | 270°:63ms nfp=57 cand=1676 col=2195*
+BLF part#7 part-14 verts=4 place=120ms nfp=44ms cand=5090 col=8844/68ms placed=true | 0°:17ms nfp=14 cand=1400 col=2148* | 90°:46ms nfp=12 cand=1146 col=2277* | 180°:15ms nfp=11 cand=1398 col=2142* | 270°:42ms nfp=7 cand=1146 col=2277*
+BLF part#8 part-15 verts=4 place=117ms nfp=38ms cand=5576 col=9677/71ms placed=true | 0°:16ms nfp=13 cand=1521 col=2294* | 90°:42ms nfp=7 cand=1266 col=2543* | 180°:16ms nfp=11 cand=1522 col=2296* | 270°:42ms nfp=7 cand=1267 col=2544*
+BLF part#9 part-10 verts=30 place=892ms nfp=726ms cand=13090 col=14546/145ms placed=true | 0°:182ms nfp=164 cand=3273 col=2446* | 90°:227ms nfp=198 cand=3191 col=3663* | 180°:177ms nfp=164 cand=3206 col=2192* | 270°:306ms nfp=200 cand=3420 col=6245*
+BLF part#10 part-12 verts=110 place=9696ms nfp=9335ms cand=21624 col=22493/318ms placed=true | 0°:2113ms nfp=2021 cand=5407 col=5781* | 90°:2766ms nfp=2674 cand=5392 col=5998* | 180°:2396ms nfp=2315 cand=5403 col=5134* | 270°:2421ms nfp=2325 cand=5422 col=5580*
+BLF part#11 part-8 verts=110 place=18213ms nfp=13706ms cand=25319 col=60576/4444ms placed=true | 0°:3986ms nfp=3113 cand=6187 col=14616* | 90°:4901ms nfp=3756 cand=6333 col=15378* | 180°:4489ms nfp=3112 cand=6436 col=15784* | 270°:4838ms nfp=3724 cand=6363 col=14798*
+BLF part#12 part-11 verts=9 place=1076ms nfp=723ms cand=15226 col=46178/329ms placed=true | 0°:208ms nfp=121 cand=3780 col=11975* | 90°:333ms nfp=247 cand=3666 col=10643* | 180°:231ms nfp=116 cand=4017 col=12745* | 270°:305ms nfp=240 cand=3763 col=10815*
+BLF part#13 part-9 verts=9 place=1046ms nfp=731ms cand=16414 col=36957/291ms placed=true | 0°:180ms nfp=118 cand=4046 col=7533* | 90°:339ms nfp=249 cand=3951 col=11657* | 180°:186ms nfp=117 cand=4294 col=4295* | 270°:341ms nfp=247 cand=4123 col=13472*
+BLF part#14 part-13 verts=12 place=1017ms nfp=621ms cand=19354 col=62486/365ms placed=true | 0°:209ms nfp=136 cand=4796 col=15609* | 90°:292ms nfp=180 cand=4855 col=15852* | 180°:251ms nfp=131 cand=4750 col=16274* | 270°:266ms nfp=175 cand=4953 col=14751*
+BLF part#15 part-2 verts=3 place=534ms nfp=395ms cand=13040 col=14391/122ms placed=true | 0°:121ms nfp=99 cand=3314 col=3422* | 90°:121ms nfp=97 cand=3251 col=3673* | 180°:143ms nfp=106 cand=3214 col=3027* | 270°:149ms nfp=93 cand=3261 col=4269*
+BLF part#16 part-7 verts=3 place=483ms nfp=325ms cand=13431 col=17033/141ms placed=true | 0°:109ms nfp=72 cand=3393 col=5327* | 90°:119ms nfp=95 cand=3348 col=3532* | 180°:118ms nfp=67 cand=3339 col=4587* | 270°:137ms nfp=92 cand=3351 col=3587*
+--- BLF done wall=35.73s status=ok ---
+--- FAST evolutionary start ---
+evo prepare Prepare · fast · 0 / 16 parça
+evo seed BLF · 2 / 16 parça · sheet 1
+evo seed BLF · 3 / 16 parça · sheet 1
+evo seed BLF · 4 / 16 parça · sheet 1
+evo seed BLF · 5 / 16 parça · sheet 1
+evo seed BLF · 6 / 16 parça · sheet 1
+evo seed BLF · 7 / 16 parça · sheet 1
+evo seed BLF · 8 / 16 parça · sheet 1
+evo seed BLF · 9 / 16 parça · sheet 1
+evo seed BLF · 10 / 16 parça · sheet 1
+evo seed BLF · 11 / 16 parça · sheet 1
+evo seed BLF · 12 / 16 parça · sheet 1
+evo seed BLF · 13 / 16 parça · sheet 1
+evo seed BLF · 14 / 16 parça · sheet 1
+evo seed BLF · 15 / 16 parça · sheet 1
+evo seed BLF · 16 / 16 parça · sheet 1
+evo optimize Optimize · fast · BLF baseline · 16 / 16
+evo finalize Completed · 16 / 16
+--- FAST evo done wall=34.92s status=ok ---
+Wrote /Users/ozgurnazimgurbuz/Downloads/malt-nest/docs/benchmarks/demo-svg-fast-diagnosis.md
