@@ -1,6 +1,7 @@
 import type { NestSettings as UiNestSettings, SheetSettings as UiSheetSettings } from '../state'
 import type { GeometryPart } from '../geometry'
 import { presetForLevel } from './optimization/presets'
+import { coarseFreeAngles } from './optimization/rotations'
 import type { NestInput, NestingRequest, NestingSettings, SheetDefinition } from './types'
 
 /** Map Stage 1 UI sheet + nest settings into an engine NestingRequest. */
@@ -21,22 +22,23 @@ export function toNestingRequest(
   const level = settings.optimizationLevel
   const preset = presetForLevel(level)
 
+  // Free-angle cascade (coarse 15° → refine 5° → final 1°). Per-part angles;
+  // user never picks rotations. Gene pool uses the coarse grid only.
   const nestingSettings: NestingSettings = {
     spacingMm: settings.gapMm,
-    allowedRotations: settings.allowRotation
-      ? [...settings.rotationAngles]
-      : [0],
+    allowedRotations: coarseFreeAngles(),
+    allowedRotationsExplicit: null,
     rotationStepDeg: null,
-    allowArbitraryRotation: settings.rotationMode === 'deep',
-    rotationMode: settings.allowRotation ? settings.rotationMode : 'orthogonal',
-    allowRotation: settings.allowRotation,
+    allowArbitraryRotation: true,
+    rotationMode: 'free',
+    allowRotation: true,
     optimizationLevel: level,
     timeLimitMs: preset.timeLimitMs,
     seed: settings.seed,
     deterministic: settings.deterministic,
     allowPartInPart: settings.allowPartInPart,
-    dayamaX: settings.dayamaX,
-    dayamaY: settings.dayamaY,
+    dayamaX: true,
+    dayamaY: true,
   }
 
   return { parts, sheets, settings: nestingSettings }

@@ -353,4 +353,70 @@ describe('runBottomLeftNest', () => {
       expect(solidsOverlap(sa, sb)).toBe(false)
     }
   })
+
+  it('14. dayamaX packs toward vertical edge; dayamaY toward horizontal edge', () => {
+    // Several equal squares — bias should shift mean placement axis.
+    const parts = Array.from({ length: 6 }, (_, i) =>
+      rectPart(`p${i}`, i, 0, 0, 20, 20),
+    )
+    const sheet = { widthMm: 120, heightMm: 120, marginMm: 0, quantity: 1 }
+    const mean = (
+      r: Extract<ReturnType<typeof runBottomLeftNest>, { status: 'ok' }>,
+    ) => {
+      const n = r.placements.length
+      const sx = r.placements.reduce((s, p) => s + p.x, 0)
+      const sy = r.placements.reduce((s, p) => s + p.y, 0)
+      return { x: sx / n, y: sy / n }
+    }
+
+    const dikey = runBottomLeftNest(
+      request(parts, {
+        sheet,
+        settings: { dayamaX: true, dayamaY: false, allowedRotations: [0] },
+      }),
+    )
+    const yatay = runBottomLeftNest(
+      request(parts, {
+        sheet,
+        settings: { dayamaX: false, dayamaY: true, allowedRotations: [0] },
+      }),
+    )
+    const both = runBottomLeftNest(
+      request(parts, {
+        sheet,
+        settings: { dayamaX: true, dayamaY: true, allowedRotations: [0] },
+      }),
+    )
+    const off = runBottomLeftNest(
+      request(parts, {
+        sheet,
+        settings: { dayamaX: false, dayamaY: false, allowedRotations: [0] },
+      }),
+    )
+
+    for (const r of [dikey, yatay, both, off]) {
+      expect(r.status).toBe('ok')
+      if (r.status !== 'ok') return
+      expect(r.placements).toHaveLength(6)
+    }
+    if (
+      dikey.status !== 'ok' ||
+      yatay.status !== 'ok' ||
+      both.status !== 'ok' ||
+      off.status !== 'ok'
+    ) {
+      return
+    }
+
+    const mD = mean(dikey)
+    const mY = mean(yatay)
+    // Dikey (X) should sit further left than Yatay (Y) on average.
+    expect(mD.x).toBeLessThan(mY.x)
+    // Yatay (Y) should sit further toward the top than Dikey (X) on average.
+    expect(mY.y).toBeLessThan(mD.y)
+    // All four modes are not identical layouts.
+    expect(dikey.placements).not.toEqual(yatay.placements)
+    expect(both.placements).not.toEqual(off.placements)
+    expect(dikey.placements).not.toEqual(off.placements)
+  })
 })

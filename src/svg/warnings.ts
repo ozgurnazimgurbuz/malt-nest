@@ -6,7 +6,6 @@ export type ParserWarningCode =
   | 'invalid_arc'
   | 'empty_geometry'
   | 'malformed_svg'
-  | 'skipped_defs'
 
 export type ParserWarning = {
   code: ParserWarningCode

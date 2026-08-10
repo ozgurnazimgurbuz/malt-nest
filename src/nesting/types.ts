@@ -20,7 +20,7 @@ export type SheetDefinition = {
 
 export type OptimizationLevel = 'fast' | 'balanced' | 'deep'
 
-export type RotationMode = 'orthogonal' | 'balanced' | 'deep'
+export type RotationMode = 'orthogonal' | 'balanced' | 'deep' | 'free'
 
 /**
  * Engine-facing settings. UI NestSettings maps into this in the façade.
@@ -60,12 +60,12 @@ export type NestingSettings = {
    */
   profileBlf?: boolean
   /**
-   * Stage 11: horizontal pack preference (X). Default true → prefer smaller x.
+   * Prefer vertical sheet edges (smaller x). Internal BLF pack bias; not a UI toggle.
    * Sort/tie-break only — does not change NFP/collision geometry.
    */
   dayamaX?: boolean
   /**
-   * Stage 11: vertical pack preference (Y). Default true → prefer smaller y.
+   * Prefer horizontal sheet edges (smaller y). Internal BLF pack bias; not a UI toggle.
    * Sort/tie-break only — does not change NFP/collision geometry.
    */
   dayamaY?: boolean

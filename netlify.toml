@@ -1,0 +1,12 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# SPA safety: single-page app, no client router today — still fine for deep links.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

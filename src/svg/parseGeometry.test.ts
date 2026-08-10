@@ -232,4 +232,20 @@ describe('parseSvgGeometry', () => {
     expect(doc.partCount).toBe(0)
     expect(doc.warnings.some((w) => w.code === 'malformed_svg')).toBe(true)
   })
+
+  it('21. defs (style/paint) are silent — not nesting geometry', () => {
+    const doc = parseSvgGeometry(
+      svg(`
+        <defs>
+          <style>.st0{fill:#c2c1c1}</style>
+          <linearGradient id="g"><stop offset="0" stop-color="#fff"/></linearGradient>
+          <clipPath id="c"><rect width="10" height="10"/></clipPath>
+        </defs>
+        <rect class="st0" x="0" y="0" width="20" height="10"/>
+      `),
+    )
+    expect(doc.partCount).toBe(1)
+    expectClose(doc.parts[0]!.area, 200)
+    expect(doc.warnings).toEqual([])
+  })
 })

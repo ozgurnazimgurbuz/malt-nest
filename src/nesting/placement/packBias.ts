@@ -3,14 +3,18 @@
  * Does not change NFP, collision, spacing, or geometry.
  *
  * Sheet coords match NestPreview SVG: x→right, y→down (origin top-left).
- * Default (dayamaX+dayamaY): prefer smaller x then — with Y primary — smaller y
- * (engine’s historic “bottom-left” sort = visual top-left on the SVG board).
+ *
+ * Engine flags are axis letters; UI edge names map the other way:
+ * - dayamaX → Dikey Dayama (vertical sheet edges / left–right) → prefer smaller x
+ * - dayamaY → Yatay Dayama (horizontal sheet edges / top–bottom) → prefer smaller y
+ *
+ * Default both on: Y then X (historic BLF / visual top-left pack).
  */
 
 export type PackBias = {
-  /** Horizontal preference (X). true → prefer smaller x (left). */
+  /** Prefer vertical edges: smaller x (left). UI: Dikey Dayama. */
   dayamaX: boolean
-  /** Vertical preference (Y). true → prefer smaller y (toward SVG top / IFP minY). */
+  /** Prefer horizontal edges: smaller y (top). UI: Yatay Dayama. */
   dayamaY: boolean
 }
 

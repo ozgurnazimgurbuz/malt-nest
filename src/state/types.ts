@@ -1,24 +1,18 @@
 import type { BoundingBox, GeometryPart } from '../geometry'
 import type { ParserWarning } from '../svg/warnings'
 
-export type RotationAngle = 0 | 90 | 180 | 270
-
 export type SheetSettings = {
   widthMm: number
   heightMm: number
 }
 
 export type UiOptimizationLevel = 'fast' | 'balanced' | 'deep'
-export type UiRotationMode = 'orthogonal' | 'balanced' | 'deep'
 
+/** User-facing production parameters only (rotation/dayama are engine-owned). */
 export type NestSettings = {
   gapMm: number
   marginMm: number
-  allowRotation: boolean
-  rotationAngles: RotationAngle[]
   optimizationLevel: UiOptimizationLevel
-  /** Orthogonal / balanced (45°) / deep adaptive candidates. */
-  rotationMode: UiRotationMode
   allowPartInPart: boolean
   /** Developer/debug seed (deterministic). */
   seed: number
@@ -27,10 +21,6 @@ export type NestSettings = {
    * Same seed ⇒ same result.
    */
   deterministic: boolean
-  /** Prefer left (smaller x) when choosing among equal-validity candidates. */
-  dayamaX: boolean
-  /** Prefer smaller y when choosing among equal-validity candidates. */
-  dayamaY: boolean
 }
 
 export type SvgMeta = {

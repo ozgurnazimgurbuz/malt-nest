@@ -1,5 +1,6 @@
 import { prepareParts, resolveRotations } from '../core/prepare'
 import { placeWithPlan, runBottomLeftNest } from '../placement/blf'
+import { usesFreeAngleCascade } from './rotations'
 import {
   isBetterScore,
   scoreNestingResult,
@@ -439,10 +440,47 @@ export function runEvolutionaryNest(
     }
   }
 
-  const improved = isBetterScore(bestScore, baselineScore)
+  let improved = isBetterScore(bestScore, baselineScore)
   if (!improved) {
     bestResult = baseline
     bestScore = baselineScore
+    bestGene = baselineGene
+  }
+
+  // One free-angle polish around the winning gene (1°), not on every GA eval.
+  if (
+    usesFreeAngleCascade(request.settings) &&
+    bestGene &&
+    !abortable.aborted
+  ) {
+    emit(
+      {
+        ...progressBase(),
+        ratio: 0.97,
+        phase: 'finalize',
+        message: `Free-angle polish · ${level}`,
+        bestSoFar: bestResult,
+      },
+      true,
+    )
+    const polished = placeWithPlan(
+      request,
+      { order: bestGene.order, rotations: bestGene.rotations },
+      {
+        engineId: 'evolutionary-blf-v1',
+        signal: options.signal,
+        polishFreeAngles: true,
+      },
+    )
+    const polishedOk = asSuccess(polished)
+    if (polishedOk) {
+      const polishedScore = scoreNestingResult(polishedOk)
+      if (isBetterScore(polishedScore, bestScore)) {
+        bestResult = polishedOk
+        bestScore = polishedScore
+        improved = true
+      }
+    }
   }
 
   emit(

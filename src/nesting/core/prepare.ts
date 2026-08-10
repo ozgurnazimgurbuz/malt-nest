@@ -28,6 +28,9 @@ export type PreparedPart = {
   area: number
   variants: PreparedVariant[]
   hasHoles: boolean
+  /** Source rings for lazy free-angle variants (mm space). */
+  sourceOuter: Point[]
+  sourceHoles: Point[][]
 }
 
 export function resolveRotations(
@@ -55,6 +58,29 @@ function ringPerimeter(points: Point[]): number {
   return p
 }
 
+function buildVariant(
+  partId: string,
+  sourceIndex: number,
+  area: number,
+  outer: Point[],
+  holes: Point[][],
+  rot: number,
+): PreparedVariant {
+  const solid = rotateSolidLocal(outer, holes, rot)
+  const b = solid.bounds
+  return {
+    partId,
+    sourceIndex,
+    rotation: rot,
+    solid,
+    area,
+    rankSize: Math.max(b.width, b.height),
+    width: b.width,
+    height: b.height,
+    perimeter: ringPerimeter(solid.outer.points),
+  }
+}
+
 export function prepareParts(
   parts: GeometryPart[],
   settings: NestingSettings,
@@ -66,25 +92,20 @@ export function prepareParts(
   for (let i = 0; i < parts.length; i++) {
     const part = parts[i]!
     if (part.outer.points.length < 2) continue
+    const sourceOuter = part.outer.points
+    const sourceHoles = part.holes.map((h) => h.points)
     const variants: PreparedVariant[] = []
     for (const rot of rotations) {
-      const solid = rotateSolidLocal(
-        part.outer.points,
-        part.holes.map((h) => h.points),
-        rot,
+      variants.push(
+        buildVariant(
+          part.id,
+          i,
+          part.area,
+          sourceOuter,
+          sourceHoles,
+          rot,
+        ),
       )
-      const b = solid.bounds
-      variants.push({
-        partId: part.id,
-        sourceIndex: i,
-        rotation: rot,
-        solid,
-        area: part.area,
-        rankSize: Math.max(b.width, b.height),
-        width: b.width,
-        height: b.height,
-        perimeter: ringPerimeter(solid.outer.points),
-      })
     }
     prepared.push({
       partId: part.id,
@@ -92,6 +113,8 @@ export function prepareParts(
       area: part.area,
       variants,
       hasHoles: part.holes.length > 0,
+      sourceOuter,
+      sourceHoles,
     })
   }
 
@@ -106,6 +129,26 @@ export function prepareParts(
   }
 
   return prepared
+}
+
+/** Get existing variant or build & cache a new rotation from source geometry. */
+export function getOrCreateVariant(
+  part: PreparedPart,
+  rotation: number,
+): PreparedVariant {
+  const rot = ((rotation % 360) + 360) % 360
+  const exact = part.variants.find((v) => Math.abs(v.rotation - rot) < 1e-6)
+  if (exact) return exact
+  const v = buildVariant(
+    part.partId,
+    part.sourceIndex,
+    part.area,
+    part.sourceOuter,
+    part.sourceHoles,
+    rot,
+  )
+  part.variants.push(v)
+  return v
 }
 
 export function variantWorldSolid(
@@ -139,21 +182,8 @@ export function findVariant(
   part: PreparedPart,
   rotation: number,
 ): PreparedVariant | null {
-  const exact = part.variants.find((v) => Math.abs(v.rotation - rotation) < 1e-6)
-  if (exact) return exact
-  let best: PreparedVariant | null = part.variants[0] ?? null
-  let bestD = Infinity
-  for (const v of part.variants) {
-    const d = Math.min(
-      Math.abs(v.rotation - rotation),
-      360 - Math.abs(v.rotation - rotation),
-    )
-    if (d < bestD) {
-      bestD = d
-      best = v
-    }
-  }
-  return best
+  if (!part.variants.length) return null
+  return getOrCreateVariant(part, rotation)
 }
 
 export { boundingBox }

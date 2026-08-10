@@ -168,16 +168,9 @@ export function parseSvgGeometry(
     const frame = stack.pop()!
     const name = tagName(frame.el)
 
-    if (SKIP_TAGS.has(name)) {
-      if (name === 'defs') {
-        warnings.push({
-          code: 'skipped_defs',
-          message: 'Skipped <defs> content',
-          element: name,
-        })
-      }
-      continue
-    }
+    // defs / style / gradients / clipPath / mask / … — not drawn geometry for nesting.
+    // Preview still uses the raw SVG, so paint defs remain visible there.
+    if (SKIP_TAGS.has(name)) continue
 
     if (SHAPE_TAGS.has(name)) {
       const local = parseTransform(
@@ -219,16 +212,7 @@ export function parseSvgGeometry(
       for (const child of children) {
         if (!(child instanceof Element)) continue
         const childName = tagName(child)
-        if (SKIP_TAGS.has(childName)) {
-          if (childName === 'defs') {
-            warnings.push({
-              code: 'skipped_defs',
-              message: 'Skipped <defs> content',
-              element: childName,
-            })
-          }
-          continue
-        }
+        if (SKIP_TAGS.has(childName)) continue
         if (
           !SHAPE_TAGS.has(childName) &&
           !CONTAINER_TAGS.has(childName)

@@ -1,19 +1,77 @@
 import type { GeometryPart, Point } from '../../geometry'
 import { signedArea } from '../../geometry'
-import type { NestingSettings, OptimizationLevel } from '../types'
+import type {
+  NestingSettings,
+  OptimizationLevel,
+  RotationMode,
+} from '../types'
 
-export type RotationMode = 'orthogonal' | 'balanced' | 'deep'
+export type { RotationMode }
 
 export const ORTHOGONAL_ANGLES = [0, 90, 180, 270]
 export const BALANCED_ANGLES = [0, 45, 90, 135, 180, 225, 270, 315]
 
-function normDeg(a: number): number {
+/** Coarse free-angle grid: 0°, 15°, …, 345°. */
+export const FREE_ANGLE_COARSE_STEP = 15
+/** Mid refinement around a coarse winner. */
+export const FREE_ANGLE_REFINE_RADIUS = 15
+export const FREE_ANGLE_REFINE_STEP = 5
+/** Final 1° polish around the mid winner. */
+export const FREE_ANGLE_FINAL_RADIUS = 5
+export const FREE_ANGLE_FINAL_STEP = 1
+
+export function normDeg(a: number): number {
   return ((a % 360) + 360) % 360
 }
 
-function uniqSorted(angles: number[]): number[] {
+export function uniqSorted(angles: number[]): number[] {
   const set = new Set(angles.map((a) => Math.round(normDeg(a) * 1000) / 1000))
   return [...set].sort((a, b) => a - b)
+}
+
+/** Coarse free-angle candidates (24 angles). Gene / prepare set. */
+export function coarseFreeAngles(
+  step = FREE_ANGLE_COARSE_STEP,
+): number[] {
+  const out: number[] = []
+  for (let a = 0; a < 360 - 1e-9; a += step) out.push(a)
+  return out
+}
+
+/** Inclusive angular window around centers, normalized & unique. */
+export function anglesAround(
+  centers: readonly number[],
+  radius: number,
+  step: number,
+): number[] {
+  if (step <= 0 || radius < 0 || centers.length === 0) return []
+  const out: number[] = []
+  for (const c of centers) {
+    for (let d = -radius; d <= radius + 1e-9; d += step) {
+      out.push(normDeg(c + d))
+    }
+  }
+  return uniqSorted(out)
+}
+
+/**
+ * Cascade angle sets for free search:
+ * coarse → refine(±15°, 5°) around seeds → final(±5°, 1°) around seeds.
+ */
+export function freeAngleCascadeStages(seedCenters?: readonly number[]): {
+  coarse: number[]
+  refine: (centers: readonly number[]) => number[]
+  final: (centers: readonly number[]) => number[]
+} {
+  return {
+    coarse: seedCenters?.length
+      ? uniqSorted([...seedCenters])
+      : coarseFreeAngles(),
+    refine: (centers) =>
+      anglesAround(centers, FREE_ANGLE_REFINE_RADIUS, FREE_ANGLE_REFINE_STEP),
+    final: (centers) =>
+      anglesAround(centers, FREE_ANGLE_FINAL_RADIUS, FREE_ANGLE_FINAL_STEP),
+  }
 }
 
 /** Edge direction angles (degrees) from a closed ring. */
@@ -29,7 +87,6 @@ export function edgeOrientationAngles(points: Point[], max = 12): number[] {
     if (len < 1e-9) continue
     let ang = (Math.atan2(dy, dx) * 180) / Math.PI
     ang = normDeg(ang)
-    // Also opposite edge alignment
     scored.push({ ang, len })
     scored.push({ ang: normDeg(ang + 180), len })
   }
@@ -55,14 +112,12 @@ export function adaptiveAnglesFromParts(
       out.push(normDeg(e + 15))
       out.push(normDeg(e - 15))
     }
-    // Prefer upright AABB for elongated parts
     const b = part.boundingBox
     if (b.width > b.height * 1.25 || b.height > b.width * 1.25) {
       out.push(0, 90)
     }
     void signedArea
   }
-  // Small perturbations around orthogonal
   for (const a of ORTHOGONAL_ANGLES) {
     out.push(normDeg(a + 10), normDeg(a - 10))
   }
@@ -78,6 +133,8 @@ export function anglesForMode(
       return [...BALANCED_ANGLES]
     case 'deep':
       return adaptiveAnglesFromParts(parts, 28)
+    case 'free':
+      return coarseFreeAngles()
     case 'orthogonal':
     default:
       return [...ORTHOGONAL_ANGLES]
@@ -101,10 +158,13 @@ export function resolveAllowedAngles(
     for (let a = 0; a < 360 - 1e-9; a += step) out.push(a)
     return out.length ? out : [0]
   }
-  if (settings.allowArbitraryRotation && settings.rotationMode === 'deep') {
+  const mode: RotationMode = settings.rotationMode ?? 'orthogonal'
+  if (mode === 'free') {
+    return coarseFreeAngles()
+  }
+  if (settings.allowArbitraryRotation && mode === 'deep') {
     return adaptiveAnglesFromParts(parts, 28)
   }
-  const mode = settings.rotationMode ?? 'orthogonal'
   if (mode === 'orthogonal' && settings.allowedRotations.length) {
     return uniqSorted(settings.allowedRotations)
   }
@@ -115,4 +175,9 @@ export function defaultModeForLevel(level: OptimizationLevel): RotationMode {
   if (level === 'deep') return 'deep'
   if (level === 'balanced') return 'balanced'
   return 'orthogonal'
+}
+
+/** True when engine should run coarse→refine→final placement search. */
+export function usesFreeAngleCascade(settings: NestingSettings): boolean {
+  return settings.allowRotation !== false && settings.rotationMode === 'free'
 }

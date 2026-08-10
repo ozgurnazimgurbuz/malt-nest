@@ -1,11 +1,7 @@
 import type { NestingSuccess } from '../nesting'
 import {
-  DEFAULT_NEST,
   OPTIMIZATION_OPTIONS,
-  ROTATION_MODE_OPTIONS,
-  ROTATION_OPTIONS,
   type NestSettings,
-  type RotationAngle,
   type SheetSettings,
   type SvgMeta,
 } from '../state'
@@ -61,45 +57,38 @@ export function SettingsPanel({
   onExportSvg,
   onExportAll,
 }: Props) {
-  function toggleAngle(angle: RotationAngle) {
-    const has = nest.rotationAngles.includes(angle)
-    const rotationAngles = has
-      ? nest.rotationAngles.filter((a) => a !== angle)
-      : [...nest.rotationAngles, angle].sort((a, b) => a - b)
-    onNest({ ...nest, rotationAngles: rotationAngles as RotationAngle[] })
-  }
-
   return (
     <aside className="panel">
       <header className="panel__brand">
-        <span className="panel__mark">MN</span>
+        <span className="panel__mark" aria-hidden="true">
+          <svg
+            className="panel__mark-svg"
+            viewBox="0 0 46 22"
+            fill="currentColor"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            {/* Exact Malt Studio wordmark M (logo.svg polygon) */}
+            <g transform="translate(0 0.35) scale(0.136)">
+              <polygon points="9.4 21.7 69 155.2 76.9 155.2 128.7 29.1 128.7 155.4 159.3 155.4 159.3 .1 130.4 0 83.8 114 32.9 .1 0 .1 0 155.4 9.4 155.4 9.4 21.7" />
+            </g>
+            {/* Matching geometric Latin N (same mint fill, sharp joins) */}
+            <polygon points="25.4 0.8 30.2 0.8 38.6 15.6 38.6 0.8 43.4 0.8 43.4 21.2 38.6 21.2 30.2 6.4 30.2 21.2 25.4 21.2" />
+          </svg>
+        </span>
         <div>
           <h1 className="panel__title">Malt Nest</h1>
           <p className="panel__subtitle">2D Auto Nesting</p>
         </div>
       </header>
 
+      <div className="panel__body">
       <section className="panel__section">
         <h2 className="panel__heading">Dosya</h2>
         <FileDropzone fileName={svg?.fileName ?? null} onFile={onFile} />
-        <dl className="meta meta--4">
-          <div>
-            <dt>Genişlik (mm)</dt>
-            <dd>{formatDim(svg?.width ?? null)}</dd>
-          </div>
-          <div>
-            <dt>Yükseklik (mm)</dt>
-            <dd>{formatDim(svg?.height ?? null)}</dd>
-          </div>
+        <dl className="meta meta--1">
           <div>
             <dt>Parça sayısı</dt>
             <dd>{svg ? svg.partCount : '—'}</dd>
-          </div>
-          <div>
-            <dt>Toplam alan</dt>
-            <dd>
-              {svg ? `${formatDim(svg.totalArea)} mm²` : '—'}
-            </dd>
           </div>
         </dl>
         {svg && svg.warnings.length > 0 && (
@@ -184,62 +173,6 @@ export function SettingsPanel({
           </label>
         </div>
 
-        <label className="switch">
-          <input
-            type="checkbox"
-            checked={nest.allowRotation}
-            onChange={(e) =>
-              onNest({
-                ...nest,
-                allowRotation: e.target.checked,
-                rotationAngles: e.target.checked
-                  ? nest.rotationAngles.length
-                    ? nest.rotationAngles
-                    : [...DEFAULT_NEST.rotationAngles]
-                  : nest.rotationAngles,
-              })
-            }
-          />
-          <span>Döndürmeye izin ver</span>
-        </label>
-
-        <fieldset className="angles" disabled={!nest.allowRotation}>
-          <legend>Döndürme açısı (orthogonal)</legend>
-          <div className="angles__row">
-            {ROTATION_OPTIONS.map((angle) => (
-              <label key={angle} className="chip">
-                <input
-                  type="checkbox"
-                  checked={nest.rotationAngles.includes(angle)}
-                  onChange={() => toggleAngle(angle)}
-                  disabled={nest.rotationMode !== 'orthogonal'}
-                />
-                <span>{angle}°</span>
-              </label>
-            ))}
-          </div>
-        </fieldset>
-
-        <label className="field">
-          <span>Rotation</span>
-          <select
-            value={nest.rotationMode}
-            disabled={!nest.allowRotation}
-            onChange={(e) =>
-              onNest({
-                ...nest,
-                rotationMode: e.target.value as NestSettings['rotationMode'],
-              })
-            }
-          >
-            {ROTATION_MODE_OPTIONS.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
         <label className="field">
           <span>Optimization</span>
           <select
@@ -270,52 +203,6 @@ export function SettingsPanel({
           <span>Part-in-part (holes)</span>
         </label>
 
-        <div className="dayama">
-          <span className="dayama__label">Dayama tercihi</span>
-          <div className="dayama__row">
-            <button
-              type="button"
-              className={
-                nest.dayamaX
-                  ? 'btn dayama__btn dayama__btn--on'
-                  : 'btn dayama__btn dayama__btn--off'
-              }
-              aria-pressed={nest.dayamaX}
-              title={
-                nest.dayamaX
-                  ? 'Yatay dayama açık — adaylarda sola (küçük x) öncelik'
-                  : 'Yatay dayama kapalı'
-              }
-              onClick={() => onNest({ ...nest, dayamaX: !nest.dayamaX })}
-            >
-              ↔ Yatay Dayama
-            </button>
-            <button
-              type="button"
-              className={
-                nest.dayamaY
-                  ? 'btn dayama__btn dayama__btn--on'
-                  : 'btn dayama__btn dayama__btn--off'
-              }
-              aria-pressed={nest.dayamaY}
-              title={
-                nest.dayamaY
-                  ? 'Dikey dayama açık — adaylarda üste (küçük y) öncelik'
-                  : 'Dikey dayama kapalı'
-              }
-              onClick={() => onNest({ ...nest, dayamaY: !nest.dayamaY })}
-            >
-              ↕ Dikey Dayama
-            </button>
-          </div>
-          {!nest.dayamaX && !nest.dayamaY && (
-            <p className="dayama__hint">
-              Dayama tercihi kapalı — aday sıralaması değişmez (insertion
-              sırası).
-            </p>
-          )}
-        </div>
-
         {nestDebug && (
           <>
             <label className="field">
@@ -344,6 +231,7 @@ export function SettingsPanel({
           </>
         )}
       </section>
+      </div>
 
       <section className="panel__section panel__section--actions">
         <h2 className="panel__heading">İşlemler</h2>

@@ -12,12 +12,17 @@ export function beginPlacementSession(): void {
 }
 import {
   findVariant,
+  getOrCreateVariant,
   ifpBounds,
   prepareParts,
   variantWorldSolid,
   type PreparedPart,
   type PreparedVariant,
 } from '../core/prepare'
+import {
+  freeAngleCascadeStages,
+  usesFreeAngleCascade,
+} from '../optimization/rotations'
 import {
   beginBlfProfiling,
   blfProfileBeginPart,
@@ -50,6 +55,11 @@ export type BlfOptions = {
   engineId?: string
   /** Stage 10B: enable BLF profiler (console report). */
   profile?: boolean
+  /**
+   * When free-angle mode is on, refine each plan gene with ±15°/5° then ±5°/1°.
+   * Off during GA evaluations (uses coarse gene angles only); enable for a final polish.
+   */
+  polishFreeAngles?: boolean
 }
 
 /** Gene plan: placement order + per-part rotation (aligned with order). */
@@ -189,20 +199,41 @@ function tryPlaceOnSheet(
   return accepted
 }
 
-function pickBestVariant(
-  variants: PreparedVariant[],
+type PlaceCand = { variant: PreparedVariant; x: number; y: number }
+
+/**
+ * Rank successful placements: pack bias (compact top-left), then real rotated
+ * solid AABB area (not unrotated axis-box), then span, then angle.
+ */
+function comparePlaceCand(a: PlaceCand, b: PlaceCand, bias: PackBias): number {
+  const c = compareByPackBias(a, b, bias)
+  if (c !== 0) return c
+  const aArea = a.variant.width * a.variant.height
+  const bArea = b.variant.width * b.variant.height
+  if (aArea !== bArea) return aArea - bArea
+  const aSpan = Math.max(a.variant.width, a.variant.height)
+  const bSpan = Math.max(b.variant.width, b.variant.height)
+  if (aSpan !== bSpan) return aSpan - bSpan
+  return a.variant.rotation - b.variant.rotation
+}
+
+function evaluateAngles(
+  part: PreparedPart,
+  angles: readonly number[],
   sheet: SheetState,
   spacingMm: number,
   allowPartInPart: boolean,
-  signal?: AbortSignal,
-  packBias?: PackBias,
-): { variant: PreparedVariant; x: number; y: number } | null {
-  type Cand = { variant: PreparedVariant; x: number; y: number }
-  const ok: Cand[] = []
-  const ordered = [...variants].sort((a, b) => a.rotation - b.rotation)
-  const bias = resolvePackBias(packBias)
-  for (const v of ordered) {
-    if (signal?.aborted) return null
+  signal: AbortSignal | undefined,
+  bias: PackBias,
+): PlaceCand[] {
+  const ok: PlaceCand[] = []
+  const seen = new Set<number>()
+  for (const ang of angles) {
+    if (signal?.aborted) break
+    const key = Math.round((((ang % 360) + 360) % 360) * 1000) / 1000
+    if (seen.has(key)) continue
+    seen.add(key)
+    const v = getOrCreateVariant(part, ang)
     const pos = tryPlaceOnSheet(
       v,
       sheet,
@@ -213,13 +244,116 @@ function pickBestVariant(
     )
     if (pos) ok.push({ variant: v, ...pos })
   }
+  ok.sort((a, b) => comparePlaceCand(a, b, bias))
+  return ok
+}
+
+/**
+ * Pick rotation + translation for a part.
+ * Free cascade: coarse 15° → refine ±15@5° → final ±5@1° using real NFP placement.
+ * Optional seedRotation: refine around gene angle (evolutionary path).
+ */
+function pickBestVariant(
+  part: PreparedPart,
+  sheet: SheetState,
+  spacingMm: number,
+  allowPartInPart: boolean,
+  signal: AbortSignal | undefined,
+  packBias: PackBias | undefined,
+  opts: { freeCascade: boolean; seedRotation?: number },
+): PlaceCand | null {
+  const bias = resolvePackBias(packBias)
+
+  if (!opts.freeCascade) {
+    const angles = part.variants.map((v) => v.rotation)
+    const ok = evaluateAngles(
+      part,
+      angles,
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      bias,
+    )
+    return ok[0] ?? null
+  }
+
+  const stages = freeAngleCascadeStages(
+    opts.seedRotation != null ? [opts.seedRotation] : undefined,
+  )
+  const topK = 3
+
+  let ok: PlaceCand[]
+  if (opts.seedRotation != null) {
+    ok = evaluateAngles(
+      part,
+      stages.refine([opts.seedRotation]),
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      bias,
+    )
+    if (!ok.length) {
+      ok = evaluateAngles(
+        part,
+        [opts.seedRotation],
+        sheet,
+        spacingMm,
+        allowPartInPart,
+        signal,
+        bias,
+      )
+    }
+    if (!ok.length) {
+      ok = evaluateAngles(
+        part,
+        stages.coarse.length > 1 ? stages.coarse : freeAngleCascadeStages().coarse,
+        sheet,
+        spacingMm,
+        allowPartInPart,
+        signal,
+        bias,
+      )
+    }
+  } else {
+    ok = evaluateAngles(
+      part,
+      stages.coarse,
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      bias,
+    )
+    if (ok.length) {
+      const centers = ok.slice(0, topK).map((c) => c.variant.rotation)
+      const refined = evaluateAngles(
+        part,
+        stages.refine(centers),
+        sheet,
+        spacingMm,
+        allowPartInPart,
+        signal,
+        bias,
+      )
+      if (refined.length) ok = refined
+    }
+  }
+
   if (!ok.length) return null
-  ok.sort((a, b) => {
-    const c = compareByPackBias(a, b, bias)
-    if (c !== 0) return c
-    return a.variant.rotation - b.variant.rotation
-  })
-  return ok[0]!
+
+  const finals = evaluateAngles(
+    part,
+    stages.final([ok[0]!.variant.rotation]),
+    sheet,
+    spacingMm,
+    allowPartInPart,
+    signal,
+    bias,
+  )
+  if (finals.length) ok = finals
+  return ok[0] ?? null
 }
 
 function commit(
@@ -254,6 +388,8 @@ function placeSequence(
     dayamaX: request.settings.dayamaX,
     dayamaY: request.settings.dayamaY,
   })
+  const freeCascade = usesFreeAngleCascade(request.settings)
+  const polishFree = freeCascade && options.polishFreeAngles === true
   const signal = options.signal
   const level = request.settings.optimizationLevel
   const partCount = sequence.length
@@ -328,13 +464,27 @@ function placeSequence(
     ): { variant: PreparedVariant; x: number; y: number } | null => {
       sheetsTried += 1
       if (variant === 'best') {
+        // Full coarse → refine → final on real NFP placements.
         return pickBestVariant(
-          part.variants,
+          part,
           sheet,
           spacing,
           allowPartInPart,
           signal,
           packBias,
+          { freeCascade },
+        )
+      }
+      if (polishFree) {
+        // Final polish around GA/BLF gene (not used on every evolutionary eval).
+        return pickBestVariant(
+          part,
+          sheet,
+          spacing,
+          allowPartInPart,
+          signal,
+          packBias,
+          { freeCascade: true, seedRotation: variant.rotation },
         )
       }
       const pos = tryPlaceOnSheet(

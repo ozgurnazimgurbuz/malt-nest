@@ -18,7 +18,7 @@ describe('packBias / dayama preference', () => {
     })
   })
 
-  it('default true/true sorts Y then X (legacy BLF order)', () => {
+  it('true/true sorts Y then X (backward-compatible BLF order)', () => {
     const pts = [
       { x: 30, y: 10 },
       { x: 10, y: 10 },
@@ -36,7 +36,7 @@ describe('packBias / dayama preference', () => {
     ])
   })
 
-  it('dayamaX-only prefers smaller x (ignores y as primary)', () => {
+  it('dayamaX (Dikey Dayama) prefers smaller x — vertical edges', () => {
     const pts = [
       { x: 30, y: 10 },
       { x: 10, y: 50 },
@@ -47,7 +47,7 @@ describe('packBias / dayama preference', () => {
     expect(sorted.map((p) => p.x)).toEqual([10, 20, 30])
   })
 
-  it('dayamaY-only prefers smaller y (ignores x as primary)', () => {
+  it('dayamaY (Yatay Dayama) prefers smaller y — horizontal edges', () => {
     const pts = [
       { x: 50, y: 30 },
       { x: 10, y: 10 },
@@ -162,15 +162,14 @@ describe('packBias / dayama preference', () => {
     const yKeys = yOnly.map(key)
     const offKeys = off.map(key)
 
-    // Same set of candidates; only order may differ.
     expect([...defKeys].sort()).toEqual([...xKeys].sort())
     expect([...defKeys].sort()).toEqual([...offKeys].sort())
-
-    // Default vs X-only should reorder when both axes matter.
     expect(defKeys).not.toEqual(xKeys)
-    // Y-only should match default primary (Y then X vs Y-only — X ties differ).
     expect(yKeys[0]).toBe(defKeys[0])
-    // Both off keeps insertion order ≠ biased Y-primary order for this NFP set.
     expect(offKeys).not.toEqual(defKeys)
+
+    // First accepted preference: X-only leads with smaller x than Y-only when they diverge.
+    expect(xOnly[0]!.x).toBeLessThanOrEqual(yOnly[0]!.x + 1e-9)
+    expect(yOnly[0]!.y).toBeLessThanOrEqual(xOnly[0]!.y + 1e-9)
   })
 })
