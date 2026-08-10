@@ -27,6 +27,10 @@ export type NestSettings = {
    * Same seed ⇒ same result.
    */
   deterministic: boolean
+  /** Prefer left (smaller x) when choosing among equal-validity candidates. */
+  dayamaX: boolean
+  /** Prefer smaller y when choosing among equal-validity candidates. */
+  dayamaY: boolean
 }
 
 export type SvgMeta = {

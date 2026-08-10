@@ -14,6 +14,11 @@ import {
   blfProfileRecordNfpKey,
   isBlfProfiling,
 } from '../../geometry/debug/blfProfiler'
+import {
+  compareByPackBias,
+  resolvePackBias,
+  type PackBias,
+} from '../placement/packBias'
 
 export type Translation = { x: number; y: number }
 
@@ -267,6 +272,7 @@ export function collectPlacementCandidates(
   spacingMm: number,
   placedMeta?: Array<{ partId: string; rotation: number }>,
   signal?: AbortSignal,
+  packBias?: Partial<PackBias> | null,
 ): Translation[] {
   const list: Translation[] = []
   const seen = new Set<string>()
@@ -296,17 +302,9 @@ export function collectPlacementCandidates(
     }
   }
 
-  // Prefer bottom-left contacts (left/bottom edge ties after primary BL order).
-  const eps = 1e-6
-  list.sort((a, b) => {
-    const aLeft = Math.abs(a.x - ifp.minX) < eps ? 0 : 1
-    const bLeft = Math.abs(b.x - ifp.minX) < eps ? 0 : 1
-    const aBot = Math.abs(a.y - ifp.minY) < eps ? 0 : 1
-    const bBot = Math.abs(b.y - ifp.minY) < eps ? 0 : 1
-    if (a.y !== b.y) return a.y - b.y
-    if (a.x !== b.x) return a.x - b.x
-    if (aBot !== bBot) return aBot - bBot
-    return aLeft - bLeft
-  })
+  const bias = resolvePackBias(packBias)
+  list.sort((a, b) =>
+    compareByPackBias(a, b, bias, { minX: ifp.minX, minY: ifp.minY }),
+  )
   return list
 }

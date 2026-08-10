@@ -15,6 +15,8 @@ export const DEFAULT_NEST: NestSettings = {
   allowPartInPart: false,
   seed: 42,
   deterministic: false,
+  dayamaX: true,
+  dayamaY: true,
 }
 
 export const ROTATION_OPTIONS = [0, 90, 180, 270] as const

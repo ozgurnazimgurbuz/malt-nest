@@ -37,6 +37,11 @@ import type {
   Placement,
   SheetResult,
 } from '../types'
+import {
+  compareByPackBias,
+  resolvePackBias,
+  type PackBias,
+} from './packBias'
 
 export type BlfOptions = {
   onProgress?: (p: NestProgress) => void
@@ -102,6 +107,7 @@ function tryPlaceOnSheet(
   spacingMm: number,
   allowPartInPart: boolean,
   signal?: AbortSignal,
+  packBias?: PackBias,
 ): { x: number; y: number } | null {
   if (signal?.aborted) return null
 
@@ -135,6 +141,7 @@ function tryPlaceOnSheet(
     spacingMm,
     placedMeta,
     signal,
+    packBias,
   )
   const candidateGenMs = performance.now() - tCand
 
@@ -188,19 +195,28 @@ function pickBestVariant(
   spacingMm: number,
   allowPartInPart: boolean,
   signal?: AbortSignal,
+  packBias?: PackBias,
 ): { variant: PreparedVariant; x: number; y: number } | null {
   type Cand = { variant: PreparedVariant; x: number; y: number }
   const ok: Cand[] = []
   const ordered = [...variants].sort((a, b) => a.rotation - b.rotation)
+  const bias = resolvePackBias(packBias)
   for (const v of ordered) {
     if (signal?.aborted) return null
-    const pos = tryPlaceOnSheet(v, sheet, spacingMm, allowPartInPart, signal)
+    const pos = tryPlaceOnSheet(
+      v,
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      bias,
+    )
     if (pos) ok.push({ variant: v, ...pos })
   }
   if (!ok.length) return null
   ok.sort((a, b) => {
-    if (a.y !== b.y) return a.y - b.y
-    if (a.x !== b.x) return a.x - b.x
+    const c = compareByPackBias(a, b, bias)
+    if (c !== 0) return c
     return a.variant.rotation - b.variant.rotation
   })
   return ok[0]!
@@ -234,6 +250,10 @@ function placeSequence(
 ): NestingResult {
   const spacing = Math.max(0, request.settings.spacingMm)
   const allowPartInPart = request.settings.allowPartInPart === true
+  const packBias = resolvePackBias({
+    dayamaX: request.settings.dayamaX,
+    dayamaY: request.settings.dayamaY,
+  })
   const signal = options.signal
   const level = request.settings.optimizationLevel
   const partCount = sequence.length
@@ -314,6 +334,7 @@ function placeSequence(
           spacing,
           allowPartInPart,
           signal,
+          packBias,
         )
       }
       const pos = tryPlaceOnSheet(
@@ -322,6 +343,7 @@ function placeSequence(
         spacing,
         allowPartInPart,
         signal,
+        packBias,
       )
       return pos ? { variant, ...pos } : null
     }

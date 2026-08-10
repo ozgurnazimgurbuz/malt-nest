@@ -270,27 +270,50 @@ export function SettingsPanel({
           <span>Part-in-part (holes)</span>
         </label>
 
-        {/* Stage 10F: UI placeholders only — no engine pack preference yet. */}
-        <div className="dayama" aria-disabled="true">
-          <span className="dayama__label">Dayama (yakında)</span>
+        <div className="dayama">
+          <span className="dayama__label">Dayama tercihi</span>
           <div className="dayama__row">
             <button
               type="button"
-              className="btn dayama__btn"
-              disabled
-              title="Engine’de yatay dayama tercihi yok — sonraki stage"
+              className={
+                nest.dayamaX
+                  ? 'btn dayama__btn dayama__btn--on'
+                  : 'btn dayama__btn dayama__btn--off'
+              }
+              aria-pressed={nest.dayamaX}
+              title={
+                nest.dayamaX
+                  ? 'Yatay dayama açık — adaylarda sola (küçük x) öncelik'
+                  : 'Yatay dayama kapalı'
+              }
+              onClick={() => onNest({ ...nest, dayamaX: !nest.dayamaX })}
             >
               ↔ Yatay Dayama
             </button>
             <button
               type="button"
-              className="btn dayama__btn"
-              disabled
-              title="Engine’de dikey dayama tercihi yok — sonraki stage"
+              className={
+                nest.dayamaY
+                  ? 'btn dayama__btn dayama__btn--on'
+                  : 'btn dayama__btn dayama__btn--off'
+              }
+              aria-pressed={nest.dayamaY}
+              title={
+                nest.dayamaY
+                  ? 'Dikey dayama açık — adaylarda üste (küçük y) öncelik'
+                  : 'Dikey dayama kapalı'
+              }
+              onClick={() => onNest({ ...nest, dayamaY: !nest.dayamaY })}
             >
               ↕ Dikey Dayama
             </button>
           </div>
+          {!nest.dayamaX && !nest.dayamaY && (
+            <p className="dayama__hint">
+              Dayama tercihi kapalı — aday sıralaması değişmez (insertion
+              sırası).
+            </p>
+          )}
         </div>
 
         {nestDebug && (

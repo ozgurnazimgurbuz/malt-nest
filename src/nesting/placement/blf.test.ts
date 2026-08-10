@@ -320,4 +320,37 @@ describe('runBottomLeftNest', () => {
     expect(r1.placements).toEqual(r2.placements)
     expect(r1.unplacedPartIds).toEqual(r2.unplacedPartIds)
   })
+
+  it('13. dayamaX/Y only change candidate preference (same sheet, different order)', () => {
+    const parts = [
+      rectPart('a', 0, 0, 0, 40, 40),
+      rectPart('b', 1, 0, 0, 40, 40),
+    ]
+    const sheet = { widthMm: 100, heightMm: 100, marginMm: 0, quantity: 1 }
+    const both = runBottomLeftNest(
+      request(parts, {
+        sheet,
+        settings: { dayamaX: true, dayamaY: true, allowedRotations: [0] },
+      }),
+    )
+    const xOnly = runBottomLeftNest(
+      request(parts, {
+        sheet,
+        settings: { dayamaX: true, dayamaY: false, allowedRotations: [0] },
+      }),
+    )
+    expect(both.status).toBe('ok')
+    expect(xOnly.status).toBe('ok')
+    if (both.status !== 'ok' || xOnly.status !== 'ok') return
+    expect(both.placements).toHaveLength(2)
+    expect(xOnly.placements).toHaveLength(2)
+    // Preference change should move at least the second part (or both).
+    expect(both.placements).not.toEqual(xOnly.placements)
+    // Collision/spacing still hold for both runs.
+    for (const r of [both, xOnly]) {
+      const sa = worldSolid(parts[0]!, r.placements.find((p) => p.partId === 'a')!)
+      const sb = worldSolid(parts[1]!, r.placements.find((p) => p.partId === 'b')!)
+      expect(solidsOverlap(sa, sb)).toBe(false)
+    }
+  })
 })

@@ -59,6 +59,16 @@ export type NestingSettings = {
    * Stage 10B: BLF profiler (console). Off by default — zero cost when false.
    */
   profileBlf?: boolean
+  /**
+   * Stage 11: horizontal pack preference (X). Default true → prefer smaller x.
+   * Sort/tie-break only — does not change NFP/collision geometry.
+   */
+  dayamaX?: boolean
+  /**
+   * Stage 11: vertical pack preference (Y). Default true → prefer smaller y.
+   * Sort/tie-break only — does not change NFP/collision geometry.
+   */
+  dayamaY?: boolean
 }
 
 export type NestingRequest = {

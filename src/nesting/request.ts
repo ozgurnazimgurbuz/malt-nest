@@ -35,6 +35,8 @@ export function toNestingRequest(
     seed: settings.seed,
     deterministic: settings.deterministic,
     allowPartInPart: settings.allowPartInPart,
+    dayamaX: settings.dayamaX,
+    dayamaY: settings.dayamaY,
   }
 
   return { parts, sheets, settings: nestingSettings }
