@@ -36,8 +36,7 @@ pass, the workspace switches to a live nest preview:
 
 - committed parts are solid blue;
 - the latest candidate is a yellow ghost outline;
-- a rejected candidate flashes red;
-- an accepted candidate flashes green before becoming committed;
+- its rejected or accepted verdict is recorded by a red or green trail anchor;
 - recent attempt anchors remain as a fading trail;
 - the preview automatically follows the active sheet; and
 - the existing progress card remains above the preview.
@@ -86,10 +85,15 @@ the existing placement helpers.
 3. `runEvolutionaryNest` passes the observer only to its Stage-1 BLF baseline.
 4. The observer is called from the existing candidate validation loop in
    `tryPlaceOnSheet` after each verdict is known.
-5. The worker preserves ordering and batches compact records by count or a short
-   elapsed interval before posting a dedicated attempt message.
-6. The worker flushes the final partial batch before completion or cancellation.
-7. The client adds the active job ID and forwards only matching-job batches.
+5. Stage-1 progress carries an explicit canonical-pass marker so its committed
+   snapshots cannot be confused with later order-search progress.
+6. The worker preserves ordering, batches compact records by count, and flushes
+   a partial batch at canonical part/pass boundaries before posting a dedicated
+   attempt message.
+7. The worker flushes the final partial batch before normal completion or error.
+   Hard STOP terminates the worker immediately and may discard only the small
+   worker-local batch that has not yet crossed the boundary.
+8. The client adds the active job ID and forwards only matching-job batches.
 
 Attempt telemetry remains completely absent when debug mode is disabled.
 
@@ -109,7 +113,9 @@ part shape and rotation remain legible. The trail storage is time-bounded and
 old entries are removed as they fade.
 
 The active sheet index follows incoming attempt batches while a job runs. User
-sheet selection resumes after the trace finishes.
+sheet selection resumes after the trace finishes. Trail records are filtered to
+the displayed sheet, so attempts from a previous sheet never appear on the
+current one.
 
 ## Lifecycle and Failure Handling
 
@@ -120,14 +126,15 @@ sheet selection resumes after the trace finishes.
   state.
 - STOP preserves the existing best-so-far behavior and clears transient trace
   data once the cancellation result is applied.
-- Rendering or telemetry failures must not abort or alter nesting.
+- Observer, batching, client, and rendering failures are isolated and must not
+  abort or alter nesting.
 
 ## Performance Constraints
 
 - No per-attempt `postMessage` calls.
 - No full geometry or result cloning in attempt messages.
 - No React/SVG node per trail point; the trail uses one canvas.
-- No polling and no artificial delay/backpressure.
+- No polling, timer-dependent worker flush, or artificial delay/backpressure.
 - No observer allocation or batching work when debug mode is disabled.
 - Visible history is bounded by fade time rather than total attempts.
 
