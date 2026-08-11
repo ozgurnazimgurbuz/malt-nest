@@ -39,6 +39,7 @@ import {
 } from '../../geometry/debug/blfProfiler'
 import { collectPlacementCandidates } from '../nfp/candidates'
 import type {
+  NestAttempt,
   NestingRequest,
   NestingResult,
   NestingSuccess,
@@ -56,6 +57,8 @@ export type FreeAngleDepth = 'quick' | 'coarse' | 'medium' | 'full' | 'seed'
 
 export type BlfOptions = {
   onProgress?: (p: NestProgress) => void
+  onAttempt?: (attempt: NestAttempt) => void
+  onAttemptFlush?: () => void
   signal?: AbortSignal
   /** Override result.engineId */
   engineId?: string
@@ -310,6 +313,7 @@ function tryPlaceOnSheet(
   signal?: AbortSignal,
   packBias?: PackBias,
   exactNfp = false,
+  onAttempt?: (attempt: Omit<NestAttempt, 'sequence'>) => void,
 ): { x: number; y: number } | null {
   if (signal?.aborted) return null
 
@@ -353,7 +357,16 @@ function tryPlaceOnSheet(
     if (ci % 32 === 0 && signal?.aborted) break
     const t = candidates[ci]!
     const world = variantWorldSolid(variant, t.x, t.y)
-    if (isValidPlacement(world, sheet, spacingMm)) {
+    const valid = isValidPlacement(world, sheet, spacingMm)
+    onAttempt?.({
+      partId: variant.partId,
+      sheetIndex: sheet.index,
+      x: t.x,
+      y: t.y,
+      rotation: variant.rotation,
+      verdict: valid ? 'accepted' : 'rejected',
+    })
+    if (valid) {
       accepted = { x: t.x, y: t.y }
       break
     }
@@ -376,7 +389,16 @@ function tryPlaceOnSheet(
         fit.translation.x,
         fit.translation.y,
       )
-      if (isValidPlacement(world, sheet, spacingMm)) {
+      const valid = isValidPlacement(world, sheet, spacingMm)
+      onAttempt?.({
+        partId: variant.partId,
+        sheetIndex: sheet.index,
+        x: fit.translation.x,
+        y: fit.translation.y,
+        rotation: variant.rotation,
+        verdict: valid ? 'accepted' : 'rejected',
+      })
+      if (valid) {
         accepted = { x: fit.translation.x, y: fit.translation.y }
         break
       }
@@ -421,6 +443,7 @@ function evaluateAngles(
   signal: AbortSignal | undefined,
   bias: PackBias,
   exactNfp: boolean,
+  onAttempt: ((attempt: Omit<NestAttempt, 'sequence'>) => void) | undefined,
   keep = 1,
 ): PlaceCand[] {
   const ok: PlaceCand[] = []
@@ -440,6 +463,7 @@ function evaluateAngles(
       signal,
       bias,
       exactNfp,
+      onAttempt,
     )
     if (pos) {
       ok.push({ variant: v, ...pos })
@@ -466,6 +490,7 @@ function pickBestVariant(
     depth: FreeAngleDepth
     seedRotation?: number
     exactNfp: boolean
+    onAttempt?: (attempt: Omit<NestAttempt, 'sequence'>) => void
   },
 ): PlaceCand | null {
   const bias = resolvePackBias(packBias)
@@ -482,6 +507,7 @@ function pickBestVariant(
       signal,
       bias,
       exactNfp,
+      opts.onAttempt,
     )
     return ok[0] ?? null
   }
@@ -496,6 +522,7 @@ function pickBestVariant(
       signal,
       bias,
       exactNfp,
+      opts.onAttempt,
     )
     return ok[0] ?? null
   }
@@ -516,6 +543,7 @@ function pickBestVariant(
       signal,
       bias,
       exactNfp,
+      opts.onAttempt,
     )
     if (!ok.length) {
       ok = evaluateAngles(
@@ -527,6 +555,7 @@ function pickBestVariant(
         signal,
         bias,
         exactNfp,
+        opts.onAttempt,
       )
     }
     if (!ok.length) {
@@ -541,6 +570,7 @@ function pickBestVariant(
         signal,
         bias,
         exactNfp,
+        opts.onAttempt,
       )
     }
   } else {
@@ -555,6 +585,7 @@ function pickBestVariant(
       signal,
       bias,
       exactNfp,
+      opts.onAttempt,
       opts.depth === 'medium' ? topK : 1,
     )
     if (
@@ -570,6 +601,7 @@ function pickBestVariant(
         signal,
         bias,
         exactNfp,
+        opts.onAttempt,
       )
       if (refined.length) ok = refined
     }
@@ -595,6 +627,7 @@ function pickBestVariant(
     signal,
     bias,
     exactNfp,
+    opts.onAttempt,
   )
   if (finals.length) ok = finals
   return ok[0] ?? null
@@ -644,6 +677,23 @@ function placeSequence(
   const signal = options.signal
   const level = request.settings.optimizationLevel
   const partCount = sequence.length
+  let attemptSequence = 0
+  const emitAttempt = options.onAttempt
+    ? (attempt: Omit<NestAttempt, 'sequence'>) => {
+        try {
+          options.onAttempt?.({ sequence: attemptSequence++, ...attempt })
+        } catch {
+          // Debug telemetry must never alter nesting.
+        }
+      }
+    : undefined
+  const flushAttempts = () => {
+    try {
+      options.onAttemptFlush?.()
+    } catch {
+      // Debug telemetry must never alter nesting.
+    }
+  }
 
   const snapshot = (
     sheets: SheetState[],
@@ -702,6 +752,7 @@ function placeSequence(
   const findEntryPlacement = (
     entry: SequenceEntry,
     sheet: SheetState,
+    onAttempt: ((attempt: Omit<NestAttempt, 'sequence'>) => void) | undefined,
   ): PlaceCand | null => {
     const { part, variant } = entry
     if (variant === 'best') {
@@ -713,7 +764,7 @@ function placeSequence(
         allowPartInPart,
         signal,
         packBias,
-        { freeCascade, depth: depthForBest, exactNfp },
+        { freeCascade, depth: depthForBest, exactNfp, onAttempt },
       )
     }
     if (freeCascade && freeDepth === 'seed') {
@@ -729,6 +780,7 @@ function placeSequence(
           depth: 'seed',
           seedRotation: variant.rotation,
           exactNfp,
+          onAttempt,
         },
       )
     }
@@ -740,6 +792,7 @@ function placeSequence(
       signal,
       packBias,
       exactNfp,
+      onAttempt,
     )
     return pos ? { variant, ...pos } : null
   }
@@ -770,7 +823,7 @@ function placeSequence(
       const entry = sequence[partIndex]!
       let placed = false
       for (const sheet of simulatedSheets) {
-        const best = findEntryPlacement(entry, sheet)
+        const best = findEntryPlacement(entry, sheet, undefined)
         if (!best) continue
         commit(sheet, entry.part.partId, entry.part.area, best)
         placed = true
@@ -797,7 +850,7 @@ function placeSequence(
           marginMm: stock.marginMm,
           placed: [],
         }
-        const best = findEntryPlacement(entry, trial)
+        const best = findEntryPlacement(entry, trial, undefined)
         if (!best) continue
         const usableWidth = stock.widthMm - stock.marginMm * 2
         const usableHeight = stock.heightMm - stock.marginMm * 2
@@ -862,7 +915,7 @@ function placeSequence(
 
     const tryOn = (sheet: SheetState): PlaceCand | null => {
       sheetsTried += 1
-      return findEntryPlacement(sequence[i]!, sheet)
+      return findEntryPlacement(sequence[i]!, sheet, emitAttempt)
     }
 
     const existingCandidates: Array<{
@@ -967,6 +1020,7 @@ function placeSequence(
             sheetsTried,
           })
         }
+        flushAttempts()
         return snapshot(completedSuffix.sheets, unplaced)
       }
       if (!signal?.aborted) {
@@ -1086,6 +1140,8 @@ function placeSequence(
       })
     }
 
+    flushAttempts()
+
     if (signal?.aborted) {
       const remaining = sequence
         .slice(i + (placed ? 1 : 0))
@@ -1122,6 +1178,7 @@ function placeSequence(
   }
 
   const placements = sheets.flatMap((s) => s.placed.map((p) => p.placement))
+  flushAttempts()
   return buildSuccess(
     request,
     sheets,

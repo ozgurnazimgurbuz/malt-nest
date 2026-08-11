@@ -16,7 +16,12 @@ import {
   placeWithPlanUnchecked,
   runBottomLeftNest,
 } from './blf'
-import type { NestingRequest, NestingSettings, Placement } from '../types'
+import type {
+  NestAttempt,
+  NestingRequest,
+  NestingSettings,
+  Placement,
+} from '../types'
 import { prepareParts } from '../core/prepare'
 
 const baseSettings: NestingSettings = {
@@ -93,6 +98,74 @@ function worldSolid(part: GeometryPart, pl: Placement) {
 }
 
 describe('runBottomLeftNest', () => {
+  it('emits ordered candidate verdicts without changing the result', () => {
+    const req = request(
+      [
+        rectPart('a', 0, 0, 0, 6, 6),
+        rectPart('b', 1, 0, 0, 6, 6),
+      ],
+      {
+        sheet: { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 1 },
+      },
+    )
+    const attempts: NestAttempt[] = []
+
+    const traced = runBottomLeftNest(req, {
+      onAttempt: (attempt) => attempts.push(attempt),
+    })
+    const plain = runBottomLeftNest(req)
+
+    expect(attempts.length).toBeGreaterThan(0)
+    expect(attempts.map(({ sequence }) => sequence)).toEqual(
+      attempts.map((_, index) => index),
+    )
+    expect(attempts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          partId: 'a',
+          sheetIndex: 0,
+          rotation: 0,
+          verdict: 'accepted',
+        }),
+        expect.objectContaining({ verdict: 'rejected' }),
+      ]),
+    )
+    expect(traced.status).toBe('ok')
+    expect(plain.status).toBe('ok')
+    if (traced.status !== 'ok' || plain.status !== 'ok') return
+    expect({ ...traced, calculationTimeMs: 0 }).toEqual({
+      ...plain,
+      calculationTimeMs: 0,
+    })
+  })
+
+  it('isolates telemetry callback failures from placement', () => {
+    const req = request([rectPart('a', 0, 0, 0, 6, 6)])
+    const plain = runBottomLeftNest(req)
+    let attempts = 0
+    let flushes = 0
+    const traced = runBottomLeftNest(req, {
+      onAttempt: () => {
+        attempts += 1
+        throw new Error('telemetry failed')
+      },
+      onAttemptFlush: () => {
+        flushes += 1
+        throw new Error('flush failed')
+      },
+    })
+
+    expect(attempts).toBeGreaterThan(0)
+    expect(flushes).toBeGreaterThan(0)
+    expect(traced.status).toBe('ok')
+    expect(plain.status).toBe('ok')
+    if (traced.status !== 'ok' || plain.status !== 'ok') return
+    expect({ ...traced, calculationTimeMs: 0 }).toEqual({
+      ...plain,
+      calculationTimeMs: 0,
+    })
+  })
+
   it('1. rectangle inside sheet', () => {
     const part = rectPart('a', 0, 0, 0, 20, 10)
     const result = runBottomLeftNest(request([part]))

@@ -26,6 +26,9 @@ export {
 export type { ScoreBreakdown, ScoreWeights } from './scoring'
 export type {
   NestInput,
+  NestAttempt,
+  NestAttemptBatch,
+  NestAttemptVerdict,
   NestingCancelled,
   NestingNotImplemented,
   NestingRequest,

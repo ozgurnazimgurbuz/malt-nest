@@ -86,6 +86,18 @@ export type Placement = {
   rotation: number
 }
 
+export type NestAttemptVerdict = 'rejected' | 'accepted'
+
+export type NestAttempt = Placement & {
+  sequence: number
+  verdict: NestAttemptVerdict
+}
+
+export type NestAttemptBatch = {
+  attempts: NestAttempt[]
+  jobId?: string
+}
+
 /** @deprecated Use Placement. */
 export type NestPlacement = Placement
 
