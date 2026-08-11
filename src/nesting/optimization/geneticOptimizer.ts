@@ -1,7 +1,12 @@
 import { prepareParts, resolveRotations } from '../core/prepare'
-import { placeWithPlan, runBottomLeftNest } from '../placement/blf'
+import {
+  placeWithOrder,
+  placeWithPlan,
+  runBottomLeftNest,
+} from '../placement/blf'
 import { usesFreeAngleCascade } from './rotations'
 import {
+  isBetterPackedBounds,
   isBetterScore,
   scoreNestingResult,
   type ScoreBreakdown,
@@ -21,10 +26,16 @@ import {
 } from './individual'
 import { localSearchImprove } from './localSearch'
 import { mutateIndividual } from './mutation'
+import { buildOrderCandidates } from './orderSearch'
 import { createInitialPopulation, multiStartSeeds } from './population'
 import { presetForLevel } from './presets'
 import { createRng } from './rng'
 import { elitistSurvive, tournamentSelect, type RankedIndividual } from './selection'
+
+/** How many order-search winners get expensive free-angle polish. */
+const ORDER_POLISH_TOP_K = 2
+/** Distinct placement orders to try in the cheap phase. */
+const ORDER_SEARCH_LIMIT = 12
 
 export type EvolutionaryOptions = {
   onProgress?: (p: NestProgress) => void
@@ -37,6 +48,12 @@ export type EvolutionaryOptions = {
    * For reproducible tests / developer deterministic mode.
    */
   deterministic?: boolean
+  /** Optional diagnostics after cheap multi-order search. */
+  onOrderSearch?: (info: {
+    tried: number
+    bestName: string
+    names: string[]
+  }) => void
 }
 
 type CacheEntry = {
@@ -110,15 +127,31 @@ export function runEvolutionaryNest(
     true,
   )
 
+  const freeMode = usesFreeAngleCascade(request.settings)
+
+  const prepared = prepareParts(request.parts, request.settings, {
+    sortByArea: false,
+  })
+  if (prepared.length === 0) {
+    const empty = runBottomLeftNest(request, { signal: options.signal })
+    if (empty.status !== 'ok') return empty
+    return { ...empty, calculationTimeMs: performance.now() - t0 }
+  }
+
+  // Stage 1 baseline: area_desc + full free cascade (15° → top-3@5° → 1°).
+  // Free mode must never drop this quality floor; Stage 2 is additive only.
   const baselineRaw = runBottomLeftNest(request, {
     signal: options.signal,
+    ...(freeMode ? { freeAngleDepth: 'full' as const } : {}),
     onProgress: (p) => {
       emit({
         ...progressBase(),
         ...p,
-        ratio: 0.02 + (p.ratio ?? 0) * 0.12,
+        ratio: 0.02 + (p.ratio ?? 0) * 0.08,
         optimizationLevel: level,
-        message: p.message ?? `BLF · ${level}`,
+        message:
+          p.message ??
+          (freeMode ? `Stage1 full cascade · ${level}` : `BLF · ${level}`),
       })
     },
   })
@@ -126,11 +159,16 @@ export function runEvolutionaryNest(
   if (baselineRaw.status === 'cancelled') return baselineRaw
   if (baselineRaw.status !== 'ok') return baselineRaw
 
-  let baseline = {
+  const baselineCandidate: NestingSuccess = {
     ...baselineRaw,
     engineId: 'blf-nfp-v1',
     calculationTimeMs: performance.now() - t0,
   }
+  // Same path as Stage 1 (area_desc + full); explicit finalist name.
+  const areaDescFullCandidate = baselineCandidate
+  let baseline = baselineCandidate
+  let stage2Champion: NestingSuccess | null = null
+  let stage2ChampionName = 'stage2'
 
   const sheet0 = request.sheets[0]
   const sKey = settingsCacheKey({
@@ -153,7 +191,6 @@ export function runEvolutionaryNest(
       { engineId: 'evolutionary-blf-v1', signal: options.signal },
     )
     if (placed.status === 'cancelled') {
-      // Abort mid-eval — keep searching with baseline until outer loop exits
       const entry = { result: baseline, score: scoreNestingResult(baseline) }
       return entry
     }
@@ -172,12 +209,72 @@ export function runEvolutionaryNest(
     return entry
   }
 
-  const prepared = prepareParts(request.parts, request.settings, {
-    sortByArea: false,
-  })
-  if (prepared.length === 0) {
-    return { ...baseline, calculationTimeMs: performance.now() - t0 }
+  // Cheap multi-order search: 8–16 heuristics, coarse angles only.
+  type OrderTrial = {
+    name: string
+    gene: Individual
+    result: NestingSuccess
+    score: ScoreBreakdown
   }
+  const orderTrials: OrderTrial[] = []
+  const orderCandidates = buildOrderCandidates(
+    prepared,
+    rng,
+    ORDER_SEARCH_LIMIT,
+  )
+  emit(
+    {
+      ...progressBase(),
+      ratio: 0.12,
+      phase: 'seed',
+      message: `Order search · ${orderCandidates.length} sequences`,
+      bestSoFar: baseline,
+    },
+    true,
+  )
+  for (let oi = 0; oi < orderCandidates.length; oi++) {
+    // Order search is the cheap quality lever — do not abort it on wall-clock.
+    if (abortable.aborted) break
+    const cand = orderCandidates[oi]!
+    // Rank orders with a single rotation (0°) — rotation polish runs on top-K only.
+    const placed = placeWithPlan(
+      request,
+      {
+        order: cand.order,
+        rotations: cand.order.map(() => allowed[0] ?? 0),
+      },
+      {
+        signal: options.signal,
+        engineId: 'blf-order-v1',
+      },
+    )
+    if (placed.status === 'cancelled') break
+    const ok = asSuccess(placed)
+    if (!ok) continue
+    const score = scoreNestingResult(ok)
+    const order = [
+      ...ok.placements.map((p) => p.partId),
+      ...cand.order.filter(
+        (id) => !ok.placements.some((p) => p.partId === id),
+      ),
+    ]
+    const gene: Individual = {
+      order,
+      rotations: order.map(() => allowed[0] ?? 0),
+    }
+    orderTrials.push({ name: cand.name, gene, result: ok, score })
+    cache.set(individualKey(gene, sKey), { result: ok, score })
+    emit({
+      ...progressBase(),
+      ratio: 0.12 + (0.08 * (oi + 1)) / Math.max(1, orderCandidates.length),
+      phase: 'seed',
+      message: `Order · ${cand.name} · ${oi + 1}/${orderCandidates.length}`,
+      sheetCount: ok.statistics.sheetCountUsed,
+      placedCount: ok.statistics.placedCount,
+      bestSoFar: ok,
+    })
+  }
+  orderTrials.sort((a, b) => a.score.total - b.score.total)
 
   const baselineScore = scoreNestingResult(baseline)
   let bestResult = baseline
@@ -214,19 +311,31 @@ export function runEvolutionaryNest(
     }
   }
   consider(baseline, baselineScore)
+  for (const trial of orderTrials) {
+    consider(trial.result, trial.score, trial.gene)
+  }
+  const bestOrderName =
+    orderTrials.find((t) => t.gene === bestGene)?.name ??
+    orderTrials[0]?.name ??
+    'area_desc'
+  options.onOrderSearch?.({
+    tried: orderTrials.length,
+    bestName: bestOrderName,
+    names: orderTrials.map((t) => t.name),
+  })
   emit(
     {
       ...progressBase(),
-      ratio: 0.14,
+      ratio: 0.2,
       phase: 'optimize',
-      placedCount: baseline.statistics.placedCount,
+      placedCount: bestResult.statistics.placedCount,
       partCount: partTotal,
-      unplacedCount: baseline.statistics.unplacedCount,
-      sheetCount: baseline.statistics.sheetCountUsed,
-      bestScore: baselineScore.total,
-      bestUtilization: baseline.utilization,
-      bestSoFar: baseline,
-      message: `Optimize · ${level} · BLF baseline · ${baseline.statistics.placedCount} / ${partTotal}`,
+      unplacedCount: bestResult.statistics.unplacedCount,
+      sheetCount: bestResult.statistics.sheetCountUsed,
+      bestScore: bestScore.total,
+      bestUtilization: bestResult.utilization,
+      bestSoFar: bestResult,
+      message: `Order search done · best ${bestOrderName} · ${orderTrials.length} tried`,
     },
     true,
   )
@@ -242,7 +351,20 @@ export function runEvolutionaryNest(
       rotations: full.map((id) => rotById.get(id) ?? allowed[0] ?? 0),
     }
   })()
-  bestGene = baselineGene
+  if (!bestGene) bestGene = baselineGene
+
+  // Track GA/order winners for final polish (cheap genes → expensive angle refine).
+  const polishPool: Individual[] = []
+  const pushPolish = (ind: Individual | null) => {
+    if (!ind) return
+    const key = individualKey(ind, sKey)
+    if (polishPool.some((p) => individualKey(p, sKey) === key)) return
+    polishPool.push(ind)
+  }
+  for (const trial of orderTrials.slice(0, ORDER_POLISH_TOP_K)) {
+    pushPolish(trial.gene)
+  }
+  pushPolish(bestGene)
 
   const populationSize = Math.max(4, preset.populationSize)
   const eliteCount = Math.max(
@@ -256,10 +378,13 @@ export function runEvolutionaryNest(
   const startGenes = multiStartSeeds(
     prepared,
     allowed,
-    baseline,
+    bestResult,
     starts,
     rng,
   )
+  // Prefer order-search winners as multi-start seeds.
+  const orderStartGenes = orderTrials.slice(0, starts).map((t) => t.gene)
+  const mergedStarts = [...orderStartGenes, ...startGenes].slice(0, starts)
 
   for (let s = 0; s < starts; s++) {
     if (abortable.aborted) break
@@ -268,18 +393,22 @@ export function runEvolutionaryNest(
     const startDeadline = deterministic
       ? Number.POSITIVE_INFINITY
       : t0 + Math.min(timeLimit * 0.85, (s + 1) * perStartMs + 50)
-    const startGene = startGenes[s] ?? startGenes[0]!
+    const startGene = mergedStarts[s] ?? startGenes[0]!
     const startRng = createRng(seed + (s + 1) * 9973)
 
     let populationInds = createInitialPopulation(
       prepared,
       allowed,
-      baseline,
+      bestResult,
       populationSize,
       startRng,
     )
-    // Bias population with this start's trajectory seed
-    populationInds = [startGene, ...populationInds].slice(0, populationSize)
+    // Bias population with order winners + this start's seed
+    populationInds = [
+      startGene,
+      ...orderTrials.slice(0, 4).map((t) => t.gene),
+      ...populationInds,
+    ].slice(0, populationSize)
 
     let ranked: RankedIndividual[] = populationInds.map((ind) => {
       const ev = evaluate(ind)
@@ -428,12 +557,18 @@ export function runEvolutionaryNest(
   }
 
   if (abortable.aborted) {
-    const improved = isBetterScore(bestScore, baselineScore)
+    const kept =
+      freeMode && isBetterPackedBounds(baselineCandidate, bestResult)
+        ? baselineCandidate
+        : bestResult
+    const improved = freeMode
+      ? isBetterPackedBounds(kept, baselineCandidate)
+      : isBetterScore(scoreNestingResult(kept), baselineScore)
     return {
       status: 'cancelled',
       message: 'Stopped — returning best so far',
       bestSoFar: {
-        ...bestResult,
+        ...kept,
         calculationTimeMs: performance.now() - t0,
         engineId: improved ? 'evolutionary-blf-v1' : 'blf-nfp-v1',
       },
@@ -446,41 +581,109 @@ export function runEvolutionaryNest(
     bestScore = baselineScore
     bestGene = baselineGene
   }
+  pushPolish(bestGene)
 
-  // One free-angle polish around the winning gene (1°), not on every GA eval.
-  if (
-    usesFreeAngleCascade(request.settings) &&
-    bestGene &&
-    !abortable.aborted
-  ) {
-    emit(
-      {
-        ...progressBase(),
-        ratio: 0.97,
-        phase: 'finalize',
-        message: `Free-angle polish · ${level}`,
-        bestSoFar: bestResult,
-      },
-      true,
-    )
-    const polished = placeWithPlan(
-      request,
-      { order: bestGene.order, rotations: bestGene.rotations },
-      {
-        engineId: 'evolutionary-blf-v1',
-        signal: options.signal,
-        polishFreeAngles: true,
-      },
-    )
-    const polishedOk = asSuccess(polished)
-    if (polishedOk) {
-      const polishedScore = scoreNestingResult(polishedOk)
-      if (isBetterScore(polishedScore, bestScore)) {
-        bestResult = polishedOk
-        bestScore = polishedScore
-        improved = true
-      }
+  // Stage 2 shortlist: Top-K (0°) + mandatory area_desc → full cascade each.
+  // Medium/coarse never drop area_desc; final pick is packed bounds vs Stage 1.
+  if (freeMode && !abortable.aborted) {
+    type Short = { name: string; gene: Individual }
+    const shortlist: Short[] = []
+    const seenOrder = new Set<string>()
+    const pushShort = (name: string, gene: Individual) => {
+      const k = gene.order.join(',')
+      if (seenOrder.has(k)) return
+      seenOrder.add(k)
+      shortlist.push({ name, gene })
     }
+    for (const trial of orderTrials.slice(0, ORDER_POLISH_TOP_K)) {
+      pushShort(trial.name, trial.gene)
+    }
+    const areaTrial = orderTrials.find((t) => t.name === 'area_desc')
+    if (areaTrial) pushShort(areaTrial.name, areaTrial.gene)
+
+    type FullTrial = {
+      name: string
+      gene: Individual
+      result: NestingSuccess
+    }
+    const fullTrials: FullTrial[] = []
+    for (let pi = 0; pi < shortlist.length; pi++) {
+      if (abortable.aborted) break
+      const item = shortlist[pi]!
+      emit(
+        {
+          ...progressBase(),
+          ratio: 0.88 + (0.1 * (pi + 1)) / Math.max(1, shortlist.length),
+          phase: 'finalize',
+          message: `Stage2 full cascade · ${item.name} · ${pi + 1}/${shortlist.length}`,
+          bestSoFar: bestResult,
+        },
+        true,
+      )
+      // area_desc full already computed as Stage 1 baseline — reuse, don't double-pay.
+      if (item.name === 'area_desc') {
+        fullTrials.push({
+          name: item.name,
+          gene: baselineGene,
+          result: baselineCandidate,
+        })
+        continue
+      }
+      const placed = placeWithOrder(request, item.gene.order, {
+        signal: options.signal,
+        freeAngleDepth: 'full',
+        engineId: 'blf-order-full-v1',
+      })
+      const ok = asSuccess(placed)
+      if (!ok) continue
+      const rotById = new Map(ok.placements.map((p) => [p.partId, p.rotation]))
+      const order = [
+        ...ok.placements.map((p) => p.partId),
+        ...item.gene.order.filter((id) => !rotById.has(id)),
+      ]
+      const gene: Individual = {
+        order,
+        rotations: order.map((id) => rotById.get(id) ?? 0),
+      }
+      fullTrials.push({ name: item.name, gene, result: ok })
+    }
+
+    let champ: FullTrial | null = null
+    for (const t of fullTrials) {
+      if (!champ || isBetterPackedBounds(t.result, champ.result)) champ = t
+    }
+    if (champ) {
+      stage2Champion = champ.result
+      stage2ChampionName = champ.name
+      bestGene = champ.gene
+    }
+  }
+
+  // Free mode: packed-bounds pick; Stage 1 floor never lost.
+  if (freeMode) {
+    type Finalist = { name: string; result: NestingSuccess }
+    const finalists: Finalist[] = [
+      { name: 'stage1_full', result: baselineCandidate },
+      { name: 'area_desc_full', result: areaDescFullCandidate },
+    ]
+    if (stage2Champion) {
+      finalists.push({
+        name: `stage2:${stage2ChampionName}`,
+        result: stage2Champion,
+      })
+    }
+    let winner = finalists[0]!
+    for (const c of finalists.slice(1)) {
+      if (isBetterPackedBounds(c.result, winner.result)) winner = c
+    }
+    // Regression guard: never finish worse than Stage 1 baseline.
+    if (isBetterPackedBounds(baselineCandidate, winner.result)) {
+      winner = { name: 'stage1_full', result: baselineCandidate }
+    }
+    bestResult = winner.result
+    bestScore = scoreNestingResult(bestResult)
+    improved = isBetterPackedBounds(bestResult, baselineCandidate)
+    if (!improved) bestGene = baselineGene
   }
 
   emit(

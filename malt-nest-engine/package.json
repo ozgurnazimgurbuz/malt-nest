@@ -1,0 +1,29 @@
+{
+  "name": "malt-nest-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone 2D irregular nesting engine (ETAP 1: Geometry Core only)",
+  "exports": {
+    ".": "./src/index.ts",
+    "./geometry": "./src/geometry/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint src tests"
+  },
+  "dependencies": {
+    "clipper2-ts": "^2.0.1-18",
+    "happy-dom": "^20.11.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.10",
+    "oxlint": "^1.75.0",
+    "typescript": "~6.0.2",
+    "vitest": "^4.1.10"
+  }
+}

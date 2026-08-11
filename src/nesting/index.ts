@@ -5,7 +5,11 @@ export {
 } from './engine'
 export type { NestingEngine, NestingRunOptions } from './engine'
 export { nest, nestAsync } from './nest'
-export { placeWithPlan, runBottomLeftNest } from './placement/blf'
+export {
+  placeWithOrder,
+  placeWithPlan,
+  runBottomLeftNest,
+} from './placement/blf'
 export { applyPlacement, placementBounds } from './placement/worldGeometry'
 export { compareBlfVsEvolutionary } from './optimization/benchmark'
 export { runEvolutionaryNest } from './optimization/geneticOptimizer'

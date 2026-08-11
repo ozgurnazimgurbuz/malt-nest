@@ -21,8 +21,8 @@ export const DEFAULT_SCORE_WEIGHTS: ScoreWeights = {
   sheet: 1_000_000,
   /** Prefer less unused area on used sheets. */
   waste: 1.5,
-  /** Prefer tighter used bounding box — must not overpower waste/sheets. */
-  compactness: 0.15,
+  /** Prefer tighter used bounding box (real pack bounds) — critical when sheet count ties. */
+  compactness: 0.35,
   cut: 0,
   /** Hard fail: unplaced parts dominate. */
   unplaced: 10_000_000,

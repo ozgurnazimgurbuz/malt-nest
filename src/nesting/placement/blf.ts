@@ -20,6 +20,7 @@ import {
   type PreparedVariant,
 } from '../core/prepare'
 import {
+  BALANCED_ANGLES,
   freeAngleCascadeStages,
   usesFreeAngleCascade,
 } from '../optimization/rotations'
@@ -48,6 +49,8 @@ import {
   type PackBias,
 } from './packBias'
 
+export type FreeAngleDepth = 'quick' | 'coarse' | 'medium' | 'full' | 'seed'
+
 export type BlfOptions = {
   onProgress?: (p: NestProgress) => void
   signal?: AbortSignal
@@ -56,8 +59,19 @@ export type BlfOptions = {
   /** Stage 10B: enable BLF profiler (console report). */
   profile?: boolean
   /**
-   * When free-angle mode is on, refine each plan gene with ±15°/5° then ±5°/1°.
-   * Off during GA evaluations (uses coarse gene angles only); enable for a final polish.
+   * Free-angle search depth when rotationMode=free:
+   * - quick: 45° grid (order ranking)
+   * - coarse: 15° grid
+   * - medium: coarse → top-3 refine @5° (no 1° final; profiling / cheap proxy)
+   * - full: coarse → refine 5° → final 1°
+   * - seed: refine around a gene angle (final polish)
+   * Default for free mode: coarse (avoid 1° on every eval).
+   * Production Stage 1 uses 'full'; Stage 2 uses 'coarse'/'seed'. 'medium' is opt-in.
+   */
+  freeAngleDepth?: FreeAngleDepth
+  /**
+   * Alias for freeAngleDepth='seed' on plan placements.
+   * Off during GA evaluations; enable for final polish of top candidates.
    */
   polishFreeAngles?: boolean
 }
@@ -250,8 +264,7 @@ function evaluateAngles(
 
 /**
  * Pick rotation + translation for a part.
- * Free cascade: coarse 15° → refine ±15@5° → final ±5@1° using real NFP placement.
- * Optional seedRotation: refine around gene angle (evolutionary path).
+ * Free cascade depths: coarse (15°) / full (→5°→1°) / seed (refine around gene).
  */
 function pickBestVariant(
   part: PreparedPart,
@@ -260,7 +273,11 @@ function pickBestVariant(
   allowPartInPart: boolean,
   signal: AbortSignal | undefined,
   packBias: PackBias | undefined,
-  opts: { freeCascade: boolean; seedRotation?: number },
+  opts: {
+    freeCascade: boolean
+    depth: FreeAngleDepth
+    seedRotation?: number
+  },
 ): PlaceCand | null {
   const bias = resolvePackBias(packBias)
 
@@ -284,7 +301,7 @@ function pickBestVariant(
   const topK = 3
 
   let ok: PlaceCand[]
-  if (opts.seedRotation != null) {
+  if (opts.depth === 'seed' && opts.seedRotation != null) {
     ok = evaluateAngles(
       part,
       stages.refine([opts.seedRotation]),
@@ -308,7 +325,9 @@ function pickBestVariant(
     if (!ok.length) {
       ok = evaluateAngles(
         part,
-        stages.coarse.length > 1 ? stages.coarse : freeAngleCascadeStages().coarse,
+        stages.coarse.length > 1
+          ? stages.coarse
+          : freeAngleCascadeStages().coarse,
         sheet,
         spacingMm,
         allowPartInPart,
@@ -317,16 +336,21 @@ function pickBestVariant(
       )
     }
   } else {
+    const grid =
+      opts.depth === 'quick' ? [...BALANCED_ANGLES] : stages.coarse
     ok = evaluateAngles(
       part,
-      stages.coarse,
+      grid,
       sheet,
       spacingMm,
       allowPartInPart,
       signal,
       bias,
     )
-    if (ok.length) {
+    if (
+      (opts.depth === 'full' || opts.depth === 'medium') &&
+      ok.length
+    ) {
       const centers = ok.slice(0, topK).map((c) => c.variant.rotation)
       const refined = evaluateAngles(
         part,
@@ -342,6 +366,15 @@ function pickBestVariant(
   }
 
   if (!ok.length) return null
+
+  // medium stops after 5° refine — experiment proxy for full without 1° cost.
+  if (
+    opts.depth === 'coarse' ||
+    opts.depth === 'quick' ||
+    opts.depth === 'medium'
+  ) {
+    return ok[0]!
+  }
 
   const finals = evaluateAngles(
     part,
@@ -389,7 +422,11 @@ function placeSequence(
     dayamaY: request.settings.dayamaY,
   })
   const freeCascade = usesFreeAngleCascade(request.settings)
-  const polishFree = freeCascade && options.polishFreeAngles === true
+  const freeDepth: FreeAngleDepth = !freeCascade
+    ? 'coarse'
+    : options.polishFreeAngles
+      ? 'seed'
+      : (options.freeAngleDepth ?? 'coarse')
   const signal = options.signal
   const level = request.settings.optimizationLevel
   const partCount = sequence.length
@@ -464,7 +501,8 @@ function placeSequence(
     ): { variant: PreparedVariant; x: number; y: number } | null => {
       sheetsTried += 1
       if (variant === 'best') {
-        // Full coarse → refine → final on real NFP placements.
+        const depthForBest =
+          freeDepth === 'seed' ? 'coarse' : freeDepth
         return pickBestVariant(
           part,
           sheet,
@@ -472,11 +510,10 @@ function placeSequence(
           allowPartInPart,
           signal,
           packBias,
-          { freeCascade },
+          { freeCascade, depth: depthForBest },
         )
       }
-      if (polishFree) {
-        // Final polish around GA/BLF gene (not used on every evolutionary eval).
+      if (freeCascade && freeDepth === 'seed') {
         return pickBestVariant(
           part,
           sheet,
@@ -484,7 +521,11 @@ function placeSequence(
           allowPartInPart,
           signal,
           packBias,
-          { freeCascade: true, seedRotation: variant.rotation },
+          {
+            freeCascade: true,
+            depth: 'seed',
+            seedRotation: variant.rotation,
+          },
         )
       }
       const pos = tryPlaceOnSheet(
@@ -613,6 +654,40 @@ export function runBottomLeftNest(
     endBlfProfiling()
   }
   return result
+}
+
+/**
+ * Place parts in a fixed order, picking the best rotation per part (cheap/full/seed
+ * via options.freeAngleDepth). Used for multi-order search.
+ */
+export function placeWithOrder(
+  request: NestingRequest,
+  order: string[],
+  options: BlfOptions = {},
+): NestingResult {
+  const t0 = performance.now()
+  const prepared = prepareParts(request.parts, request.settings, {
+    sortByArea: false,
+  })
+  const byId = new Map(prepared.map((p) => [p.partId, p]))
+  const sequence: Array<{ part: PreparedPart; variant: 'best' }> = []
+  const seen = new Set<string>()
+  for (const id of order) {
+    const part = byId.get(id)
+    if (!part || seen.has(id)) continue
+    seen.add(id)
+    sequence.push({ part, variant: 'best' })
+  }
+  for (const part of prepared) {
+    if (seen.has(part.partId)) continue
+    sequence.push({ part, variant: 'best' })
+  }
+  return placeSequence(
+    request,
+    sequence,
+    { ...options, engineId: options.engineId ?? 'blf-order-v1' },
+    t0,
+  )
 }
 
 /**
