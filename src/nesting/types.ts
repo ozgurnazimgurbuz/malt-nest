@@ -179,5 +179,7 @@ export type NestProgress = {
   optimizationLevel?: OptimizationLevel
   /** Latest valid best (for STOP / hard-terminate fallback). */
   bestSoFar?: NestingSuccess
+  /** Identifies progress snapshots from the traced canonical placement pass. */
+  attemptPass?: 'canonical-blf'
   jobId?: string
 }

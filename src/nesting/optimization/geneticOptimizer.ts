@@ -13,6 +13,7 @@ import {
   type ScoreBreakdown,
 } from '../scoring/fitness'
 import type {
+  NestAttempt,
   NestingRequest,
   NestingResult,
   NestingSuccess,
@@ -35,6 +36,8 @@ import { elitistSurvive, tournamentSelect, type RankedIndividual } from './selec
 
 export type EvolutionaryOptions = {
   onProgress?: (p: NestProgress) => void
+  onAttempt?: (attempt: NestAttempt) => void
+  onAttemptFlush?: () => void
   signal?: AbortSignal
   seed?: number
   timeLimitMs?: number
@@ -168,21 +171,27 @@ export function runEvolutionaryNest(
   // Free mode must never drop this quality floor; Stage 2 is additive only.
   const baselineRaw = runBottomLeftNest(request, {
     signal: options.signal,
+    onAttempt: options.onAttempt,
+    onAttemptFlush: options.onAttemptFlush,
     ...(freeMode ? { freeAngleDepth: 'full' as const } : {}),
     ...(options.onProgress
       ? {
           onProgress: (p: NestProgress) => {
-            emit({
-              ...progressBase(),
-              ...p,
-              ratio: 0.02 + (p.ratio ?? 0) * 0.08,
-              optimizationLevel: level,
-              message:
-                p.message ??
-                (freeMode
-                  ? `Stage1 full cascade · ${level}`
-                  : `BLF · ${level}`),
-            })
+            emit(
+              {
+                ...progressBase(),
+                ...p,
+                ratio: 0.02 + (p.ratio ?? 0) * 0.08,
+                optimizationLevel: level,
+                attemptPass: 'canonical-blf',
+                message:
+                  p.message ??
+                  (freeMode
+                    ? `Stage1 full cascade · ${level}`
+                    : `BLF · ${level}`),
+              },
+              options.onAttempt != null && p.bestSoFar != null,
+            )
           },
         }
       : {}),

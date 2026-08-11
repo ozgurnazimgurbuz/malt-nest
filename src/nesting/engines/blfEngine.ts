@@ -12,6 +12,18 @@ export class BlfNestingEngine implements NestingEngine {
   ): Promise<NestingResult> {
     return runBottomLeftNest(request, {
       onProgress: options?.onProgress,
+      onAttempt: options?.onAttempts
+        ? (attempt) => {
+            try {
+              options.onAttempts?.({
+                attempts: [attempt],
+                jobId: options.jobId,
+              })
+            } catch {
+              // Observation only.
+            }
+          }
+        : undefined,
       signal: options?.signal,
     })
   }

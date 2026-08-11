@@ -2,13 +2,20 @@ import { describe, expect, it } from 'vitest'
 import type { GeometryPart } from '../../geometry'
 import { boundingBox } from '../../geometry'
 import { runBottomLeftNest } from '../placement/blf'
+import { blfNestingEngine } from '../engines/blfEngine'
 import {
   compareNestingResults,
   isBetterNestingResult,
   scoreNestingResult,
   isBetterScore,
 } from '../scoring/fitness'
-import type { NestingRequest, NestingSettings } from '../types'
+import type {
+  NestAttempt,
+  NestAttemptBatch,
+  NestingRequest,
+  NestingSettings,
+  NestingSuccess,
+} from '../types'
 import { orderCrossover } from './crossover'
 import { runEvolutionaryNest } from './geneticOptimizer'
 import {
@@ -258,6 +265,53 @@ describe('evolutionary optimizer primitives', () => {
     const sb = scoreNestingResult(baseline)
     const se = scoreNestingResult(evolved)
     expect(se.total).toBeLessThanOrEqual(sb.total + 1e-6)
+  })
+
+  it('traces only the Stage-1 canonical BLF pass', () => {
+    const request = req(
+      [
+        rect('a', 0, 30, 20),
+        rect('b', 1, 25, 25),
+        rect('c', 2, 15, 40),
+      ],
+      { deterministic: true, timeLimitMs: 60_000 },
+    )
+    const baseline: NestAttempt[] = []
+    const evolved: NestAttempt[] = []
+    const canonicalSnapshots: NestingSuccess[] = []
+
+    runBottomLeftNest(request, {
+      onAttempt: (attempt) => baseline.push(attempt),
+    })
+    runEvolutionaryNest(request, {
+      deterministic: true,
+      maxGenerations: 1,
+      onAttempt: (attempt) => evolved.push(attempt),
+      onProgress: (progress) => {
+        if (progress.attemptPass === 'canonical-blf' && progress.bestSoFar) {
+          canonicalSnapshots.push(progress.bestSoFar)
+        }
+      },
+    })
+
+    expect(evolved).toEqual(baseline)
+    expect(canonicalSnapshots.length).toBeGreaterThan(0)
+  })
+
+  it('adapts direct-engine attempts into job-scoped batches', async () => {
+    const batches: NestAttemptBatch[] = []
+    const result = await blfNestingEngine.nest(
+      req([rect('a', 0, 10, 10)]),
+      {
+        jobId: 'job-1',
+        onAttempts: (batch) => batches.push(batch),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect(batches.length).toBeGreaterThan(0)
+    expect(batches.every((batch) => batch.jobId === 'job-1')).toBe(true)
+    expect(batches.every((batch) => batch.attempts.length === 1)).toBe(true)
   })
 
   it('16. optimizer can improve a known simple case', () => {

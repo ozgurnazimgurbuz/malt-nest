@@ -11,6 +11,18 @@ export class EvolutionaryNestingEngine implements NestingEngine {
   ): Promise<NestingResult> {
     return runEvolutionaryNest(request, {
       onProgress: options?.onProgress,
+      onAttempt: options?.onAttempts
+        ? (attempt) => {
+            try {
+              options.onAttempts?.({
+                attempts: [attempt],
+                jobId: options.jobId,
+              })
+            } catch {
+              // Observation only.
+            }
+          }
+        : undefined,
       signal: options?.signal,
       seed: request.settings.seed,
       timeLimitMs: request.settings.timeLimitMs,
