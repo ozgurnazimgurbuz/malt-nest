@@ -72,6 +72,14 @@ export class WorkerNestingEngine implements NestingEngine {
       worker.onmessage = (ev: MessageEvent<WorkerOutMessage>) => {
         const msg = ev.data
         if (msg.requestId !== requestId) return
+        if (msg.type === 'attempts') {
+          try {
+            options?.onAttempts?.({ attempts: msg.attempts, jobId: requestId })
+          } catch {
+            // UI telemetry is observation-only.
+          }
+          return
+        }
         if (msg.type === 'progress') {
           const candidate = msg.progress.bestSoFar
           if (
@@ -113,7 +121,12 @@ export class WorkerNestingEngine implements NestingEngine {
         }
       }
 
-      const start: WorkerInMessage = { type: 'nest', requestId, request }
+      const start: WorkerInMessage = {
+        type: 'nest',
+        requestId,
+        request,
+        traceAttempts: options?.onAttempts != null,
+      }
       try {
         worker.postMessage(start)
       } catch (error) {

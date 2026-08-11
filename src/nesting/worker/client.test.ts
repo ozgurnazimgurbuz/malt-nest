@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { NestingRequest, NestingSuccess } from '../types'
+import type {
+  NestAttempt,
+  NestAttemptBatch,
+  NestingRequest,
+  NestingSuccess,
+} from '../types'
 
 const evolutionaryNest = vi.hoisted(() => vi.fn())
 
@@ -42,6 +47,16 @@ const fallbackResult: NestingSuccess = {
   engineId: 'fallback',
 }
 
+const attempt = (sequence: number): NestAttempt => ({
+  sequence,
+  partId: `part-${sequence}`,
+  sheetIndex: 0,
+  x: sequence,
+  y: 0,
+  rotation: 0,
+  verdict: 'rejected',
+})
+
 class FakeWorker {
   static mode: 'idle' | 'error' | 'throw' = 'idle'
   static latest: FakeWorker | null = null
@@ -80,6 +95,93 @@ afterEach(() => {
 })
 
 describe('WorkerNestingEngine', () => {
+  it('opts into tracing and forwards only matching attempt batches', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const received: NestAttemptBatch[] = []
+    const pending = new WorkerNestingEngine().nest(request, {
+      jobId: 'job-1',
+      onAttempts: (batch) => received.push(batch),
+    })
+
+    expect(FakeWorker.latest?.messages[0]).toMatchObject({
+      traceAttempts: true,
+    })
+    FakeWorker.latest?.onmessage?.({
+      data: {
+        type: 'attempts',
+        requestId: 'other',
+        attempts: [attempt(0)],
+      },
+    } as MessageEvent)
+    FakeWorker.latest?.onmessage?.({
+      data: {
+        type: 'attempts',
+        requestId: 'job-1',
+        attempts: [attempt(1)],
+      },
+    } as MessageEvent)
+    FakeWorker.latest?.onmessage?.({
+      data: {
+        type: 'completed',
+        requestId: 'job-1',
+        result: fallbackResult,
+      },
+    } as MessageEvent)
+
+    await pending
+    expect(received).toEqual([
+      { attempts: [attempt(1)], jobId: 'job-1' },
+    ])
+  })
+
+  it('keeps tracing disabled when no attempt listener is present', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const pending = new WorkerNestingEngine().nest(request, { jobId: 'job-1' })
+
+    expect(FakeWorker.latest?.messages[0]).toMatchObject({
+      traceAttempts: false,
+    })
+    FakeWorker.latest?.onmessage?.({
+      data: {
+        type: 'completed',
+        requestId: 'job-1',
+        result: fallbackResult,
+      },
+    } as MessageEvent)
+
+    await expect(pending).resolves.toBe(fallbackResult)
+  })
+
+  it('isolates attempt-listener failures from worker completion', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    let calls = 0
+    const pending = new WorkerNestingEngine().nest(request, {
+      jobId: 'job-1',
+      onAttempts: () => {
+        calls += 1
+        throw new Error('render failed')
+      },
+    })
+
+    FakeWorker.latest?.onmessage?.({
+      data: {
+        type: 'attempts',
+        requestId: 'job-1',
+        attempts: [attempt(0)],
+      },
+    } as MessageEvent)
+    FakeWorker.latest?.onmessage?.({
+      data: {
+        type: 'completed',
+        requestId: 'job-1',
+        result: fallbackResult,
+      },
+    } as MessageEvent)
+
+    await expect(pending).resolves.toBe(fallbackResult)
+    expect(calls).toBe(1)
+  })
+
   it('uses the evolutionary engine outside a browser when Worker is unavailable', async () => {
     vi.stubGlobal('Worker', undefined)
     vi.stubGlobal('window', undefined)
