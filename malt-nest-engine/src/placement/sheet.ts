@@ -11,6 +11,9 @@ export function createSheet(
   height: number,
   margin = 0,
 ): Sheet {
+  if (![width, height, margin].every(Number.isFinite)) {
+    throw new Error('Sheet width, height, and margin must be finite')
+  }
   if (!(width > 0) || !(height > 0)) {
     throw new Error('Sheet width/height must be positive')
   }

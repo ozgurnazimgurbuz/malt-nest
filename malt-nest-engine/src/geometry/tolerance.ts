@@ -26,6 +26,14 @@ export const DEFAULT_TOLERANCE: GeometryTolerance = {
   clipperScale: 1000,
 }
 
+/** Clipper2's double API supports decimal precision in the range [-8, 8]. */
+export function clipperPrecision(
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): number {
+  const decimals = Math.round(Math.log10(tol.clipperScale))
+  return Math.max(-8, Math.min(8, decimals))
+}
+
 export function nearlyEqual(
   a: number,
   b: number,

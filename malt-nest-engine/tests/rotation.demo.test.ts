@@ -39,8 +39,7 @@ function report(label: string, r: ReturnType<typeof nest>) {
 }
 
 describe('Demo.svg orthogonal vs free-angle', () => {
-  it('compares baseline orthogonal and free cascade', () => {
-    if (!existsSync(DEMO)) return
+  it.skipIf(!existsSync(DEMO))('compares baseline orthogonal and free cascade', () => {
     const { shapes } = parseSvg(readFileSync(DEMO, 'utf8'))
     expect(shapes.length).toBe(16)
     const sheet = createSheet(1600, 1000, 10)

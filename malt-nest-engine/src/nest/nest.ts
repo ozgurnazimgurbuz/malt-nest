@@ -1,9 +1,13 @@
 import { isValidShape } from '../geometry'
 import type { Shape } from '../geometry/types'
-import { DEFAULT_TOLERANCE } from '../geometry/tolerance'
-import { DEFAULT_ORDERING, sortParts } from '../ordering'
-import type { Placement, Sheet } from '../placement'
 import {
+  DEFAULT_TOLERANCE,
+  type GeometryTolerance,
+} from '../geometry/tolerance'
+import { DEFAULT_ORDERING, sortParts } from '../ordering'
+import { createSheet, type Placement, type Sheet } from '../placement'
+import {
+  anglesForPolicy,
   DEFAULT_ROTATION,
   resolveFreeConfig,
   type RotationPolicy,
@@ -38,6 +42,7 @@ export function nest(
   config: NestConfig,
 ): NestResult {
   const rotation = config.rotation ?? DEFAULT_ROTATION
+  validateNestInput(parts, sheet, config, rotation)
 
   if (rotation.kind === 'free') {
     const freeCfg = resolveFreeConfig(rotation.free)
@@ -53,7 +58,7 @@ export function nest(
         ...config,
         rotation: { kind: 'orthogonal' },
       })
-      return preferBaselineFloor(freeResult, orthoResult)
+      return preferBaselineFloor(freeResult, orthoResult, rotation)
     }
   }
 
@@ -68,9 +73,9 @@ function nestOnce(
   const t0 = performance.now()
   const ordering = config.ordering ?? DEFAULT_ORDERING
   const rotation = config.rotation ?? DEFAULT_ROTATION
-  const gap = Math.max(0, config.gap)
+  const gap = config.gap
   const tol = config.tolerance ?? DEFAULT_TOLERANCE
-  const maxSheets = Math.max(1, config.maxSheets ?? Math.max(1, parts.length))
+  const maxSheets = config.maxSheets ?? Math.max(1, parts.length)
   const debug = config.debug === true
 
   const ordered = sortParts(parts, ordering)
@@ -78,9 +83,8 @@ function nestOnce(
   const nfpCache = createNfpCache<NfpResult>()
   const container = sheetContainerShape(sheet)
 
-  const sheetStates: { sheet: Sheet; placements: NestPlacement[] }[] = [
-    { sheet, placements: [] },
-  ]
+  const sheetStates: { sheet: Sheet; placements: NestPlacement[] }[] =
+    parts.length > 0 ? [{ sheet, placements: [] }] : []
   const unplaced: UnplacedPart[] = []
   const partDiags: NestPartDiag[] = []
 
@@ -110,6 +114,7 @@ function nestOnce(
         state.sheet,
         state.placements,
         gap,
+        tol,
         counters,
         nfpCache,
         container,
@@ -147,6 +152,7 @@ function nestOnce(
         state.sheet,
         state.placements,
         gap,
+        tol,
         counters,
         nfpCache,
         container,
@@ -184,7 +190,7 @@ function nestOnce(
   }
 
   while (
-    sheetStates.length > 1 &&
+    sheetStates.length > 0 &&
     sheetStates[sheetStates.length - 1]!.placements.length === 0
   ) {
     sheetStates.pop()
@@ -224,7 +230,11 @@ function nestOnce(
  * Prefer free if not worse than orthogonal.
  * Order: placed↓, sheets↑, packedBounds↑. Tie → free (requested policy).
  */
-function preferBaselineFloor(free: NestResult, ortho: NestResult): NestResult {
+function preferBaselineFloor(
+  free: NestResult,
+  ortho: NestResult,
+  requestedRotation: RotationPolicy,
+): NestResult {
   const cmp = compareNestQuality(free, ortho)
   if (cmp < 0) {
     // free worse → keep orthogonal, annotate
@@ -232,22 +242,26 @@ function preferBaselineFloor(free: NestResult, ortho: NestResult): NestResult {
       ...ortho,
       diagnostics: {
         ...ortho.diagnostics,
+        ...sumAttemptCounters(free, ortho),
         baselineFloorApplied: true,
         baselineFloorKept: 'orthogonal',
         freeAngleAttempt: summarize(free),
       },
       runtimeMs: free.runtimeMs + ortho.runtimeMs,
+      config: { ...ortho.config, rotation: requestedRotation },
     }
   }
   return {
     ...free,
     diagnostics: {
       ...free.diagnostics,
+      ...sumAttemptCounters(free, ortho),
       baselineFloorApplied: true,
       baselineFloorKept: 'free',
       orthogonalAttempt: summarize(ortho),
     },
     runtimeMs: free.runtimeMs + ortho.runtimeMs,
+    config: { ...free.config, rotation: requestedRotation },
   }
 }
 
@@ -274,15 +288,110 @@ function summarize(r: NestResult) {
   }
 }
 
+function sumAttemptCounters(
+  free: NestResult,
+  ortho: NestResult,
+): Pick<
+  NestDiagnostics,
+  | 'nfpComputeCount'
+  | 'validationCount'
+  | 'candidateCount'
+  | 'rejectedCandidates'
+  | 'anglesEvaluated'
+  | 'cacheHits'
+  | 'cacheMisses'
+> {
+  return {
+    nfpComputeCount:
+      free.diagnostics.nfpComputeCount + ortho.diagnostics.nfpComputeCount,
+    validationCount:
+      free.diagnostics.validationCount + ortho.diagnostics.validationCount,
+    candidateCount:
+      free.diagnostics.candidateCount + ortho.diagnostics.candidateCount,
+    rejectedCandidates:
+      free.diagnostics.rejectedCandidates +
+      ortho.diagnostics.rejectedCandidates,
+    anglesEvaluated:
+      (free.diagnostics.anglesEvaluated ?? 0) +
+      (ortho.diagnostics.anglesEvaluated ?? 0),
+    cacheHits:
+      (free.diagnostics.cacheHits ?? 0) + (ortho.diagnostics.cacheHits ?? 0),
+    cacheMisses:
+      (free.diagnostics.cacheMisses ?? 0) +
+      (ortho.diagnostics.cacheMisses ?? 0),
+  }
+}
+
 function makeCtx(
   sheet: Sheet,
   placed: readonly Placement[],
   gap: number,
+  tolerance: GeometryTolerance,
   counters: ReturnType<typeof createPlaceCounters>,
   nfpCache: ReturnType<typeof createNfpCache<NfpResult>>,
   sheetContainer: Shape,
 ): PlaceContext {
-  return { sheet, placed, gap, counters, nfpCache, sheetContainer }
+  return {
+    sheet,
+    placed,
+    gap,
+    tolerance,
+    counters,
+    nfpCache,
+    sheetContainer,
+  }
+}
+
+function validateNestInput(
+  parts: readonly Shape[],
+  sheet: Sheet,
+  config: NestConfig,
+  rotation: RotationPolicy,
+): void {
+  createSheet(sheet.width, sheet.height, sheet.margin)
+  if (!Number.isFinite(config.gap) || config.gap < 0) {
+    throw new Error('NestConfig gap must be finite and nonnegative')
+  }
+  if (
+    config.maxSheets !== undefined &&
+    (!Number.isSafeInteger(config.maxSheets) || config.maxSheets <= 0)
+  ) {
+    throw new Error('NestConfig maxSheets must be a positive safe integer')
+  }
+
+  const ids = new Set<string>()
+  for (const part of parts) {
+    const id = part.id.trim()
+    if (!id) throw new Error('Shape id must not be empty')
+    if (ids.has(id)) throw new Error(`Duplicate shape id: "${part.id}"`)
+    ids.add(id)
+  }
+
+  validateTolerance(config.tolerance ?? DEFAULT_TOLERANCE)
+  if (rotation.kind === 'free') resolveFreeConfig(rotation.free)
+  else anglesForPolicy(rotation)
+}
+
+function validateTolerance(tolerance: GeometryTolerance): void {
+  const nonnegative = [
+    tolerance.abs,
+    tolerance.rel,
+    tolerance.edgeMinLen2,
+  ]
+  if (nonnegative.some((value) => !Number.isFinite(value) || value < 0)) {
+    throw new Error('NestConfig tolerance values must be finite and nonnegative')
+  }
+  if (
+    !Number.isFinite(tolerance.curveTolerance) ||
+    tolerance.curveTolerance <= 0 ||
+    !Number.isFinite(tolerance.clipperScale) ||
+    tolerance.clipperScale < 1e-8 ||
+    tolerance.clipperScale > 1e8
+  ) {
+    throw new Error(
+      'NestConfig tolerance curveTolerance must be positive and clipperScale must be within Clipper2 range [1e-8, 1e8]',
+    )
+  }
 }
 
 export type { RotationPolicy }

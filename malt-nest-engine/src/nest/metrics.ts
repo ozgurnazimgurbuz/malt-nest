@@ -30,7 +30,7 @@ export function computeNestMetrics(
     usedPartArea,
     sheetArea,
     utilization,
-    waste: 1 - utilization,
+    waste: sheetArea > 0 ? 1 - utilization : 0,
     packedBoundsMm2,
     sheetPackedBounds,
   }

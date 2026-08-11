@@ -35,7 +35,10 @@ export function perimeter(ring: Ring): number {
 }
 
 /** Area-weighted centroid of a simple ring (no holes). */
-export function ringCentroid(ring: Ring): Point | null {
+export function ringCentroid(
+  ring: Ring,
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): Point | null {
   if (ring.length < 3) return null
   let a = 0
   let cx = 0
@@ -49,7 +52,7 @@ export function ringCentroid(ring: Ring): Point | null {
     cy += (p0.y + p1.y) * cross
   }
   a *= 0.5
-  if (nearlyZero(a)) return null
+  if (nearlyZero(a, tol)) return null
   return { x: cx / (6 * a), y: cy / (6 * a) }
 }
 

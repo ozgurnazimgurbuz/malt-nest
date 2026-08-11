@@ -58,10 +58,8 @@ export function optimizeMultiStart(
   }
 
   const fastRanks = rankEvals(fastCandidates)
-  const bestFast = [...fastCandidates].sort(compareOrderingEvals)[0]!
-
-  // —— FULL shortlist (unique, area_desc always retained) ——
-  const shortlist = buildFullShortlist(bestFast.strategy)
+  // —— FULL: every configured strategy (unique, area_desc retained) ——
+  const shortlist = buildFullShortlist(strategies)
   const fullCandidates: OrderingEval[] = []
   for (const strategy of shortlist) {
     fullCandidates.push(
@@ -71,7 +69,11 @@ export function optimizeMultiStart(
 
   const fullRanks = rankEvals(fullCandidates)
   const baseline = fullCandidates.find((e) => e.strategy === BASELINE)!
-  const best = [...fullCandidates].sort(compareOrderingEvals)[0]!
+  // FULL is a richer search, but it can still make a locally worse choice.
+  // Keep FAST candidates eligible so the reported best never regresses.
+  const best = [...fastCandidates, ...fullCandidates].sort(
+    compareOrderingEvals,
+  )[0]!
 
   // Invariant: best ≥ baseline (area_desc always in FULL)
   const baselinePreserved = isBetterOrEqualEval(best, baseline)
@@ -123,19 +125,14 @@ export function optimizeMultiStart(
 }
 
 /**
- * Minimum FULL set: area_desc, best FAST, bbox_area_desc, complexity_desc.
- * Deduped, stable order for determinism.
+ * FULL set: all configured strategies, with area_desc retained as baseline.
+ * A single strategy remains accepted for backward-compatible direct callers.
  */
 export function buildFullShortlist(
-  bestFastStrategy: OrderingStrategy,
+  configured: OrderingStrategy | readonly OrderingStrategy[],
 ): OrderingStrategy[] {
-  const preferred: OrderingStrategy[] = [
-    BASELINE,
-    bestFastStrategy,
-    'bbox_area_desc',
-    'complexity_desc',
-  ]
-  return dedupeStrategies(preferred)
+  const strategies = typeof configured === 'string' ? [configured] : configured
+  return dedupeStrategies([BASELINE, ...strategies])
 }
 
 export function dedupeStrategies(

@@ -1,8 +1,13 @@
 import { Clipper, FillRule } from 'clipper2-ts'
 import { makeShape, shapeBounds } from '../geometry'
-import type { Point, Ring, Shape } from '../geometry/types'
+import type { Point, Shape } from '../geometry/types'
+import {
+  clipperPrecision,
+  DEFAULT_TOLERANCE,
+  type GeometryTolerance,
+} from '../geometry/tolerance'
 import type { NfpRegion, NfpResult } from '../nfp'
-import { fromPathD, toPathsD } from '../nfp/solid'
+import { pathsToRegions, toPathsD } from '../nfp/solid'
 import type { Sheet } from '../placement'
 import { usableRegion } from '../placement'
 
@@ -24,6 +29,7 @@ export function sheetContainerShape(sheet: Sheet): Shape {
 export function sheetAabbFitCandidates(
   orbitingAtOrigin: Shape,
   sheet: Sheet,
+  tolerance: GeometryTolerance = DEFAULT_TOLERANCE,
 ): Point[] {
   const b = shapeBounds(orbitingAtOrigin)
   if (!b) return []
@@ -32,7 +38,7 @@ export function sheetAabbFitCandidates(
   const maxX = u.maxX - b.maxX
   const minY = u.minY - b.minY
   const maxY = u.maxY - b.maxY
-  if (maxX < minX - 1e-9 || maxY < minY - 1e-9) return []
+  if (maxX < minX - tolerance.abs || maxY < minY - tolerance.abs) return []
   const pts: Point[] = [
     { x: minX, y: minY },
     { x: maxX, y: minY },
@@ -49,17 +55,26 @@ export function sheetAabbFitCandidates(
 /** Clipper solid paths for an NFP region (outer − holes). */
 export function regionSolidPaths(
   region: NfpRegion,
+  tolerance: GeometryTolerance = DEFAULT_TOLERANCE,
 ): { x: number; y: number }[][] {
   let paths = toPathsD(region.outer)
   for (const h of region.holes) {
-    paths = Clipper.differenceD(paths, toPathsD(h), FillRule.NonZero)
+    paths = Clipper.differenceD(
+      paths,
+      toPathsD(h),
+      FillRule.NonZero,
+      clipperPrecision(tolerance),
+    )
   }
   return paths
 }
 
-export function nfpSolidPaths(nfp: NfpResult): { x: number; y: number }[][] {
+export function nfpSolidPaths(
+  nfp: NfpResult,
+  tolerance: GeometryTolerance = DEFAULT_TOLERANCE,
+): { x: number; y: number }[][] {
   const out: { x: number; y: number }[][] = []
-  for (const r of nfp.regions) out.push(...regionSolidPaths(r))
+  for (const r of nfp.regions) out.push(...regionSolidPaths(r, tolerance))
   return out
 }
 
@@ -70,41 +85,24 @@ export function nfpSolidPaths(nfp: NfpResult): { x: number; y: number }[][] {
 export function computeFreeRegions(
   ifp: NfpResult,
   forbidden: readonly NfpResult[],
+  tolerance: GeometryTolerance = DEFAULT_TOLERANCE,
 ): NfpRegion[] {
-  let paths = nfpSolidPaths(ifp)
+  let paths = nfpSolidPaths(ifp, tolerance)
   if (!paths.length) return []
 
   for (const nfp of forbidden) {
-    const solid = nfpSolidPaths(nfp)
+    const solid = nfpSolidPaths(nfp, tolerance)
     if (!solid.length) continue
-    paths = Clipper.differenceD(paths, solid, FillRule.NonZero)
+    paths = Clipper.differenceD(
+      paths,
+      solid,
+      FillRule.NonZero,
+      clipperPrecision(tolerance),
+    )
     if (!paths.length) return []
   }
 
-  return pathsToFreeRegions(paths)
-}
-
-function pathsToFreeRegions(
-  paths: { x: number; y: number }[][],
-): NfpRegion[] {
-  if (!paths.length) return []
-  const scored = paths
-    .map((p) => ({ p, a: Clipper.area(p) }))
-    .sort((a, b) => Math.abs(b.a) - Math.abs(a.a))
-
-  const regions: NfpRegion[] = []
-  let current: { outer: Ring; holes: Ring[] } | null = null
-  for (const { p, a } of scored) {
-    const ring = fromPathD(p)
-    if (a > 0) {
-      if (current) regions.push(current)
-      current = { outer: ring, holes: [] }
-    } else if (current) {
-      current.holes.push(ring)
-    }
-  }
-  if (current) regions.push(current)
-  return regions
+  return pathsToRegions(paths, tolerance)
 }
 
 /** Collect candidate reference points from free-region geometry. */
@@ -143,5 +141,5 @@ export function collectCandidatesFromRegions(
 }
 
 function roundKey(n: number): string {
-  return n.toFixed(6)
+  return String(Object.is(n, -0) ? 0 : n)
 }

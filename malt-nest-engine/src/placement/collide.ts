@@ -1,6 +1,7 @@
 import { Clipper, FillRule, JoinType, EndType } from 'clipper2-ts'
 import type { BoundingBox, Polygon, Ring, Shape } from '../geometry/types'
 import {
+  clipperPrecision,
   DEFAULT_TOLERANCE,
   type GeometryTolerance,
 } from '../geometry/tolerance'
@@ -24,39 +25,64 @@ function toPathsD(ring: Ring) {
   return [ring.map((p) => ({ x: p.x, y: p.y }))]
 }
 
-function subtractHoles(poly: Polygon) {
+function subtractHoles(
+  poly: Polygon,
+  tolerance: GeometryTolerance = DEFAULT_TOLERANCE,
+) {
   let paths = toPathsD(poly.outer)
   for (const h of poly.holes) {
-    paths = Clipper.differenceD(paths, toPathsD(h), FillRule.NonZero)
+    paths = Clipper.differenceD(
+      paths,
+      toPathsD(h),
+      FillRule.NonZero,
+      clipperPrecision(tolerance),
+    )
   }
   return paths
 }
 
-function solidPaths(shape: Shape) {
+function solidPaths(
+  shape: Shape,
+  tolerance: GeometryTolerance = DEFAULT_TOLERANCE,
+) {
   const out: ReturnType<typeof toPathsD> = []
   for (const poly of shape.polygons) {
-    out.push(...subtractHoles(poly))
+    out.push(...subtractHoles(poly, tolerance))
   }
   return out
 }
 
-function inflateSolid(poly: Polygon, delta: number) {
-  const solid = subtractHoles(poly)
+function inflateSolid(
+  poly: Polygon,
+  delta: number,
+  tolerance: GeometryTolerance,
+) {
+  const solid = subtractHoles(poly, tolerance)
   if (!solid.length || !(delta > 0)) return solid
   return Clipper.inflatePathsD(
     solid,
     delta,
-    JoinType.Miter,
+    JoinType.Round,
     EndType.Polygon,
     2,
+    clipperPrecision(tolerance),
   )
 }
 
-function solidOverlapArea(a: Shape, b: Shape): number {
-  const pa = solidPaths(a)
-  const pb = solidPaths(b)
+function solidOverlapArea(
+  a: Shape,
+  b: Shape,
+  tolerance: GeometryTolerance,
+): number {
+  const pa = solidPaths(a, tolerance)
+  const pb = solidPaths(b, tolerance)
   if (!pa.length || !pb.length) return 0
-  const inter = Clipper.intersectD(pa, pb, FillRule.NonZero)
+  const inter = Clipper.intersectD(
+    pa,
+    pb,
+    FillRule.NonZero,
+    clipperPrecision(tolerance),
+  )
   return Math.abs(Clipper.areaPathsD(inter))
 }
 
@@ -88,9 +114,14 @@ export function collidePlacements(
   if (g > tol.abs) {
     let violationArea = 0
     for (const pa of a.geometry.polygons) {
-      const inflated = inflateSolid(pa, g)
-      const solidB = solidPaths(b.geometry)
-      const inter = Clipper.intersectD(inflated, solidB, FillRule.NonZero)
+      const inflated = inflateSolid(pa, g, tol)
+      const solidB = solidPaths(b.geometry, tol)
+      const inter = Clipper.intersectD(
+        inflated,
+        solidB,
+        FillRule.NonZero,
+        clipperPrecision(tol),
+      )
       violationArea += Math.abs(Clipper.areaPathsD(inter))
     }
     if (violationArea > tol.abs) {
@@ -103,7 +134,7 @@ export function collidePlacements(
     return { kind: 'none', broadHit: true, overlapArea: 0 }
   }
 
-  const ov = solidOverlapArea(a.geometry, b.geometry)
+  const ov = solidOverlapArea(a.geometry, b.geometry, tol)
   if (ov > tol.abs) {
     return { kind: 'overlap', broadHit: true, overlapArea: ov }
   }

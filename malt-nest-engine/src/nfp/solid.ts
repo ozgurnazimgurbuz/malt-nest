@@ -1,10 +1,18 @@
-import { Clipper, FillRule, JoinType, EndType } from 'clipper2-ts'
+import { Clipper, ClipType, FillRule, JoinType, EndType } from 'clipper2-ts'
 import type { Polygon, Ring, Shape } from '../geometry/types'
 import {
+  clipperPrecision,
   DEFAULT_TOLERANCE,
   type GeometryTolerance,
 } from '../geometry/tolerance'
-import { normalizeShape, shapeCentroid, translateShape } from '../geometry'
+import {
+  normalizeShape,
+  pointInRing,
+  pointOnSegment,
+  ringCentroid,
+  shapeCentroid,
+  translateShape,
+} from '../geometry'
 import type { NfpRegion } from './types'
 
 export function toPathsD(ring: Ring) {
@@ -20,18 +28,25 @@ export function solidPaths(
   shape: Shape,
   tol: GeometryTolerance = DEFAULT_TOLERANCE,
 ): { x: number; y: number }[][] {
-  void tol
   const out: { x: number; y: number }[][] = []
   for (const poly of shape.polygons) {
-    out.push(...solidPolygonPaths(poly))
+    out.push(...solidPolygonPaths(poly, tol))
   }
   return out
 }
 
-export function solidPolygonPaths(poly: Polygon): { x: number; y: number }[][] {
+export function solidPolygonPaths(
+  poly: Polygon,
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): { x: number; y: number }[][] {
   let paths = toPathsD(poly.outer)
   for (const h of poly.holes) {
-    paths = Clipper.differenceD(paths, toPathsD(h), FillRule.NonZero)
+    paths = Clipper.differenceD(
+      paths,
+      toPathsD(h),
+      FillRule.NonZero,
+      clipperPrecision(tol),
+    )
   }
   return paths
 }
@@ -39,62 +54,161 @@ export function solidPolygonPaths(poly: Polygon): { x: number; y: number }[][] {
 export function inflatePaths(
   paths: { x: number; y: number }[][],
   delta: number,
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
 ): { x: number; y: number }[][] {
   if (!paths.length || !(Math.abs(delta) > 0)) return paths
   return Clipper.inflatePathsD(
     paths,
     delta,
-    JoinType.Miter,
+    JoinType.Round,
     EndType.Polygon,
     2,
+    clipperPrecision(tol),
   )
 }
 
 /**
- * Clipper minkowskiDiffD often returns a positive outer + spurious negative
- * hole for convex×convex. Minkowski sum of simply-connected solids is
- * simply-connected — keep positive outer(s) only for collision NFP solids.
+ * Convert flat Clipper paths to regions by assigning each CW hole to the
+ * smallest CCW outer that contains it. This handles multiple disjoint outers
+ * without depending on Clipper's output order.
  */
 export function normalizeMinkowskiPaths(
   paths: { x: number; y: number }[][],
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
 ): NfpRegion[] {
   if (!paths.length) return []
-  const positives = paths
+  const contours = paths
     .map((p) => ({ p, a: Clipper.area(p) }))
-    .filter((x) => x.a > 0)
-    .sort((a, b) => b.a - a.a)
-  if (!positives.length) return []
-
-  // Union positives to a clean solid (drops artifactual holes).
-  const united = Clipper.unionD(
-    positives.map((x) => x.p),
-    FillRule.NonZero,
-  )
-  const regions: NfpRegion[] = []
-  // PolyTree would be better; for NonZero union of solids we get outers.
-  const scored = united
-    .map((p) => ({ p, a: Clipper.area(p) }))
+    .filter((entry) => Math.abs(entry.a) > tol.abs)
     .sort((a, b) => Math.abs(b.a) - Math.abs(a.a))
+  const outers = contours.filter((entry) => entry.a > 0)
+  if (!outers.length) return []
 
-  // Pair CW holes with previous CCW outer heuristically by containment bbox.
-  let current: NfpRegion | null = null
-  for (const { p, a } of scored) {
-    const ring = fromPathD(p)
-    if (a > 0) {
-      if (current) regions.push(current)
-      current = { outer: ring, holes: [] }
-    } else if (current) {
-      current = { outer: current.outer, holes: [...current.holes, ring] }
+  const regions: { outer: Ring; holes: Ring[]; area: number }[] = outers.map(
+    ({ p, a }) => ({ outer: fromPathD(p), holes: [], area: a }),
+  )
+  for (const { p } of contours.filter((entry) => entry.a < 0)) {
+    const hole = fromPathD(p)
+    const probe = interiorPoint(hole, tol) ?? hole[0]
+    if (!probe) continue
+    let owner: (typeof regions)[number] | null = null
+    for (const region of regions) {
+      if (!pointInRing(probe, region.outer, tol)) continue
+      if (!owner || region.area < owner.area) owner = region
+    }
+    if (owner) owner.holes.push(hole)
+  }
+  return regions.map(({ outer, holes }) => ({ outer, holes }))
+}
+
+/** A point strictly inside a simple ring, used to classify NFP hole contours. */
+export function interiorPoint(
+  ring: Ring,
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): { x: number; y: number } | null {
+  const centroid = ringCentroid(ring, tol)
+  if (
+    centroid &&
+    pointInRing(centroid, ring, tol) &&
+    !pointOnRingBoundary(centroid, ring, tol)
+  ) {
+    return centroid
+  }
+
+  const ys = [...new Set(ring.map((point) => point.y))].sort((a, b) => a - b)
+  for (let index = 0; index + 1 < ys.length; index++) {
+    const y = (ys[index]! + ys[index + 1]!) / 2
+    const xs: number[] = []
+    for (let edge = 0; edge < ring.length; edge++) {
+      const a = ring[edge]!
+      const b = ring[(edge + 1) % ring.length]!
+      if ((a.y <= y && b.y > y) || (b.y <= y && a.y > y)) {
+        xs.push(a.x + ((y - a.y) * (b.x - a.x)) / (b.y - a.y))
+      }
+    }
+    xs.sort((a, b) => a - b)
+    for (let pair = 0; pair + 1 < xs.length; pair += 2) {
+      if (xs[pair + 1]! - xs[pair]! <= tol.abs) continue
+      return { x: (xs[pair]! + xs[pair + 1]!) / 2, y }
     }
   }
-  if (current) regions.push(current)
-  return regions
+  return null
+}
+
+function pointOnRingBoundary(
+  point: { x: number; y: number },
+  ring: Ring,
+  tolerance: GeometryTolerance,
+): boolean {
+  for (let index = 0; index < ring.length; index++) {
+    if (
+      pointOnSegment(
+        point,
+        ring[index]!,
+        ring[(index + 1) % ring.length]!,
+        tolerance,
+      )
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Clipper's Minkowski output can contain negative contours that are either
+ * real concavity pockets or artifacts inside a colliding solid. Retain a hole
+ * only when an interior pose has zero material intersection.
+ */
+export function retainFreeMinkowskiHoles(
+  regions: readonly NfpRegion[],
+  stationarySolid: { x: number; y: number }[][],
+  orbitingAtOrigin: { x: number; y: number }[][],
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): NfpRegion[] {
+  return regions.map((region) => ({
+    outer: region.outer,
+    holes: region.holes.filter((hole) => {
+      const probe = interiorPoint(hole, tol)
+      if (!probe) return false
+      return !poseHasMaterialOverlap(
+        stationarySolid,
+        orbitingAtOrigin,
+        probe,
+        tol,
+      )
+    }),
+  }))
+}
+
+export function poseHasMaterialOverlap(
+  stationarySolid: { x: number; y: number }[][],
+  orbitingAtOrigin: { x: number; y: number }[][],
+  position: { x: number; y: number },
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): boolean {
+  const moved = orbitingAtOrigin.map((path) =>
+    path.map((point) => ({
+      x: point.x + position.x,
+      y: point.y + position.y,
+    })),
+  )
+  const overlap = Clipper.intersectD(
+    stationarySolid,
+    moved,
+    FillRule.NonZero,
+    clipperPrecision(tol),
+  )
+  return Math.abs(Clipper.areaPathsD(overlap)) > tol.abs
 }
 
 /** Orbiting shape with centroid at origin (matches Placement reference). */
-export function centerAtCentroid(shape: Shape): Shape {
-  const n = normalizeShape(shape)
-  const c = shapeCentroid(n)
+export function centerAtCentroid(
+  shape: Shape,
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): Shape {
+  const n = normalizeShape(shape, tol)
+  const c = shapeCentroid(n, tol)
   if (!c) throw new Error(`NFP: degenerate centroid for "${shape.id}"`)
   return translateShape(n, -c.x, -c.y)
 }
@@ -106,6 +220,7 @@ export function centerAtCentroid(shape: Shape): Shape {
 export function minkowskiDiffSolids(
   stationarySolid: { x: number; y: number }[][],
   orbitingAtOrigin: { x: number; y: number }[][],
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
 ): { x: number; y: number }[][] {
   const acc: { x: number; y: number }[][] = []
   for (const a of stationarySolid) {
@@ -116,7 +231,13 @@ export function minkowskiDiffSolids(
     }
   }
   if (!acc.length) return []
-  return Clipper.unionD(acc, FillRule.NonZero)
+  return Clipper.booleanOpD(
+    ClipType.Union,
+    acc,
+    null,
+    FillRule.NonZero,
+    clipperPrecision(tol),
+  )
 }
 
 export function regionBounds(regions: readonly NfpRegion[]) {
@@ -139,6 +260,7 @@ export function regionBounds(regions: readonly NfpRegion[]) {
 
 export function pathsToRegions(
   paths: { x: number; y: number }[][],
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
 ): NfpRegion[] {
-  return normalizeMinkowskiPaths(paths)
+  return normalizeMinkowskiPaths(paths, tol)
 }

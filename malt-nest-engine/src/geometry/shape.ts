@@ -22,22 +22,25 @@ export function polygonPerimeter(poly: Polygon): number {
   return p
 }
 
-export function polygonCentroid(poly: Polygon): Point | null {
+export function polygonCentroid(
+  poly: Polygon,
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): Point | null {
   // Approximate: outer centroid weighted by area minus holes (first-order).
-  const oc = ringCentroid(poly.outer)
+  const oc = ringCentroid(poly.outer, tol)
   if (!oc) return null
   let a = signedArea(poly.outer)
   let cx = oc.x * a
   let cy = oc.y * a
   for (const h of poly.holes) {
-    const hc = ringCentroid(h)
+    const hc = ringCentroid(h, tol)
     if (!hc) continue
     const ha = signedArea(h) // holes CW ⇒ negative if normalized
     cx += hc.x * ha
     cy += hc.y * ha
     a += ha
   }
-  if (Math.abs(a) < 1e-18) return oc
+  if (Math.abs(a) <= tol.abs) return oc
   return { x: cx / a, y: cy / a }
 }
 
@@ -75,19 +78,22 @@ export function shapePerimeter(shape: Shape): number {
   return shape.polygons.reduce((s, p) => s + polygonPerimeter(p), 0)
 }
 
-export function shapeCentroid(shape: Shape): Point | null {
+export function shapeCentroid(
+  shape: Shape,
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): Point | null {
   let a = 0
   let cx = 0
   let cy = 0
   for (const p of shape.polygons) {
-    const c = polygonCentroid(p)
+    const c = polygonCentroid(p, tol)
     if (!c) continue
     const pa = polygonArea(p)
     cx += c.x * pa
     cy += c.y * pa
     a += pa
   }
-  if (a <= 0) return null
+  if (a <= tol.abs) return null
   return { x: cx / a, y: cy / a }
 }
 

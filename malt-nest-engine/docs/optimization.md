@@ -38,28 +38,24 @@ optimizeMultiStart(parts, sheet, { gap, maxSheets? }): MultiStartResult
 - `rotation: orthogonal`
 - **No pruning**
 
-### FULL shortlist
+### FULL sweep
 
-Unique set, always includes:
-
-1. `area_desc` (baseline — never dropped)
-2. best FAST strategy
-3. `bbox_area_desc`
-4. `complexity_desc`
+Every configured strategy is evaluated, deduplicated in stable order;
+`area_desc` is injected as the baseline if absent.
 
 `rotation: free` (cascade from ETAP 5; nest-level ortho floor off — FAST already measured orthogonal).
 
 ### Baseline invariant
 
-`area_desc` is always in FULL. Temporary comparison picks best among FULL ⇒  
-`best ≥ baseline` always.
+`area_desc` is always in FULL. The final best is selected across both FAST and
+FULL candidates, so a richer FULL run cannot regress below the best FAST result.
 
 ## Temporary comparison (not ETAP 7)
 
 Priority:
 
-1. fewer sheets  
-2. more placed  
+1. more placed (feasibility)
+2. fewer sheets
 3. higher utilization  
 4. lower packedBoundsMm2  
 5. strategy name ascending  
@@ -80,5 +76,5 @@ Must keep multi-start baseline floor.
 ## Limitations
 
 - Ordering only (no continuous order search)
-- FULL shortlist is fixed policy, not learned
+- FULL evaluates all configured deterministic strategies
 - FAST≠FULL rank correlation is reported, not assumed

@@ -7,11 +7,7 @@ import { nest } from '../src/nest'
 const DEMO = '/Users/ozgurnazimgurbuz/Desktop/Demo.svg'
 
 describe('nest Demo.svg basic benchmark', () => {
-  it('nests Demo parts on 1600×1000 gap=5 margin=10', () => {
-    if (!existsSync(DEMO)) {
-      // Skip silently if fixture not on this machine
-      return
-    }
+  it.skipIf(!existsSync(DEMO))('nests Demo parts on 1600×1000 gap=5 margin=10', () => {
     const raw = readFileSync(DEMO, 'utf8')
     const { shapes } = parseSvg(raw)
     expect(shapes.length).toBe(16)

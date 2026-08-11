@@ -14,6 +14,12 @@ export function anglesForPolicy(
     case 'none':
       return [0]
     case 'fixed': {
+      if (policy.anglesDeg.length === 0) {
+        throw new Error('fixed rotation anglesDeg must not be empty')
+      }
+      if (policy.anglesDeg.some((angle) => !Number.isFinite(angle))) {
+        throw new Error('fixed rotation anglesDeg must be finite')
+      }
       const uniq = [
         ...new Set(
           policy.anglesDeg.map((a) =>
@@ -22,7 +28,7 @@ export function anglesForPolicy(
         ),
       ]
       uniq.sort((a, b) => a - b)
-      return uniq.length ? uniq : [0]
+      return uniq
     }
     case 'orthogonal':
       return [...ORTHOGONAL_ANGLES]

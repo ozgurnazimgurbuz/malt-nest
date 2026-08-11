@@ -2,7 +2,10 @@ import type { BoundingBox, Point } from '../geometry/types'
 import { bboxArea } from '../geometry'
 import type { AnglePrecision, FreeAngleConfig } from './types'
 import { DEFAULT_FREE_ANGLE } from './types'
-import { canonicalizeAngle } from './angle'
+import { canonicalizeAngle, validateAnglePrecision } from './angle'
+
+/** Keeps recorded diagnostics and exact placement work below an OOM-sized run. */
+const MAX_RECORDED_ANGLE_SAMPLES = 100_000
 
 /** Result of evaluating one angle through real placement (NFP + validate). */
 export type AngleEval = {
@@ -23,7 +26,7 @@ export type FreeAngleSearchResult = {
 export function resolveFreeConfig(
   partial?: FreeAngleConfig,
 ): typeof DEFAULT_FREE_ANGLE {
-  return {
+  const config = {
     coarseStepDeg: partial?.coarseStepDeg ?? DEFAULT_FREE_ANGLE.coarseStepDeg,
     refineStepDeg: partial?.refineStepDeg ?? DEFAULT_FREE_ANGLE.refineStepDeg,
     finalStepDeg: partial?.finalStepDeg ?? DEFAULT_FREE_ANGLE.finalStepDeg,
@@ -33,6 +36,59 @@ export function resolveFreeConfig(
     diversityCount: partial?.diversityCount ?? DEFAULT_FREE_ANGLE.diversityCount,
     baselineFloor: partial?.baselineFloor ?? DEFAULT_FREE_ANGLE.baselineFloor,
     precision: partial?.precision ?? DEFAULT_FREE_ANGLE.precision,
+  }
+  validateAnglePrecision(config.precision)
+  validateCircleStep('coarseStepDeg', config.coarseStepDeg, config.precision)
+  validatePositiveStep('refineStepDeg', config.refineStepDeg, config.precision)
+  validateCircleStep('finalStepDeg', config.finalStepDeg, config.precision)
+  validateNonnegativeInteger('coarseTopK', config.coarseTopK)
+  validateNonnegativeInteger('diversityCount', config.diversityCount)
+  if (
+    !Array.isArray(config.baselineAnglesDeg) ||
+    config.baselineAnglesDeg.some((angle) => !Number.isFinite(angle))
+  ) {
+    throw new Error('free rotation baselineAnglesDeg must contain finite angles')
+  }
+  if (config.baselineAnglesDeg.length > MAX_RECORDED_ANGLE_SAMPLES) {
+    throw new Error('free rotation baselineAnglesDeg creates too many samples')
+  }
+  return config
+}
+
+function validatePositiveStep(
+  name: string,
+  stepDeg: number,
+  precision: AnglePrecision,
+): void {
+  if (!Number.isFinite(stepDeg) || stepDeg <= 0) {
+    throw new Error(`free rotation ${name} must be finite and positive`)
+  }
+  const canonicalUnit = 10 ** -precision.decimals
+  if (stepDeg < canonicalUnit) {
+    throw new Error(
+      `free rotation ${name} must be at least the ${canonicalUnit}° canonical precision`,
+    )
+  }
+}
+
+function validateCircleStep(
+  name: string,
+  stepDeg: number,
+  precision: AnglePrecision,
+): void {
+  validatePositiveStep(name, stepDeg, precision)
+  const sampleCount = Math.ceil(360 / stepDeg)
+  if (
+    !Number.isSafeInteger(sampleCount) ||
+    sampleCount > MAX_RECORDED_ANGLE_SAMPLES
+  ) {
+    throw new Error(`free rotation ${name} creates too many angle samples`)
+  }
+}
+
+function validateNonnegativeInteger(name: string, value: number): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`free rotation ${name} must be a nonnegative safe integer`)
   }
 }
 
@@ -59,10 +115,14 @@ export function sampleCircle(
   stepDeg: number,
   precision: AnglePrecision = DEFAULT_FREE_ANGLE.precision,
 ): number[] {
-  const step = Math.max(1e-6, stepDeg)
+  validateAnglePrecision(precision)
+  validateCircleStep('stepDeg', stepDeg, precision)
   const out: number[] = []
   const seen = new Set<number>()
-  for (let a = 0; a < 360 - 1e-9; a += step) {
+  const count = Math.ceil(360 / stepDeg)
+  for (let index = 0; index < count; index++) {
+    const a = index * stepDeg
+    if (a >= 360) break
     const c = canonicalizeAngle(a, precision)
     if (seen.has(c)) continue
     seen.add(c)
@@ -71,13 +131,43 @@ export function sampleCircle(
   return out
 }
 
+function* streamCircle(
+  stepDeg: number,
+  precision: AnglePrecision,
+): Generator<number> {
+  validateAnglePrecision(precision)
+  validateCircleStep('stepDeg', stepDeg, precision)
+  const count = Math.ceil(360 / stepDeg)
+  for (let index = 0; index < count; index++) {
+    const angle = index * stepDeg
+    if (angle >= 360) break
+    yield canonicalizeAngle(angle, precision)
+  }
+}
+
 export function expandAround(
   centers: readonly number[],
   radiusDeg: number,
   stepDeg: number,
   precision: AnglePrecision = DEFAULT_FREE_ANGLE.precision,
 ): number[] {
-  const step = Math.max(1e-6, stepDeg)
+  validateAnglePrecision(precision)
+  validatePositiveStep('stepDeg', stepDeg, precision)
+  if (!Number.isFinite(radiusDeg) || radiusDeg < 0) {
+    throw new Error('free rotation radiusDeg must be finite and nonnegative')
+  }
+  if (centers.some((center) => !Number.isFinite(center))) {
+    throw new Error('free rotation centers must contain finite angles')
+  }
+  const offsetCount = Math.floor((2 * radiusDeg) / stepDeg) + 1
+  const sampleCount = centers.length * (offsetCount + 1)
+  if (
+    !Number.isSafeInteger(offsetCount) ||
+    !Number.isSafeInteger(sampleCount) ||
+    sampleCount > MAX_RECORDED_ANGLE_SAMPLES
+  ) {
+    throw new Error('free rotation refinement creates too many angle samples')
+  }
   const seen = new Set<number>()
   const out: number[] = []
   const push = (a: number) => {
@@ -87,7 +177,10 @@ export function expandAround(
     out.push(c)
   }
   for (const center of centers) {
-    for (let d = -radiusDeg; d <= radiusDeg + 1e-12; d += step) {
+    push(center)
+    for (let index = 0; index < offsetCount; index++) {
+      const d = -radiusDeg + index * stepDeg
+      if (d > radiusDeg) break
       push(center + d)
     }
   }
@@ -159,18 +252,28 @@ export function searchFreeAngle(
   free?: FreeAngleConfig,
 ): FreeAngleSearchResult {
   const cfg = resolveFreeConfig(free)
-  const evaluated = new Map<number, AngleEval>()
+  const evaluated = new Set<number>()
   const order: number[] = []
+  let best: AngleEval | null = null
 
-  const run = (angles: readonly number[]) => {
+  const run = (angles: Iterable<number>, collect = false): AngleEval[] => {
+    const collected: AngleEval[] = []
     for (const raw of angles) {
       const a = canonicalizeAngle(raw, cfg.precision)
       if (evaluated.has(a)) continue
+      if (evaluated.size >= MAX_RECORDED_ANGLE_SAMPLES) {
+        throw new Error('free rotation search exceeds the recorded sample limit')
+      }
       const ev = evaluate(a)
       const stored = { ...ev, angleDeg: a }
-      evaluated.set(a, stored)
+      evaluated.add(a)
       order.push(a)
+      if (stored.ok && (!best || isBetterAngleEval(stored, best))) {
+        best = stored
+      }
+      if (collect) collected.push(stored)
     }
+    return collected
   }
 
   // Stage A — coarse
@@ -180,9 +283,7 @@ export function searchFreeAngle(
     if (!coarse.includes(c)) coarse.push(c)
   }
   coarse.sort((a, b) => a - b)
-  run(coarse)
-
-  const coarseEvals = coarse.map((a) => evaluated.get(a)!)
+  const coarseEvals = run(coarse, true)
   const seeds = selectCoarseSeeds(coarseEvals, cfg)
 
   // Stage B — refine (±coarseStep @ refineStep)
@@ -194,30 +295,9 @@ export function searchFreeAngle(
   )
   run(refineAngles)
 
-  // Final centers: refine grid + seeds + current best
-  // (so ±1° around 5° reaches 7° when baseline seed is 0)
-  let best: AngleEval | null = null
-  for (const ev of evaluated.values()) {
-    if (!best || isBetterAngleEval(ev, best)) best = ev
-  }
-  const finalCenters = new Set<number>([...seeds, ...refineAngles])
-  if (best?.ok) finalCenters.add(best.angleDeg)
-
-  // Stage C — final (±refineStep @ finalStep) around refine grid
-  run(
-    expandAround(
-      [...finalCenters],
-      cfg.refineStepDeg,
-      cfg.finalStepDeg,
-      cfg.precision,
-    ),
-  )
-
-  best = null
-  for (const ev of evaluated.values()) {
-    if (!ev.ok) continue
-    if (!best || isBetterAngleEval(ev, best)) best = ev
-  }
+  // Stage C — exhaustive final grid. This prevents narrow feasible intervals
+  // outside coarse/refine survivors from being pruned before real placement.
+  run(streamCircle(cfg.finalStepDeg, cfg.precision))
 
   return {
     best,

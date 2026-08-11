@@ -6,6 +6,10 @@ import {
   rotateShape,
 } from '../geometry'
 import type { Point, Shape } from '../geometry/types'
+import {
+  DEFAULT_TOLERANCE,
+  type GeometryTolerance,
+} from '../geometry/tolerance'
 import type { Placement } from './types'
 
 /**
@@ -21,9 +25,10 @@ export function createPlacement(
   shape: Shape,
   position: Point,
   rotationDeg: number,
+  tolerance: GeometryTolerance = DEFAULT_TOLERANCE,
 ): Placement {
-  const normalized = normalizeShape(shape)
-  const c = shapeCentroid(normalized)
+  const normalized = normalizeShape(shape, tolerance)
+  const c = shapeCentroid(normalized, tolerance)
   if (!c) {
     throw new Error(`Cannot place shape "${shape.id}": degenerate centroid`)
   }
