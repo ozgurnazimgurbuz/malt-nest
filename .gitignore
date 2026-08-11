@@ -29,3 +29,6 @@ dist-ssr
 # grepai local index
 .grepai/
 .tools/grepai
+
+# Local git worktrees
+.worktrees/
