@@ -64,4 +64,53 @@ describe('toNestingRequest free-angle rotation', () => {
     expect(req.settings.spacingMm).toBe(3)
     expect(req.settings.optimizationLevel).toBe('fast')
   })
+
+  it('derives identical-sheet inventory from the number of parts', () => {
+    const req = toNestingRequest(
+      Array.from({ length: 101 }, (_, index) => ({
+        ...part,
+        id: `part-${index}`,
+        originalIndex: index,
+      })),
+      DEFAULT_SHEET,
+      DEFAULT_NEST,
+    )
+
+    expect(req.sheets[0]?.quantity).toBe(101)
+  })
+
+  it('keeps one empty sheet definition for an empty request', () => {
+    const req = toNestingRequest([], DEFAULT_SHEET, DEFAULT_NEST)
+    expect(req.sheets[0]?.quantity).toBe(1)
+    expect(req.settings.timeLimitMs).toBeGreaterThan(0)
+    expect(Number.isFinite(req.settings.timeLimitMs)).toBe(true)
+  })
+
+  it.each([
+    [{ widthMm: 0, heightMm: 100 }, DEFAULT_NEST, 'width'],
+    [{ widthMm: Number.NaN, heightMm: 100 }, DEFAULT_NEST, 'width'],
+    [DEFAULT_SHEET, { ...DEFAULT_NEST, gapMm: -1 }, 'spacing'],
+    [DEFAULT_SHEET, { ...DEFAULT_NEST, marginMm: -1 }, 'margin'],
+    [DEFAULT_SHEET, { ...DEFAULT_NEST, seed: Number.POSITIVE_INFINITY }, 'seed'],
+    [
+      { widthMm: 20, heightMm: 100 },
+      { ...DEFAULT_NEST, marginMm: 10 },
+      'margin',
+    ],
+  ])('rejects invalid nesting input at the request boundary', (sheet, nest, message) => {
+    expect(() => toNestingRequest([part], sheet, nest)).toThrow(message)
+  })
+
+  it('rejects empty and duplicate part IDs before Map-based placement', () => {
+    expect(() =>
+      toNestingRequest([{ ...part, id: '   ' }], DEFAULT_SHEET, DEFAULT_NEST),
+    ).toThrow('non-empty')
+    expect(() =>
+      toNestingRequest(
+        [part, { ...part, originalIndex: 1 }],
+        DEFAULT_SHEET,
+        DEFAULT_NEST,
+      ),
+    ).toThrow('unique')
+  })
 })

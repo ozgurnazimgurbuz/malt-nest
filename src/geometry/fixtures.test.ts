@@ -27,19 +27,21 @@ describe('Stage 7 nesting fixture suite', () => {
       expect(pair.evo.score).toBeLessThanOrEqual(pair.blf.score + 1e-3)
     }
 
-    writeFileSync(
-      resolve(__dirname, '../../docs/benchmarks/stage-9-fixtures-after.md'),
-      [
-        '# Stage 9 — Geometry fixture suite (after Stage 9 optimizer)',
-        '',
-        'Same fixtures/settings as `stage-9-baseline.md` (400×300, margin 5, spacing 2, fast/~400ms, seed=7).',
-        '',
-        '```',
-        formatNestBench(rows),
-        '```',
-        '',
-      ].join('\n'),
-    )
+    if (process.env.UPDATE_BENCHMARK_DOCS === '1') {
+      writeFileSync(
+        resolve(__dirname, '../../docs/benchmarks/stage-9-fixtures-after.md'),
+        [
+          '# Stage 9 — Geometry fixture suite (after Stage 9 optimizer)',
+          '',
+          'Same fixtures/settings as `stage-9-baseline.md` (400×300, margin 5, spacing 2, fast/~400ms, seed=7).',
+          '',
+          '```',
+          formatNestBench(rows),
+          '```',
+          '',
+        ].join('\n'),
+      )
+    }
   }, 120_000)
 
   it('official scoring: evolved >= baseline on mixedSizes', () => {

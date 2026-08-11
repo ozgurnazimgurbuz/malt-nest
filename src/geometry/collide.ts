@@ -1,6 +1,14 @@
+import {
+  areaD,
+  FillRule,
+  intersectD,
+  isPositiveD,
+  type PathD,
+  type PathsD,
+} from 'clipper2-ts'
 import type { BoundingBox, Point, Polygon } from './types'
 import { boundingBox, centroid, pointInPolygon, pointsEqual } from './ops'
-import { geomEps } from './tolerance'
+import { clipperPrecision, geomEps } from './tolerance'
 
 function EPS(): number {
   return geomEps()
@@ -69,6 +77,12 @@ function orient(a: Point, b: Point, c: Point): number {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
 }
 
+function orientSign(a: Point, b: Point, c: Point): -1 | 0 | 1 {
+  const value = orient(a, b, c)
+  const tolerance = EPS() * Math.hypot(b.x - a.x, b.y - a.y)
+  return value > tolerance ? 1 : value < -tolerance ? -1 : 0
+}
+
 function onSegment(a: Point, b: Point, c: Point): boolean {
   const e = EPS()
   return (
@@ -80,17 +94,25 @@ function onSegment(a: Point, b: Point, c: Point): boolean {
 }
 
 export function segmentsIntersect(a: Point, b: Point, c: Point, d: Point): boolean {
-  const e = EPS()
-  const o1 = orient(a, b, c)
-  const o2 = orient(a, b, d)
-  const o3 = orient(c, d, a)
-  const o4 = orient(c, d, b)
+  const o1 = orientSign(a, b, c)
+  const o2 = orientSign(a, b, d)
+  const o3 = orientSign(c, d, a)
+  const o4 = orientSign(c, d, b)
 
-  if (o1 * o2 < -e && o3 * o4 < -e) return true
-  if (Math.abs(o1) <= e && onSegment(a, b, c)) return true
-  if (Math.abs(o2) <= e && onSegment(a, b, d)) return true
-  if (Math.abs(o3) <= e && onSegment(c, d, a)) return true
-  if (Math.abs(o4) <= e && onSegment(c, d, b)) return true
+  if (
+    o1 !== o2 &&
+    o1 !== 0 &&
+    o2 !== 0 &&
+    o3 !== o4 &&
+    o3 !== 0 &&
+    o4 !== 0
+  ) {
+    return true
+  }
+  if (o1 === 0 && onSegment(a, b, c)) return true
+  if (o2 === 0 && onSegment(a, b, d)) return true
+  if (o3 === 0 && onSegment(c, d, a)) return true
+  if (o4 === 0 && onSegment(c, d, b)) return true
   return false
 }
 
@@ -101,12 +123,18 @@ export function segmentsProperlyIntersect(
   c: Point,
   d: Point,
 ): boolean {
-  const e = EPS()
-  const o1 = orient(a, b, c)
-  const o2 = orient(a, b, d)
-  const o3 = orient(c, d, a)
-  const o4 = orient(c, d, b)
-  return o1 * o2 < -e && o3 * o4 < -e
+  const o1 = orientSign(a, b, c)
+  const o2 = orientSign(a, b, d)
+  const o3 = orientSign(c, d, a)
+  const o4 = orientSign(c, d, b)
+  return (
+    o1 !== 0 &&
+    o2 !== 0 &&
+    o1 !== o2 &&
+    o3 !== 0 &&
+    o4 !== 0 &&
+    o3 !== o4
+  )
 }
 
 function pointOnBoundary(p: Point, solid: Solid): boolean {
@@ -119,6 +147,28 @@ function pointOnBoundary(p: Point, solid: Solid): boolean {
 
 function pointStrictlyInSolid(p: Point, solid: Solid): boolean {
   return pointInSolid(p, solid) && !pointOnBoundary(p, solid)
+}
+
+function solidPaths(solid: Solid): PathsD {
+  const ring = (points: Point[], positive: boolean): PathD => {
+    const path = points.map((point) => ({ x: point.x, y: point.y }))
+    return isPositiveD(path) === positive ? path : path.reverse()
+  }
+  return [
+    ring(solid.outer.points, true),
+    ...solid.holes.map((hole) => ring(hole.points, false)),
+  ]
+}
+
+function hasPositiveIntersection(a: Solid, b: Solid): boolean {
+  const paths = intersectD(
+    solidPaths(a),
+    solidPaths(b),
+    FillRule.NonZero,
+    clipperPrecision(),
+  )
+  const area = paths.reduce((sum, path) => sum + areaD(path), 0)
+  return Math.abs(area) > EPS() * EPS()
 }
 
 /** True if solid interiors overlap (boundary touch is allowed). */
@@ -161,7 +211,10 @@ export function solidsOverlap(a: Solid, b: Solid): boolean {
   for (const v of samples(b)) {
     if (pointStrictlyInSolid(v, b) && pointStrictlyInSolid(v, a)) return true
   }
-  return false
+  // Collinear thin overlaps can have no proper crossing or interior vertex.
+  // Use the exact boolean backend for this ambiguous fallback; zero-area
+  // boundary contact remains allowed.
+  return hasPositiveIntersection(a, b)
 }
 
 function distPointSegment(p: Point, a: Point, b: Point): number {

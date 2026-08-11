@@ -7,7 +7,7 @@ import {
   resolveAllowedAngles,
 } from './rotations'
 import type { GeometryPart } from '../../geometry'
-import { boundingBox } from '../../geometry'
+import { boundingBox, centroid } from '../../geometry'
 import { localSearchImprove } from './localSearch'
 import { destroyRepairImprove } from './destroyRepair'
 import { createRng } from './rng'
@@ -35,7 +35,7 @@ function LPart(): GeometryPart {
     holes: [],
     boundingBox: boundingBox(points),
     area: 40 * 12 + 12 * 28,
-    centroid: { x: 10, y: 10 },
+    centroid: centroid(points),
     originalTransform: null,
   }
 }
@@ -141,6 +141,7 @@ describe('Stage 9 optimizer enhancements', () => {
             { x: 0, y: 15 },
           ]),
           area: 300,
+          centroid: { x: 10, y: 7.5 },
         },
       ],
       sheets: [{ widthMm: 200, heightMm: 150, marginMm: 5, quantity: 3 }],

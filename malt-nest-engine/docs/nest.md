@@ -1,7 +1,7 @@
 # Basic Nesting Engine (ETAP 4)
 
-Deterministic **bottom-left fill** using real NFP constraints.  
-No GA, free-angle search, beam search, or multi-start optimizer.
+Deterministic **bottom-left fill** using real NFP constraints. Free-angle and
+multi-start orchestration are separate engine modules; there is no GA.
 
 ## API
 
@@ -18,6 +18,11 @@ nest(parts: Shape[], sheet: Sheet, config: NestConfig): NestResult
 | `rotation` | `orthogonal` | Angle policy (not a search) |
 | `maxSheets` | `parts.length` | Multi-sheet cap |
 | `debug` | `false` | Per-part candidate diagnostics |
+| `tolerance` | `DEFAULT_TOLERANCE` | Geometry/NFP/placement tolerance |
+
+The boundary rejects non-finite/negative gaps, invalid sheet or tolerance
+values (`clipperScale` supports `1e-8…1e8`), non-positive/non-integer
+`maxSheets`, and empty or duplicate shape IDs.
 
 ### NestResult
 
@@ -50,7 +55,10 @@ Module: `src/rotation` — see [rotation.md](rotation.md).
 2. **Inner NFP** vs usable sheet rectangle → free-in-sheet region.
 3. For each placed part: **Outer NFP** (with `gap`) → forbidden region.
 4. `free = IFP \\ ∪ OuterNFP` via Clipper difference.
-5. Candidates = free-region **vertices + edge midpoints** (sorted by Y, then X).
+5. Candidates = free-region **vertices + edge midpoints**, analytical sheet
+   AABB contacts, validated NFP contact points/segments, and swept intersections
+   between ordinary or zero-width IFP/forbidden boundaries when polygon booleans
+   collapse an exact point or line remainder (sorted by Y, then X).
 
 Not AABB-grid placement. Final acceptance still goes through `validatePlacement`.
 
@@ -68,11 +76,16 @@ Per part, per sheet:
 - Gap applied in Outer NFP **and** final validator (must agree).
 - `gap = 0`: touching OK; overlap invalid.
 - `gap = 5`: separation < 5 invalid.
+- Stationary-part and orbiting-part holes produce collision-free outer-NFP
+  pockets; holes in an inner-NFP container are excluded from usable material.
 
 ## Multi-sheet
 
 Try existing sheets in order. If no fit and not `too-large`, open a new sheet (until `maxSheets`).  
 `NestResult.sheets` is ready for multi-sheet UI later.
+Empty input returns zero sheets and zero sheet area.
+If every part is invalid or too large, no empty sheet is reported; zero-area
+results have zero utilization and zero waste.
 
 ## Determinism
 
@@ -84,12 +97,22 @@ Same parts + sheet + config → identical placements (positions, rotations, shee
 
 ## NFP cache
 
-`createNfpCache` / `makeNfpCacheKey` — session Map keyed by  
-`(kind, ids, rotations, gap)`. No aggressive global LRU yet.
+`createNfpCache` / `makeNfpCacheKey` — session LRU bounded by both 512 entries
+and 100,000 retained region/contact endpoints. Fixed-size geometry digests keep
+dense keys bounded. Distinct IDs with identical geometry reuse pose-equivalent
+NFPs; outer entries are translation-normalized before caching.
 
 ## Limitations
 
 - Discrete candidates only (vertices/midpoints) — may miss some continuous optima.
-- Orthogonal / fixed angles only.
-- No hole-as-container nesting of other parts into placed holes (outer NFP free pockets exist; BLF does not specially target them beyond free-region vertices).
+- Free-angle resolution is discrete and caller-configurable.
+- Hole/concavity pockets are candidates when represented by NFP free-region boundaries.
+- Concave IFPs use every gap-eroded container component and direct translational
+  Minkowski contours. Clipper-dropped point/line fits are recovered through a
+  small offset configuration space, exact vertex/edge contact refinement, and
+  containment revalidation. Recovered line intervals remain available for
+  boundary intersection, including stationary-hole free space; isolated
+  contacts do not suppress positive regions.
+- Dense Minkowski products use the same integer construction with batched unions
+  to bound intermediate memory; runtime still grows with contour complexity.
 - No ordering/angle optimization — quality is “valid + deterministic BLF”, not “best nest”.

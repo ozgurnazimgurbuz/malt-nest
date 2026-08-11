@@ -26,7 +26,7 @@ RotationPolicy =
 |-------|---------|------|
 | Coarse | step **15°** | Full-circle sample + baselines |
 | Refine | **±15° @ 5°** around seeds | Local densify |
-| Final | **±5° @ 1°** around seeds/best | Fine polish |
+| Final | full circle @ **1°** | Exhaustive configured-resolution coverage |
 
 ### Top-K / safety (anti legacy bias)
 
@@ -36,7 +36,9 @@ Seeds for refine are **not** only coarse winners:
 2. **coarseTopK** best *valid* placements by real score  
 3. **diversityCount** extra valid angles farthest on the circle  
 
-Coarse score is a **pruning hint**, not final quality. Final pick uses full placement eval.
+Coarse score is a **search-order hint**, not a final quality gate. The final
+stage evaluates the complete circle at `finalStepDeg`, so narrow feasible
+intervals cannot be discarded with the coarse survivors.
 
 ## Candidate evaluation (per angle)
 
@@ -48,8 +50,9 @@ Coarse score is a **pruning hint**, not final quality. Final pick uses full plac
 
 ## NFP cache
 
-Session `Map` keyed by  
-`kind|stationaryId|orbitingId|canon(rotA)|canon(rotB)|gap`  
+Session LRU bounded by 512 entries and 100,000 retained NFP points, keyed by a
+fixed-size geometry/topology digest, canonical poses, gap, and tolerance.
+Identical geometry with distinct public IDs shares pose-equivalent entries.
 Diagnostics: `cacheHits` / `cacheMisses`.
 
 ## Baseline floor
@@ -58,9 +61,21 @@ When `free.baselineFloor !== false` (default **true**):
 
 1. Run free cascade  
 2. Run orthogonal  
-3. Keep better by: placed↓ → sheets↑ → packedBounds↑  
+3. Keep better by: placed↓ → sheets↑ → utilization↓ → packedBounds↑
 
 If free is worse, orthogonal wins. Guard only — not a GA.
+The returned config remains the caller's free policy, and work counters/runtime
+aggregate both attempts.
+
+Steps must be finite and positive at the configured canonical precision;
+`coarseTopK`/`diversityCount` are nonnegative safe integers, baseline angles are
+finite, and precision decimals must fit the safe `[0, 360)` numeric grid. The
+final grid is streamed and only the running best placement score is retained.
+Each of the three stages is bounded at 100,000 samples (with refinement's
+worst-case count checked up front), so an exact 100,000-sample final grid may
+still use small bounded coarse/refine overhead. Caller-requested `0.01°`
+remains supported (36,000 final samples); configurations whose individual
+stage exceeds the resource bound are rejected before placement/NFP work.
 
 ## Determinism
 
@@ -72,7 +87,7 @@ Engine accepts `rotation: { kind: 'free' }` with **no UI**. UI may later send th
 
 ## Limitations
 
-- Discrete 1° floor by default (configurable `finalStepDeg`)  
+- Discrete 1° default (configurable `finalStepDeg`; finer grids cost more)
 - Candidate vertices may miss continuous optima  
 - Demo oversized AABB parts still need geometry/sheet changes or denser angles  
 - Baseline floor doubles work when enabled  

@@ -10,20 +10,27 @@ export type Subpath = {
 
 type Cmd = { code: string; args: number[] }
 
-function tokenizePath(d: string): Cmd[] {
+function tokenizePath(d: string): Cmd[] | null {
   const cmds: Cmd[] = []
   const re =
     /([MmLlHhVvCcSsQqTtAaZz])|([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/g
   let current: Cmd | null = null
   let match: RegExpExecArray | null
+  let cursor = 0
   while ((match = re.exec(d)) !== null) {
+    if (!/^[\s,]*$/.test(d.slice(cursor, match.index))) return null
     if (match[1]) {
       if (current) cmds.push(current)
       current = { code: match[1], args: [] }
-    } else if (match[2] && current) {
-      current.args.push(Number(match[2]))
+    } else if (match[2]) {
+      if (!current) return null
+      const value = Number(match[2])
+      if (!Number.isFinite(value)) return null
+      current.args.push(value)
     }
+    cursor = re.lastIndex
   }
+  if (!/^[\s,]*$/.test(d.slice(cursor))) return null
   if (current) cmds.push(current)
   return cmds
 }
@@ -61,10 +68,30 @@ export function flattenPathData(
   element?: string,
 ): Subpath[] {
   const cmds = tokenizePath(d)
-  if (cmds.length === 0) {
+  const malformed =
+    !cmds ||
+    cmds.length === 0 ||
+    cmds[0]!.code.toUpperCase() !== 'M' ||
+    cmds.some((cmd) => {
+      const need = argCounts(cmd.code)
+      if (need < 0) return true
+      if (need === 0) return cmd.args.length !== 0
+      if (cmd.args.length < need || cmd.args.length % need !== 0) return true
+      if (cmd.code.toUpperCase() !== 'A') return false
+      for (let i = 0; i < cmd.args.length; i += need) {
+        if (
+          (cmd.args[i + 3] !== 0 && cmd.args[i + 3] !== 1) ||
+          (cmd.args[i + 4] !== 0 && cmd.args[i + 4] !== 1)
+        ) {
+          return true
+        }
+      }
+      return false
+    })
+  if (malformed) {
     warnings.push({
       code: 'malformed_path',
-      message: 'Empty or unreadable path data',
+      message: 'Malformed or unreadable path data',
       element,
     })
     return []

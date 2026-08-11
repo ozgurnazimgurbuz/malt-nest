@@ -226,29 +226,31 @@ describe('Stage 10B BLF profiler', () => {
     const src = snapshot.candidateSources
 
     // Keep Stage 10B doc as baseline reference (pre-fix numbers documented in prose)
-    writeFileSync(
-      resolve(__dirname, '../../docs/benchmarks/stage-10c-edge-subsample.md'),
-      [
-        '# Stage 10C — edgeVertex subsample',
-        '',
-        'Fix for Stage 10B root cause: subsample `addEdgeVertexContacts` (≤36 edges × ≤36 verts),',
-        'matching `vertexPairs` sampling. NFP boundary unchanged. No hard candidate CAP.',
-        '',
-        '```',
-        report.trim(),
-        '```',
-        '',
-        '| Source | Count |',
-        '| --- | ---: |',
-        `| nfpBoundary | ${src.nfpBoundary} |`,
-        `| vertexPairs | ${src.vertexPairs} |`,
-        `| edgeVertex (subsampled) | ${src.edgeVertex} |`,
-        '',
-        `Part 10 placement: **${part10.placementMs.toFixed(0)} ms** (Stage 10B was ~39500 ms).`,
-        `Candidates total: **${part10.candidatesTotal}** (Stage 10B was ~724391).`,
-        '',
-      ].join('\n'),
-    )
+    if (process.env.UPDATE_BENCHMARK_DOCS === '1') {
+      writeFileSync(
+        resolve(__dirname, '../../docs/benchmarks/stage-10c-edge-subsample.md'),
+        [
+          '# Stage 10C — edgeVertex subsample',
+          '',
+          'Fix for Stage 10B root cause: subsample `addEdgeVertexContacts` (≤36 edges × ≤36 verts),',
+          'matching `vertexPairs` sampling. NFP boundary unchanged. No hard candidate CAP.',
+          '',
+          '```',
+          report.trim(),
+          '```',
+          '',
+          '| Source | Count |',
+          '| --- | ---: |',
+          `| nfpBoundary | ${src.nfpBoundary} |`,
+          `| vertexPairs | ${src.vertexPairs} |`,
+          `| edgeVertex (subsampled) | ${src.edgeVertex} |`,
+          '',
+          `Part 10 placement: **${part10.placementMs.toFixed(0)} ms** (Stage 10B was ~39500 ms).`,
+          `Candidates total: **${part10.candidatesTotal}** (Stage 10B was ~724391).`,
+          '',
+        ].join('\n'),
+      )
+    }
 
     expect(src.edgeVertex).toBeLessThan(200_000)
     endBlfProfiling()

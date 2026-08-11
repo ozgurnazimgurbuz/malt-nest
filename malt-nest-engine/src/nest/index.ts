@@ -11,7 +11,7 @@ export type {
   NestInput,
 } from './types'
 
-export { nest } from './nest'
+export { compareNestQuality, nest } from './nest'
 export { computeNestMetrics, placementsPackedBounds } from './metrics'
 export {
   createNfpCache,
@@ -23,5 +23,6 @@ export {
   sheetAabbFitCandidates,
   computeFreeRegions,
   collectCandidatesFromRegions,
+  collectNfpBoundaryIntersections,
 } from './freeRegion'
 export { placePartOnSheet, evaluateAngleOnSheet, createPlaceCounters } from './place'

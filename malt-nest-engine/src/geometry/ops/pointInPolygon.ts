@@ -2,7 +2,6 @@ import type { Point, Polygon, Ring, Shape } from '../types'
 import {
   DEFAULT_TOLERANCE,
   nearlyEqual,
-  nearlyZero,
   type GeometryTolerance,
 } from '../tolerance'
 
@@ -42,10 +41,15 @@ export function pointOnSegment(
 ): boolean {
   const cross = (p.y - a.y) * (b.x - a.x) - (p.x - a.x) * (b.y - a.y)
   const len = Math.hypot(b.x - a.x, b.y - a.y)
-  if (Math.abs(cross) > tol.abs + tol.rel * len * Math.max(len, 1)) return false
+  const distanceTolerance = tol.abs + tol.rel * Math.max(len, 1)
+  if (len <= Math.sqrt(tol.edgeMinLen2)) {
+    return Math.hypot(p.x - a.x, p.y - a.y) <= distanceTolerance
+  }
+  if (Math.abs(cross) / len > distanceTolerance) return false
   const dot = (p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)
-  if (dot < -tol.abs) return false
-  if (dot > len * len + tol.abs) return false
+  const projection = dot / len
+  if (projection < -distanceTolerance) return false
+  if (projection > len + distanceTolerance) return false
   return true
 }
 
@@ -119,5 +123,3 @@ export function shapesNearlyEqual(
   }
   return true
 }
-
-void nearlyZero

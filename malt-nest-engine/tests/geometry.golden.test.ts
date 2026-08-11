@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import {
   makeShape,
@@ -103,7 +103,7 @@ describe('SVG goldens / fixtures', () => {
       },
       {
         name: 'hole',
-        svg: `<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0 H20 V20 H0 Z M5 5 H15 V15 H5 Z"/></svg>`,
+        svg: `<svg xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" d="M0 0 H20 V20 H0 Z M5 5 H15 V15 H5 Z"/></svg>`,
         area: 400 - 100,
       },
     ]
@@ -119,16 +119,10 @@ describe('SVG goldens / fixtures', () => {
 })
 
 describe('Demo.svg extraction (no nest bench)', () => {
-  it('reports shape count / holes / parse time', () => {
-    const demo = '/Users/ozgurnazimgurbuz/Desktop/Demo.svg'
-    let raw: string
-    try {
-      raw = readFileSync(demo, 'utf8')
-    } catch {
-      // Skip if Demo.svg not present on this machine
-      expect(true).toBe(true)
-      return
-    }
+  const demo = '/Users/ozgurnazimgurbuz/Desktop/Demo.svg'
+
+  it.skipIf(!existsSync(demo))('reports shape count / holes / parse time', () => {
+    const raw = readFileSync(demo, 'utf8')
     return import('../src/geometry').then(({ parseSvg, shapeArea }) => {
       const result = parseSvg(raw)
       // eslint-disable-next-line no-console

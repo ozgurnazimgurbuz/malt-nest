@@ -2,15 +2,16 @@ import { solidFromRings, type Solid } from './collide'
 import { isConvexPolygon } from './convex'
 import { minkowskiDifferenceConvex, convexHull } from './minkowski'
 import { normalizePolygon } from './normalize'
-import { offsetSolid } from './offset'
 import { boundingBox, pointInPolygon, signedArea } from './ops'
 import { geomEps, type GeometryIssue } from './tolerance'
 import type { MultiPolygon, Point, Polygon } from './types'
 import {
   clipperMinkowskiDiffNfp,
+  clipperInflate,
   clipperUnion,
   pathsDToMultiPolygons,
   ringToPathD,
+  solidToPathsD,
 } from './backend/clipperAdapter'
 import { GEOMETRY_BACKEND_ID } from './backend/id'
 import { convexDecompose } from './convex'
@@ -36,6 +37,11 @@ export type NfpResult = {
   spacingMm: number
   backend: string
   issues: GeometryIssue[]
+}
+
+export type NfpOptions = {
+  /** Preserve every source vertex; cheap ranking defaults to simplified. */
+  fidelity?: 'simplified' | 'exact'
 }
 
 function pointStrictlyIn(p: Point, ring: Point[]): boolean {
@@ -100,34 +106,59 @@ function packResult(
   }
 }
 
+function packSpacedResult(
+  regions: MultiPolygon[],
+  method: NfpResult['method'],
+  exact: boolean,
+  spacing: number,
+  issues: GeometryIssue[],
+  fidelity: NfpOptions['fidelity'],
+): NfpResult {
+  if (spacing <= geomEps() || regions.length === 0) {
+    return packResult(regions, method, exact, spacing, issues)
+  }
+  const paths = regions.flatMap((region) =>
+    solidToPathsD(
+      solidFromRings(
+        region.outer.points,
+        region.holes.map((hole) => hole.points),
+      ),
+    ),
+  )
+  const inflated = clipperInflate(
+    paths,
+    spacing,
+    fidelity === 'simplified' ? 'miter' : 'round',
+  )
+  issues.push(...inflated.issues)
+  const spaced = pathsDToMultiPolygons(inflated.paths)
+  if (spaced.length > 0) {
+    return packResult(spaced, method, exact, spacing, issues)
+  }
+  issues.push({
+    code: 'nfp_failed',
+    message: 'Spacing offset failed; using unspaced NFP candidates',
+  })
+  return packResult(regions, method, exact, spacing, issues)
+}
+
 /**
  * No-Fit Polygon for moving solid B relative to stationary solid A.
  *
- * Spacing: geometric offset of A by +spacing before Minkowski.
+ * Spacing: dilate the completed forbidden region by the Euclidean clearance.
+ * This is equivalent to offsetting A first, without multiplying round-arc
+ * vertices through the quadratic Minkowski operation.
  * Holes of A are not solid in NFP (outers only) — part-in-part is separate.
  */
 export function computeNfp(
   stationary: Solid,
   moving: Solid,
   spacingMm = 0,
+  options: NfpOptions = {},
 ): NfpResult {
   const issues: GeometryIssue[] = []
   const spacing = Math.max(0, spacingMm)
-
-  let A = stationary
-  if (spacing > geomEps()) {
-    const off = offsetSolid(stationary, spacing)
-    issues.push(...off.issues)
-    if (off.solid.outer.points.length >= 3) A = off.solid
-    else {
-      issues.push({
-        code: 'nfp_failed',
-        message: 'Spacing offset failed; using unspaced NFP',
-      })
-    }
-  }
-
-  const aOuter = A.outer
+  const aOuter = stationary.outer
   const bOuter = moving.outer
   if (aOuter.points.length < 3 || bOuter.points.length < 3) {
     issues.push({ code: 'nfp_failed', message: 'Degenerate solid for NFP' })
@@ -141,21 +172,29 @@ export function computeNfp(
     const region = minkowskiDifferenceConvex(aOuter, bOuter)
     const cleaned = normalizePolygon(region.points, true)
     const poly = cleaned.ok ? cleaned.polygon : region
-    return packResult(
+    return packSpacedResult(
       poly.points.length >= 3 ? [{ outer: poly, holes: [] }] : [],
       'minkowski-convex',
       true,
       spacing,
       issues,
+      options.fidelity,
     )
   }
 
   // Primary: Clipper Minkowski difference (handles concave topology)
-  const clip = clipperMinkowskiDiffNfp(aOuter.points, bOuter.points)
+  const clip = clipperMinkowskiDiffNfp(aOuter.points, bOuter.points, options)
   issues.push(...clip.issues)
   let regions = pathsDToMultiPolygons(clip.paths)
   if (regions.length) {
-    return packResult(regions, 'minkowski-clipper', false, spacing, issues)
+    return packSpacedResult(
+      regions,
+      'minkowski-clipper',
+      false,
+      spacing,
+      issues,
+      options.fidelity,
+    )
   }
 
   // Fallback: convex decomp → Minkowski pieces → boolean union
@@ -169,12 +208,13 @@ export function computeNfp(
     const hullA = { points: convexHull(aOuter.points) }
     const hullB = { points: convexHull(bOuter.points) }
     const region = minkowskiDifferenceConvex(hullA, hullB)
-    return packResult(
+    return packSpacedResult(
       region.points.length >= 3 ? [{ outer: region, holes: [] }] : [],
       'minkowski-convex-decomp-union',
       false,
       spacing,
       issues,
+      options.fidelity,
     )
   }
 
@@ -182,7 +222,10 @@ export function computeNfp(
   for (const ap of aPieces) {
     for (const bp of bPieces) {
       const diff = minkowskiDifferenceConvex(ap, bp)
-      if (diff.points.length >= 3 && Math.abs(signedArea(diff.points)) > geomEps()) {
+      if (
+        diff.points.length >= 3 &&
+        Math.abs(signedArea(diff.points)) > geomEps() * geomEps()
+      ) {
         let path = ringToPathD(diff.points)
         if (!isPositiveD(path)) path = [...path].reverse()
         if (!acc.length) acc = [path]
@@ -194,12 +237,13 @@ export function computeNfp(
   if (!regions.length) {
     issues.push({ code: 'nfp_failed', message: 'Union of Minkowski pieces empty' })
   }
-  return packResult(
+  return packSpacedResult(
     regions,
     'minkowski-convex-decomp-union',
     false,
     spacing,
     issues,
+    options.fidelity,
   )
 }
 
@@ -207,8 +251,9 @@ export function computeNfp(
 export function nfpBoundaryTranslations(nfp: NfpResult): Point[] {
   const out: Point[] = []
   const seen = new Set<string>()
+  const eps = geomEps()
   const push = (p: Point) => {
-    const key = `${p.x.toFixed(5)},${p.y.toFixed(5)}`
+    const key = `${Math.round(p.x / eps)},${Math.round(p.y / eps)}`
     if (seen.has(key)) return
     seen.add(key)
     out.push(p)
@@ -231,25 +276,6 @@ export function nfpBoundaryTranslations(nfp: NfpResult): Point[] {
   }
   for (const o of nfp.outers) sampleRing(o.points)
   return out
-}
-
-export function solidFingerprint(solid: Solid): string {
-  const parts: number[] = [solid.outer.points.length, solid.holes.length]
-  for (const p of solid.outer.points) {
-    parts.push(Math.round(p.x * 1e4), Math.round(p.y * 1e4))
-  }
-  for (const h of solid.holes) {
-    parts.push(h.points.length)
-    for (const p of h.points) {
-      parts.push(Math.round(p.x * 1e4), Math.round(p.y * 1e4))
-    }
-  }
-  let hash = 2166136261
-  for (const n of parts) {
-    hash ^= n >>> 0
-    hash = Math.imul(hash, 16777619)
-  }
-  return `${GEOMETRY_BACKEND_ID}:${(hash >>> 0).toString(16)}`
 }
 
 export function nfpAsSolid(nfp: NfpResult): Solid {

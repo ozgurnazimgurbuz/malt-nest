@@ -1,9 +1,10 @@
 import type { Individual } from './individual'
 import { cloneIndividual } from './individual'
 import type { Rng } from './rng'
+import { isBetterScore, type ComparableScore } from '../scoring/fitness'
 
 export type EvaluateFn = (ind: Individual) => {
-  score: { total: number }
+  score: ComparableScore
 }
 
 /**
@@ -19,7 +20,7 @@ export function localSearchImprove(
   now: () => number = () => performance.now(),
 ): Individual {
   let best = cloneIndividual(start)
-  let bestTotal = evaluate(best).score.total
+  let bestScore = evaluate(best).score
   const n = best.order.length
   if (n < 2) return best
 
@@ -72,10 +73,10 @@ export function localSearchImprove(
       cand.rotations.unshift(rot!)
     }
 
-    const total = evaluate(cand).score.total
-    if (total < bestTotal - 1e-9) {
+    const score = evaluate(cand).score
+    if (isBetterScore(score, bestScore)) {
       best = cand
-      bestTotal = total
+      bestScore = score
     }
   }
 

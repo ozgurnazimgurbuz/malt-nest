@@ -40,6 +40,7 @@ export function NestProgressCard({
     progress.phase === 'preparing' ||
     progress.phase === 'blf' ||
     progress.phase === 'optimize' ||
+    progress.phase === 'finalizing' ||
     progress.phase === 'stopping'
   const [now, setNow] = useState(() => performance.now())
 

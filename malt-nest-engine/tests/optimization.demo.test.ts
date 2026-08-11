@@ -11,8 +11,7 @@ import { BASE_ORDERING_STRATEGIES } from '../src/ordering'
 const DEMO = '/Users/ozgurnazimgurbuz/Desktop/Demo.svg'
 
 describe('Demo.svg multi-start FAST + FULL', () => {
-  it('reports FAST sweep, FULL shortlist, ranking diagnostic', () => {
-    if (!existsSync(DEMO)) return
+  it.skipIf(!existsSync(DEMO))('reports FAST sweep, FULL shortlist, ranking diagnostic', () => {
     const { shapes } = parseSvg(readFileSync(DEMO, 'utf8'))
     expect(shapes.length).toBe(16)
     const sheet = createSheet(1600, 1000, 10)

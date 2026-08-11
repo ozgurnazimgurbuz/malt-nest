@@ -1,8 +1,8 @@
 import type { BoundingBox, Point, Ring } from './types'
 import {
+  areaTolerance,
   DEFAULT_TOLERANCE,
   nearlyEqual,
-  nearlyZero,
   type GeometryTolerance,
 } from './tolerance'
 
@@ -35,7 +35,10 @@ export function perimeter(ring: Ring): number {
 }
 
 /** Area-weighted centroid of a simple ring (no holes). */
-export function ringCentroid(ring: Ring): Point | null {
+export function ringCentroid(
+  ring: Ring,
+  tol: GeometryTolerance = DEFAULT_TOLERANCE,
+): Point | null {
   if (ring.length < 3) return null
   let a = 0
   let cx = 0
@@ -49,7 +52,7 @@ export function ringCentroid(ring: Ring): Point | null {
     cy += (p0.y + p1.y) * cross
   }
   a *= 0.5
-  if (nearlyZero(a)) return null
+  if (Math.abs(a) <= areaTolerance(tol)) return null
   return { x: cx / (6 * a), y: cy / (6 * a) }
 }
 
@@ -115,8 +118,11 @@ export function cleanRing(
     const bx = next.x - cur.x
     const by = next.y - cur.y
     const cross = ax * by - ay * bx
-    const lenScale = Math.hypot(ax, ay) * Math.hypot(bx, by)
-    if (Math.abs(cross) <= tol.abs + tol.rel * lenScale) continue
+    const firstLength = Math.hypot(ax, ay)
+    const secondLength = Math.hypot(bx, by)
+    const distanceTolerance =
+      tol.abs + tol.rel * Math.max(firstLength, secondLength, 1)
+    if (Math.abs(cross) <= firstLength * distanceTolerance) continue
     cleaned.push(cur)
   }
   return cleaned.length >= 3 ? cleaned : out

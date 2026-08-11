@@ -11,19 +11,22 @@ export function beginPlacementSession(): void {
   beginNestingGeometrySession()
 }
 import {
+  createVariant,
   findVariant,
-  getOrCreateVariant,
   ifpBounds,
   prepareParts,
+  rotationDimensions,
   variantWorldSolid,
   type PreparedPart,
   type PreparedVariant,
 } from '../core/prepare'
 import {
   BALANCED_ANGLES,
+  coarseFreeAngles,
   freeAngleCascadeStages,
   usesFreeAngleCascade,
 } from '../optimization/rotations'
+import { validateNestingRequest } from '../core/validate'
 import {
   beginBlfProfiling,
   blfProfileBeginPart,
@@ -63,7 +66,7 @@ export type BlfOptions = {
    * - quick: 45° grid (order ranking)
    * - coarse: 15° grid
    * - medium: coarse → top-3 refine @5° (no 1° final; profiling / cheap proxy)
-   * - full: coarse → refine 5° → final 1°
+   * - full: exhaustive 0°..359° at 1°, with exact NFP geometry
    * - seed: refine around a gene angle (final polish)
    * Default for free mode: coarse (avoid 1° on every eval).
    * Production Stage 1 uses 'full'; Stage 2 uses 'coarse'/'seed'. 'medium' is opt-in.
@@ -74,12 +77,25 @@ export type BlfOptions = {
    * Off during GA evaluations; enable for final polish of top candidates.
    */
   polishFreeAngles?: boolean
+  /** Exact for canonical discrete/full placement; simplified only for cheap ranking. */
+  nfpFidelity?: 'simplified' | 'exact'
 }
 
 /** Gene plan: placement order + per-part rotation (aligned with order). */
 export type PlacementPlan = {
   order: string[]
   rotations: number[]
+}
+
+function validatePlacementPlan(plan: PlacementPlan): void {
+  const seen = new Set<string>()
+  for (const id of plan.order) {
+    if (seen.has(id)) throw new TypeError(`Plan contains duplicate part ID ${id}`)
+    seen.add(id)
+  }
+  if (plan.rotations.some((rotation) => !Number.isFinite(rotation))) {
+    throw new RangeError('Plan rotation values must be finite')
+  }
 }
 
 type SheetState = {
@@ -90,24 +106,185 @@ type SheetState = {
   placed: Array<{ placement: Placement; solid: Solid; area: number }>
 }
 
-function expandSheetQueue(request: NestingRequest): Array<{
+type SheetStock = {
   widthMm: number
   heightMm: number
   marginMm: number
-}> {
-  const queue: Array<{ widthMm: number; heightMm: number; marginMm: number }> =
-    []
+  remaining: number
+}
+
+function buildSheetStock(request: NestingRequest): SheetStock[] {
+  const merged = new Map<string, SheetStock>()
   for (const def of request.sheets) {
-    const q = Math.max(0, Math.floor(def.quantity))
-    for (let i = 0; i < q; i++) {
-      queue.push({
-        widthMm: def.widthMm,
-        heightMm: def.heightMm,
-        marginMm: def.marginMm,
-      })
+    const key = `${def.widthMm},${def.heightMm},${def.marginMm}`
+    const existing = merged.get(key)
+    if (existing) {
+      existing.remaining = Math.min(
+        request.parts.length,
+        existing.remaining + def.quantity,
+      )
+      continue
+    }
+    merged.set(key, {
+      widthMm: def.widthMm,
+      heightMm: def.heightMm,
+      marginMm: def.marginMm,
+      remaining: Math.min(def.quantity, request.parts.length),
+    })
+  }
+  return [...merged.values()]
+}
+
+type SequenceEntry = {
+  part: PreparedPart
+  variant: PreparedVariant | 'best'
+}
+
+type FitDimensions = { width: number; height: number }
+
+function freeAngleDimensions(part: PreparedPart): FitDimensions[] {
+  return coarseFreeAngles(1).map((angle) => rotationDimensions(part, angle))
+}
+
+function entryFitsEmptyStock(
+  entry: SequenceEntry,
+  stock: SheetStock,
+  freeDimensions?: FitDimensions[],
+): boolean {
+  const width = stock.widthMm - stock.marginMm * 2
+  const height = stock.heightMm - stock.marginMm * 2
+  if (freeDimensions) {
+    return freeDimensions.some(
+      (variant) =>
+        variant.width <= width + 1e-9 && variant.height <= height + 1e-9,
+    )
+  }
+  if (entry.variant !== 'best') {
+    return (
+      entry.variant.width <= width + 1e-9 &&
+      entry.variant.height <= height + 1e-9
+    )
+  }
+  return entry.part.rotations.some((rotation) => {
+    const dimensions = rotationDimensions(entry.part, rotation)
+    return (
+      dimensions.width <= width + 1e-9 &&
+      dimensions.height <= height + 1e-9
+    )
+  })
+}
+
+/**
+ * Capacity-aware maximum matching over stock types (never per-sheet slots).
+ * Current is augmented first, so later reroutes preserve a maximum assignment
+ * that includes the part we must place now.
+ */
+function chooseStockByFutureMatching(
+  sequence: SequenceEntry[],
+  start: number,
+  stock: SheetStock[],
+  compatibility: boolean[][],
+  currentPreference: number[],
+  signal?: AbortSignal,
+): number | null {
+  if (currentPreference.length === 0) return null
+  const assignedStock = new Int32Array(sequence.length)
+  assignedStock.fill(-1)
+  const assignedParts = stock.map(() => new Set<number>())
+
+  const augment = (root: number): boolean => {
+    const queue = [root]
+    const seenParts = new Uint8Array(sequence.length)
+    const seenStocks = new Uint8Array(stock.length)
+    const parentPart = new Int32Array(stock.length)
+    parentPart.fill(-1)
+    seenParts[root] = 1
+
+    for (let head = 0; head < queue.length; head++) {
+      if (signal?.aborted) return false
+      const partIndex = queue[head]!
+      const choices =
+        partIndex === start
+          ? currentPreference
+          : stock
+              .map((_item, stockIndex) => stockIndex)
+              .filter((stockIndex) => compatibility[partIndex]![stockIndex])
+      for (const stockIndex of choices) {
+        if (signal?.aborted) return false
+        if (
+          seenStocks[stockIndex] ||
+          stock[stockIndex]!.remaining <= 0 ||
+          !compatibility[partIndex]![stockIndex]
+        ) {
+          continue
+        }
+        seenStocks[stockIndex] = 1
+        parentPart[stockIndex] = partIndex
+        if (assignedParts[stockIndex]!.size < stock[stockIndex]!.remaining) {
+          let destination = stockIndex
+          while (destination >= 0) {
+            const movingPart = parentPart[destination]!
+            const previous = assignedStock[movingPart]!
+            if (previous >= 0) assignedParts[previous]!.delete(movingPart)
+            assignedParts[destination]!.add(movingPart)
+            assignedStock[movingPart] = destination
+            destination = previous
+          }
+          return true
+        }
+        for (const matchedPart of assignedParts[stockIndex]!) {
+          if (seenParts[matchedPart]) continue
+          seenParts[matchedPart] = 1
+          queue.push(matchedPart)
+        }
+      }
+    }
+    return false
+  }
+
+  for (let partIndex = start; partIndex < sequence.length; partIndex++) {
+    if (signal?.aborted) break
+    augment(partIndex)
+  }
+  const chosen = assignedStock[start]!
+  return chosen >= 0 ? chosen : null
+}
+
+/** Matching is exact when area proves no sheet can hold two relevant parts. */
+function mayShareFutureSheet(
+  sequence: SequenceEntry[],
+  start: number,
+  stock: SheetStock[],
+  compatibility: boolean[][],
+  currentArea: number,
+  candidateStocks: Set<number>,
+): boolean {
+  for (let stockIndex = 0; stockIndex < stock.length; stockIndex++) {
+    if (stock[stockIndex]!.remaining <= 0) continue
+    const usableArea =
+      (stock[stockIndex]!.widthMm - stock[stockIndex]!.marginMm * 2) *
+      (stock[stockIndex]!.heightMm - stock[stockIndex]!.marginMm * 2)
+    let smallest = Infinity
+    let second = Infinity
+    for (let partIndex = start; partIndex < sequence.length; partIndex++) {
+      if (!compatibility[partIndex]![stockIndex]) continue
+      const area = sequence[partIndex]!.part.area
+      if (area < smallest) {
+        second = smallest
+        smallest = area
+      } else if (area < second) {
+        second = area
+      }
+    }
+    if (
+      (candidateStocks.has(stockIndex) &&
+        currentArea + smallest <= usableArea + 1e-9) ||
+      smallest + second <= usableArea + 1e-9
+    ) {
+      return true
     }
   }
-  return queue
+  return false
 }
 
 function isValidPlacement(
@@ -132,6 +309,7 @@ function tryPlaceOnSheet(
   allowPartInPart: boolean,
   signal?: AbortSignal,
   packBias?: PackBias,
+  exactNfp = false,
 ): { x: number; y: number } | null {
   if (signal?.aborted) return null
 
@@ -166,6 +344,7 @@ function tryPlaceOnSheet(
     placedMeta,
     signal,
     packBias,
+    exactNfp,
   )
   const candidateGenMs = performance.now() - tCand
 
@@ -188,6 +367,8 @@ function tryPlaceOnSheet(
         other.solid,
         variant.solid,
         spacingMm,
+        placedSolids,
+        signal,
       )
       if (!fit?.translation) continue
       const world = variantWorldSolid(
@@ -239,15 +420,18 @@ function evaluateAngles(
   allowPartInPart: boolean,
   signal: AbortSignal | undefined,
   bias: PackBias,
+  exactNfp: boolean,
+  keep = 1,
 ): PlaceCand[] {
   const ok: PlaceCand[] = []
   const seen = new Set<number>()
   for (const ang of angles) {
     if (signal?.aborted) break
-    const key = Math.round((((ang % 360) + 360) % 360) * 1000) / 1000
+    const remainder = ang % 360
+    const key = remainder < 0 ? remainder + 360 : remainder || 0
     if (seen.has(key)) continue
     seen.add(key)
-    const v = getOrCreateVariant(part, ang)
+    const v = createVariant(part, ang)
     const pos = tryPlaceOnSheet(
       v,
       sheet,
@@ -255,16 +439,20 @@ function evaluateAngles(
       allowPartInPart,
       signal,
       bias,
+      exactNfp,
     )
-    if (pos) ok.push({ variant: v, ...pos })
+    if (pos) {
+      ok.push({ variant: v, ...pos })
+      ok.sort((a, b) => comparePlaceCand(a, b, bias))
+      if (ok.length > keep) ok.length = keep
+    }
   }
-  ok.sort((a, b) => comparePlaceCand(a, b, bias))
   return ok
 }
 
 /**
  * Pick rotation + translation for a part.
- * Free cascade depths: coarse (15°) / full (→5°→1°) / seed (refine around gene).
+ * Free depths: coarse (15°) / full (exhaustive 1°) / seed (refine around gene).
  */
 function pickBestVariant(
   part: PreparedPart,
@@ -277,12 +465,14 @@ function pickBestVariant(
     freeCascade: boolean
     depth: FreeAngleDepth
     seedRotation?: number
+    exactNfp: boolean
   },
 ): PlaceCand | null {
   const bias = resolvePackBias(packBias)
+  const exactNfp = opts.exactNfp
 
   if (!opts.freeCascade) {
-    const angles = part.variants.map((v) => v.rotation)
+    const angles = part.rotations
     const ok = evaluateAngles(
       part,
       angles,
@@ -291,6 +481,21 @@ function pickBestVariant(
       allowPartInPart,
       signal,
       bias,
+      exactNfp,
+    )
+    return ok[0] ?? null
+  }
+
+  if (opts.depth === 'full') {
+    const ok = evaluateAngles(
+      part,
+      coarseFreeAngles(1),
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      bias,
+      exactNfp,
     )
     return ok[0] ?? null
   }
@@ -310,6 +515,7 @@ function pickBestVariant(
       allowPartInPart,
       signal,
       bias,
+      exactNfp,
     )
     if (!ok.length) {
       ok = evaluateAngles(
@@ -320,6 +526,7 @@ function pickBestVariant(
         allowPartInPart,
         signal,
         bias,
+        exactNfp,
       )
     }
     if (!ok.length) {
@@ -333,6 +540,7 @@ function pickBestVariant(
         allowPartInPart,
         signal,
         bias,
+        exactNfp,
       )
     }
   } else {
@@ -346,10 +554,11 @@ function pickBestVariant(
       allowPartInPart,
       signal,
       bias,
+      exactNfp,
+      opts.depth === 'medium' ? topK : 1,
     )
     if (
-      (opts.depth === 'full' || opts.depth === 'medium') &&
-      ok.length
+      opts.depth === 'medium' && ok.length
     ) {
       const centers = ok.slice(0, topK).map((c) => c.variant.rotation)
       const refined = evaluateAngles(
@@ -360,6 +569,7 @@ function pickBestVariant(
         allowPartInPart,
         signal,
         bias,
+        exactNfp,
       )
       if (refined.length) ok = refined
     }
@@ -384,6 +594,7 @@ function pickBestVariant(
     allowPartInPart,
     signal,
     bias,
+    exactNfp,
   )
   if (finals.length) ok = finals
   return ok[0] ?? null
@@ -411,7 +622,7 @@ function commit(
 
 function placeSequence(
   request: NestingRequest,
-  sequence: Array<{ part: PreparedPart; variant: PreparedVariant | 'best' }>,
+  sequence: SequenceEntry[],
   options: BlfOptions,
   t0: number,
 ): NestingResult {
@@ -427,6 +638,9 @@ function placeSequence(
     : options.polishFreeAngles
       ? 'seed'
       : (options.freeAngleDepth ?? 'coarse')
+  const exactNfp =
+    options.nfpFidelity === 'exact' ||
+    (options.nfpFidelity == null && (freeDepth === 'full' || !freeCascade))
   const signal = options.signal
   const level = request.settings.optimizationLevel
   const partCount = sequence.length
@@ -454,8 +668,8 @@ function placeSequence(
     }
   }
 
-  const sheetQueue = expandSheetQueue(request)
-  if (sheetQueue.length === 0) {
+  const sheetStock = buildSheetStock(request)
+  if (sheetStock.length === 0) {
     return buildSuccess(
       request,
       [],
@@ -469,6 +683,156 @@ function placeSequence(
   const sheets: SheetState[] = []
   const unplaced: string[] = []
   const total = sequence.length || 1
+  const freeDimensionCache = new Map<PreparedPart, FitDimensions[]>()
+  const fitsStock = (entry: SequenceEntry, stock: SheetStock): boolean => {
+    let dimensions: FitDimensions[] | undefined
+    if (freeCascade && entry.variant === 'best') {
+      dimensions = freeDimensionCache.get(entry.part)
+      if (!dimensions) {
+        dimensions = freeAngleDimensions(entry.part)
+        freeDimensionCache.set(entry.part, dimensions)
+      }
+    }
+    return entryFitsEmptyStock(entry, stock, dimensions)
+  }
+  const stockCompatibility = sequence.map((entry) =>
+    sheetStock.map((stock) => fitsStock(entry, stock)),
+  )
+
+  const findEntryPlacement = (
+    entry: SequenceEntry,
+    sheet: SheetState,
+  ): PlaceCand | null => {
+    const { part, variant } = entry
+    if (variant === 'best') {
+      const depthForBest = freeDepth === 'seed' ? 'coarse' : freeDepth
+      return pickBestVariant(
+        part,
+        sheet,
+        spacing,
+        allowPartInPart,
+        signal,
+        packBias,
+        { freeCascade, depth: depthForBest, exactNfp },
+      )
+    }
+    if (freeCascade && freeDepth === 'seed') {
+      return pickBestVariant(
+        part,
+        sheet,
+        spacing,
+        allowPartInPart,
+        signal,
+        packBias,
+        {
+          freeCascade: true,
+          depth: 'seed',
+          seedRotation: variant.rotation,
+          exactNfp,
+        },
+      )
+    }
+    const pos = tryPlaceOnSheet(
+      variant,
+      sheet,
+      spacing,
+      allowPartInPart,
+      signal,
+      packBias,
+      exactNfp,
+    )
+    return pos ? { variant, ...pos } : null
+  }
+
+  const compareStockTrials = (
+    a: { usableArea: number; maxSlack: number; trial: SheetState },
+    b: { usableArea: number; maxSlack: number; trial: SheetState },
+  ) =>
+    a.usableArea - b.usableArea ||
+    a.maxSlack - b.maxSlack ||
+    a.trial.widthMm - b.trial.widthMm ||
+    a.trial.heightMm - b.trial.heightMm
+
+  const simulateFuturePlaced = (
+    start: number,
+    initialSheets: SheetState[],
+    initialStock: SheetStock[],
+  ): { placedCount: number; sheets: SheetState[]; stock: SheetStock[] } => {
+    const simulatedSheets = initialSheets.map((sheet) => ({
+      ...sheet,
+      placed: sheet.placed.slice(),
+    }))
+    const simulatedStock = initialStock.map((stock) => ({ ...stock }))
+    let placedCount = 0
+
+    for (let partIndex = start; partIndex < sequence.length; partIndex++) {
+      if (signal?.aborted) break
+      const entry = sequence[partIndex]!
+      let placed = false
+      for (const sheet of simulatedSheets) {
+        const best = findEntryPlacement(entry, sheet)
+        if (!best) continue
+        commit(sheet, entry.part.partId, entry.part.area, best)
+        placed = true
+        placedCount += 1
+        break
+      }
+      if (placed || signal?.aborted) continue
+
+      const candidates: Array<{
+        stockIndex: number
+        stock: SheetStock
+        trial: SheetState
+        best: PlaceCand
+        usableArea: number
+        maxSlack: number
+      }> = []
+      for (let stockIndex = 0; stockIndex < simulatedStock.length; stockIndex++) {
+        const stock = simulatedStock[stockIndex]!
+        if (stock.remaining <= 0) continue
+        const trial: SheetState = {
+          index: simulatedSheets.length,
+          widthMm: stock.widthMm,
+          heightMm: stock.heightMm,
+          marginMm: stock.marginMm,
+          placed: [],
+        }
+        const best = findEntryPlacement(entry, trial)
+        if (!best) continue
+        const usableWidth = stock.widthMm - stock.marginMm * 2
+        const usableHeight = stock.heightMm - stock.marginMm * 2
+        candidates.push({
+          stockIndex,
+          stock,
+          trial,
+          best,
+          usableArea: usableWidth * usableHeight,
+          maxSlack: Math.max(
+            usableWidth - best.variant.width,
+            usableHeight - best.variant.height,
+          ),
+        })
+      }
+      candidates.sort(compareStockTrials)
+      const selectedIndex = chooseStockByFutureMatching(
+        sequence,
+        partIndex,
+        simulatedStock,
+        stockCompatibility,
+        candidates.map((candidate) => candidate.stockIndex),
+        signal,
+      )
+      const selected = candidates.find(
+        (candidate) => candidate.stockIndex === selectedIndex,
+      )
+      if (!selected) continue
+      commit(selected.trial, entry.part.partId, entry.part.area, selected.best)
+      simulatedSheets.push(selected.trial)
+      selected.stock.remaining -= 1
+      placedCount += 1
+    }
+    return { placedCount, sheets: simulatedSheets, stock: simulatedStock }
+  }
 
   for (let i = 0; i < sequence.length; i++) {
     if (signal?.aborted) {
@@ -481,7 +845,7 @@ function placeSequence(
       }
     }
 
-    const { part, variant } = sequence[i]!
+    const { part } = sequence[i]!
     let placed = false
     let sheetsTried = 0
     const tPart = performance.now()
@@ -496,71 +860,220 @@ function placeSequence(
       })
     }
 
-    const tryOn = (
-      sheet: SheetState,
-    ): { variant: PreparedVariant; x: number; y: number } | null => {
+    const tryOn = (sheet: SheetState): PlaceCand | null => {
       sheetsTried += 1
-      if (variant === 'best') {
-        const depthForBest =
-          freeDepth === 'seed' ? 'coarse' : freeDepth
-        return pickBestVariant(
-          part,
-          sheet,
-          spacing,
-          allowPartInPart,
-          signal,
-          packBias,
-          { freeCascade, depth: depthForBest },
-        )
-      }
-      if (freeCascade && freeDepth === 'seed') {
-        return pickBestVariant(
-          part,
-          sheet,
-          spacing,
-          allowPartInPart,
-          signal,
-          packBias,
-          {
-            freeCascade: true,
-            depth: 'seed',
-            seedRotation: variant.rotation,
-          },
-        )
-      }
-      const pos = tryPlaceOnSheet(
-        variant,
-        sheet,
-        spacing,
-        allowPartInPart,
-        signal,
-        packBias,
-      )
-      return pos ? { variant, ...pos } : null
+      return findEntryPlacement(sequence[i]!, sheet)
     }
 
-    for (const sheet of sheets) {
+    const existingCandidates: Array<{
+      sheet: SheetState
+      sheetPosition: number
+      best: PlaceCand
+    }> = []
+    for (let sheetPosition = 0; sheetPosition < sheets.length; sheetPosition++) {
       if (signal?.aborted) break
+      const sheet = sheets[sheetPosition]!
       const best = tryOn(sheet)
+      if (signal?.aborted) break
       if (!best) continue
-      commit(sheet, part.partId, part.area, best)
-      placed = true
-      break
+      existingCandidates.push({ sheet, sheetPosition, best })
     }
 
-    if (!placed && !signal?.aborted && sheets.length < sheetQueue.length) {
-      const def = sheetQueue[sheets.length]!
-      const trial: SheetState = {
-        index: sheets.length,
-        widthMm: def.widthMm,
-        heightMm: def.heightMm,
-        marginMm: def.marginMm,
-        placed: [],
+    if (existingCandidates.length > 0 && !signal?.aborted) {
+      type ExistingOrOpening =
+        | { kind: 'existing'; value: (typeof existingCandidates)[number] }
+        | {
+            kind: 'opening'
+            stockIndex: number
+            stock: SheetStock
+            trial: SheetState
+            best: PlaceCand
+          }
+      const choices: ExistingOrOpening[] = existingCandidates.map((value) => ({
+        kind: 'existing',
+        value,
+      }))
+      for (let stockIndex = 0; stockIndex < sheetStock.length; stockIndex++) {
+        const stock = sheetStock[stockIndex]!
+        if (
+          stock.remaining <= 0 ||
+          !stockCompatibility[i]![stockIndex]
+        ) {
+          continue
+        }
+        const trial: SheetState = {
+          index: sheets.length,
+          widthMm: stock.widthMm,
+          heightMm: stock.heightMm,
+          marginMm: stock.marginMm,
+          placed: [],
+        }
+        const best = tryOn(trial)
+        if (best) {
+          choices.push({ kind: 'opening', stockIndex, stock, trial, best })
+        }
       }
-      const best = tryOn(trial)
-      if (best) {
-        commit(trial, part.partId, part.area, best)
-        sheets.push(trial)
+
+      let selected = choices[0]!
+      let completedSuffix:
+        | { placedCount: number; sheets: SheetState[]; stock: SheetStock[] }
+        | undefined
+      if (choices.length > 1 && i + 1 < sequence.length) {
+        let bestFuture = -1
+        for (const choice of choices) {
+          if (signal?.aborted) break
+          const futureSheets = sheets.map((sheet) => ({
+            ...sheet,
+            placed: sheet.placed.slice(),
+          }))
+          const futureStock = sheetStock.map((stock) => ({ ...stock }))
+          if (choice.kind === 'existing') {
+            commit(
+              futureSheets[choice.value.sheetPosition]!,
+              part.partId,
+              part.area,
+              choice.value.best,
+            )
+          } else {
+            const opened = { ...choice.trial, placed: choice.trial.placed.slice() }
+            commit(opened, part.partId, part.area, choice.best)
+            futureSheets.push(opened)
+            futureStock[choice.stockIndex]!.remaining -= 1
+          }
+          const simulation = simulateFuturePlaced(
+            i + 1,
+            futureSheets,
+            futureStock,
+          )
+          if (simulation.placedCount > bestFuture) {
+            bestFuture = simulation.placedCount
+            selected = choice
+          }
+          if (
+            !signal?.aborted &&
+            simulation.placedCount === sequence.length - (i + 1)
+          ) {
+            selected = choice
+            completedSuffix = simulation
+            break
+          }
+        }
+      }
+      if (completedSuffix) {
+        if (isBlfProfiling()) {
+          blfProfileEndPart({
+            placed: true,
+            placementMs: performance.now() - tPart,
+            sheetsTried,
+          })
+        }
+        return snapshot(completedSuffix.sheets, unplaced)
+      }
+      if (!signal?.aborted) {
+        if (selected.kind === 'existing') {
+          commit(selected.value.sheet, part.partId, part.area, selected.value.best)
+        } else {
+          commit(selected.trial, part.partId, part.area, selected.best)
+          sheets.push(selected.trial)
+          selected.stock.remaining -= 1
+        }
+        placed = true
+      }
+    }
+
+    if (!placed && !signal?.aborted) {
+      const candidates: Array<{
+        stockIndex: number
+        stock: SheetStock
+        trial: SheetState
+        best: PlaceCand
+        usableArea: number
+        maxSlack: number
+      }> = []
+      for (let stockIndex = 0; stockIndex < sheetStock.length; stockIndex++) {
+        const stock = sheetStock[stockIndex]!
+        if (stock.remaining <= 0) continue
+        const trial: SheetState = {
+          index: sheets.length,
+          widthMm: stock.widthMm,
+          heightMm: stock.heightMm,
+          marginMm: stock.marginMm,
+          placed: [],
+        }
+        const best = tryOn(trial)
+        if (signal?.aborted) break
+        if (!best) continue
+        const usableWidth = stock.widthMm - stock.marginMm * 2
+        const usableHeight = stock.heightMm - stock.marginMm * 2
+        candidates.push({
+          stockIndex,
+          stock,
+          trial,
+          best,
+          usableArea: usableWidth * usableHeight,
+          maxSlack: Math.max(
+            usableWidth - best.variant.width,
+            usableHeight - best.variant.height,
+          ),
+        })
+      }
+      candidates.sort(compareStockTrials)
+      const selectedIndex = chooseStockByFutureMatching(
+        sequence,
+        i,
+        sheetStock,
+        stockCompatibility,
+        candidates.map((candidate) => candidate.stockIndex),
+        signal,
+      )
+      let selected = candidates.find(
+        (candidate) => candidate.stockIndex === selectedIndex,
+      )
+      if (
+        candidates.length > 1 &&
+        i + 1 < sequence.length &&
+        mayShareFutureSheet(
+          sequence,
+          i + 1,
+          sheetStock,
+          stockCompatibility,
+          part.area,
+          new Set(candidates.map((candidate) => candidate.stockIndex)),
+        )
+      ) {
+        const scored = candidates.map((candidate, preference) => {
+          const futureSheets = sheets.map((sheet) => ({
+            ...sheet,
+            placed: sheet.placed.slice(),
+          }))
+          const opened = {
+            ...candidate.trial,
+            placed: candidate.trial.placed.slice(),
+          }
+          commit(opened, part.partId, part.area, candidate.best)
+          futureSheets.push(opened)
+          const futureStock = sheetStock.map((stock) => ({ ...stock }))
+          futureStock[candidate.stockIndex]!.remaining -= 1
+          return {
+            candidate,
+            preference,
+            score: simulateFuturePlaced(i + 1, futureSheets, futureStock)
+              .placedCount,
+          }
+        })
+        scored.sort(
+          (a, b) =>
+            b.score - a.score ||
+            Number(b.candidate.stockIndex === selectedIndex) -
+              Number(a.candidate.stockIndex === selectedIndex) ||
+            a.preference - b.preference,
+        )
+        selected = scored[0]?.candidate
+      }
+      if (selected && !signal?.aborted) {
+        commit(selected.trial, part.partId, part.area, selected.best)
+        sheets.push(selected.trial)
+        selected.stock.remaining -= 1
         placed = true
       }
     }
@@ -574,8 +1087,9 @@ function placeSequence(
     }
 
     if (signal?.aborted) {
-      const remaining = sequence.slice(i).map((s) => s.part.partId)
-      // Current part not committed → remaining includes it
+      const remaining = sequence
+        .slice(i + (placed ? 1 : 0))
+        .map((s) => s.part.partId)
       const bestSoFar = snapshot(sheets, [...unplaced, ...remaining])
       return {
         status: 'cancelled',
@@ -586,23 +1100,25 @@ function placeSequence(
 
     if (!placed) unplaced.push(part.partId)
 
-    const placedCount = sheets.reduce((n, s) => n + s.placed.length, 0)
-    const partial = snapshot(sheets, [
-      ...unplaced,
-      ...sequence.slice(i + 1).map((s) => s.part.partId),
-    ])
-    options.onProgress?.({
-      ratio: 0.08 + (0.85 * (i + 1)) / total,
-      phase: 'seed',
-      placedCount,
-      partCount,
-      unplacedCount: unplaced.length + (partCount - (i + 1)),
-      sheetCount: sheets.length,
-      optimizationLevel: level,
-      elapsedMs: performance.now() - t0,
-      message: `BLF · ${placedCount} / ${partCount} parça · sheet ${sheets.length || 1}`,
-      bestSoFar: partial,
-    })
+    if (options.onProgress) {
+      const placedCount = sheets.reduce((n, s) => n + s.placed.length, 0)
+      const partial = snapshot(sheets, [
+        ...unplaced,
+        ...sequence.slice(i + 1).map((s) => s.part.partId),
+      ])
+      options.onProgress({
+        ratio: 0.08 + (0.85 * (i + 1)) / total,
+        phase: 'seed',
+        placedCount,
+        partCount,
+        unplacedCount: unplaced.length + (partCount - (i + 1)),
+        sheetCount: sheets.length,
+        optimizationLevel: level,
+        elapsedMs: performance.now() - t0,
+        message: `BLF · ${placedCount} / ${partCount} parça · sheet ${sheets.length || 1}`,
+        bestSoFar: partial,
+      })
+    }
   }
 
   const placements = sheets.flatMap((s) => s.placed.map((p) => p.placement))
@@ -622,6 +1138,7 @@ export function runBottomLeftNest(
   options: BlfOptions = {},
 ): NestingResult {
   const t0 = performance.now()
+  validateNestingRequest(request)
   const shouldProfile =
     options.profile === true || request.settings.profileBlf === true
   if (shouldProfile) beginBlfProfiling()
@@ -665,6 +1182,16 @@ export function placeWithOrder(
   order: string[],
   options: BlfOptions = {},
 ): NestingResult {
+  validateNestingRequest(request)
+  return placeWithOrderUnchecked(request, order, options)
+}
+
+/** Internal optimizer path; request must already have passed validation. */
+export function placeWithOrderUnchecked(
+  request: NestingRequest,
+  order: string[],
+  options: BlfOptions = {},
+): NestingResult {
   const t0 = performance.now()
   const prepared = prepareParts(request.parts, request.settings, {
     sortByArea: false,
@@ -699,7 +1226,21 @@ export function placeWithPlan(
   plan: PlacementPlan,
   options: BlfOptions = {},
 ): NestingResult {
+  validateNestingRequest(request)
+  validatePlacementPlan(plan)
+  return placeWithPlanUnchecked(request, plan, options)
+}
+
+/** Internal optimizer path; request must already have passed validation. */
+export function placeWithPlanUnchecked(
+  request: NestingRequest,
+  plan: PlacementPlan,
+  options: BlfOptions = {},
+): NestingResult {
   const t0 = performance.now()
+  if (plan.rotations.some((rotation) => !Number.isFinite(rotation))) {
+    throw new RangeError('Plan rotation values must be finite')
+  }
   // Reuse shared NFP cache across gene evaluations (session opened by BLF baseline)
   const prepared = prepareParts(request.parts, request.settings, {
     sortByArea: false,
@@ -707,10 +1248,13 @@ export function placeWithPlan(
   const byId = new Map(prepared.map((p) => [p.partId, p]))
 
   const sequence: Array<{ part: PreparedPart; variant: PreparedVariant }> = []
+  const seen = new Set<string>()
   for (let i = 0; i < plan.order.length; i++) {
     const id = plan.order[i]!
+    if (seen.has(id)) continue
     const part = byId.get(id)
     if (!part) continue
+    seen.add(id)
     const rot = plan.rotations[i] ?? part.variants[0]?.rotation ?? 0
     const variant = findVariant(part, rot)
     if (!variant) continue
@@ -719,7 +1263,7 @@ export function placeWithPlan(
 
   // Any prepared parts missing from plan go last unplaced-attempted
   for (const part of prepared) {
-    if (!plan.order.includes(part.partId)) {
+    if (!seen.has(part.partId)) {
       const variant = part.variants[0]
       if (variant) sequence.push({ part, variant })
     }
@@ -741,6 +1285,7 @@ export function buildSuccess(
   t0: number,
   engineId: string,
 ): NestingSuccess {
+  const partAreaById = new Map(request.parts.map((part) => [part.id, part.area]))
   const sheetResults: SheetResult[] = sheets.map((s) => {
     const partArea = s.placed.reduce((a, p) => a + p.area, 0)
     const usable =
@@ -774,21 +1319,20 @@ export function buildSuccess(
   })
 
   const totalPartArea = request.parts.reduce((a, p) => a + p.area, 0)
-  const placedArea = placements.reduce((a, pl) => {
-    const part = request.parts.find((p) => p.id === pl.partId)
-    return a + (part?.area ?? 0)
-  }, 0)
+  const placedArea = placements.reduce(
+    (area, placement) => area + (partAreaById.get(placement.partId) ?? 0),
+    0,
+  )
   const totalSheetArea = sheetResults.reduce(
     (a, s) => a + Math.max(0, s.widthMm) * Math.max(0, s.heightMm),
     0,
   )
-  const usableTotal = sheetResults.reduce((a, s) => {
-    const m =
-      sheets.find((x) => x.index === s.sheetIndex)?.marginMm ??
-      request.sheets[0]?.marginMm ??
-      0
+  const usableTotal = sheets.reduce((a, sheet) => {
+    const m = sheet.marginMm
     return (
-      a + Math.max(0, s.widthMm - 2 * m) * Math.max(0, s.heightMm - 2 * m)
+      a +
+      Math.max(0, sheet.widthMm - 2 * m) *
+        Math.max(0, sheet.heightMm - 2 * m)
     )
   }, 0)
   const utilization = usableTotal > 0 ? placedArea / usableTotal : 0

@@ -5,7 +5,7 @@ import {
 } from './collide'
 import { geomEps } from './tolerance'
 import type { Point, Polygon } from './types'
-import { boundingBox, centroid, pointInPolygon } from './ops'
+import { boundingBox, pointInPolygon } from './ops'
 
 function edges(points: Point[]): Array<[Point, Point]> {
   const out: Array<[Point, Point]> = []
@@ -66,9 +66,6 @@ export function polygonContainsPolygon(container: Polygon, inner: Polygon): bool
     const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }
     if (!pointInPolygonClosed(mid, C)) return false
   }
-  const c = centroid(I)
-  if (!pointInPolygonClosed(c, C)) return false
-
   // Proper edge crossings ⇒ not contained
   for (const [a, b] of edges(I)) {
     for (const [c0, d0] of edges(C)) {

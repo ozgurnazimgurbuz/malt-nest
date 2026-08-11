@@ -1,7 +1,7 @@
 /**
- * Stage-1 + Stage-2 shortlist fix Demo.svg benchmark.
+ * Stage-1 + Stage-2 order coverage Demo.svg benchmark.
  *
- * Stage 2: 0° Top-K + mandatory area_desc → full cascade each → packed-bounds pick.
+ * Stage 2: all distinct ranked orders + mandatory area_desc → full cascade each.
  *
  * Run: RUN_DEMO_COMPARE=1 npx vitest run src/nesting/optimization/freeAngle.demo.compare.test.ts
  */
@@ -16,7 +16,8 @@ import {
   runBottomLeftNest,
 } from '../placement/blf'
 import {
-  isBetterPackedBounds,
+  compareNestingResults,
+  isBetterNestingResult,
   packedBoundsMm2,
   scoreNestingResult,
 } from '../scoring/fitness'
@@ -33,7 +34,6 @@ const STAGE1_TARGET_BOUNDS = 780_097
 const STAGE1_BOUNDS_TOL_MM2 = 50
 
 const ORDER_SEARCH_LIMIT = 12
-const ORDER_POLISH_TOP_K = 2
 
 function settings(): NestingSettings {
   return {
@@ -55,10 +55,10 @@ function settings(): NestingSettings {
 }
 
 describe.skipIf(process.env.RUN_DEMO_COMPARE !== '1')(
-  'Demo.svg Stage-2 shortlist + full cascade',
+  'Demo.svg Stage-2 order coverage + full cascade',
   () => {
     it(
-      'Top-K + mandatory area_desc get full cascade; Stage1 floor kept',
+      'all orders + mandatory area_desc get full cascade; Stage1 floor kept',
       () => {
         const raw = readFileSync(DEMO, 'utf8')
         const geo = parseSvgGeometry(raw)
@@ -86,7 +86,7 @@ describe.skipIf(process.env.RUN_DEMO_COMPARE !== '1')(
         const baselineCandidate = baselineRaw
         const baselineBounds = packedBoundsMm2(baselineCandidate)
 
-        // —— STAGE 2: 0° rank → shortlist (Top-K + area_desc) → full each ——
+        // —— STAGE 2: 0° rank → all distinct orders + area_desc → full each ——
         beginPlacementSession()
         const prepared = prepareParts(geo.parts, nestSettings, {
           sortByArea: false,
@@ -103,6 +103,7 @@ describe.skipIf(process.env.RUN_DEMO_COMPARE !== '1')(
           order: string[]
           scoreTotal: number
           bounds: number
+          result: NestingSuccess
         }
         const cheapTrials: Cheap[] = []
         for (const cand of candidates) {
@@ -121,9 +122,10 @@ describe.skipIf(process.env.RUN_DEMO_COMPARE !== '1')(
             order: cand.order,
             scoreTotal: scoreNestingResult(placed).total,
             bounds: packedBoundsMm2(placed),
+            result: placed,
           })
         }
-        cheapTrials.sort((a, b) => a.scoreTotal - b.scoreTotal)
+        cheapTrials.sort((a, b) => compareNestingResults(a.result, b.result))
 
         type Short = { name: string; order: string[] }
         const shortlist: Short[] = []
@@ -134,7 +136,7 @@ describe.skipIf(process.env.RUN_DEMO_COMPARE !== '1')(
           seen.add(key)
           shortlist.push({ name, order })
         }
-        for (const t of cheapTrials.slice(0, ORDER_POLISH_TOP_K)) {
+        for (const t of cheapTrials) {
           pushShort(t.name, t.order)
         }
         const areaCheap = cheapTrials.find((t) => t.name === 'area_desc')
@@ -181,7 +183,7 @@ describe.skipIf(process.env.RUN_DEMO_COMPARE !== '1')(
 
         let stage2Champ = fullRows[0]!
         for (const r of fullRows.slice(1)) {
-          if (isBetterPackedBounds(r.result, stage2Champ.result)) stage2Champ = r
+          if (isBetterNestingResult(r.result, stage2Champ.result)) stage2Champ = r
         }
         const msStage2 = performance.now() - tS20
         const stage2Bounds = stage2Champ.bounds
@@ -198,10 +200,10 @@ describe.skipIf(process.env.RUN_DEMO_COMPARE !== '1')(
         ]
         let winner = finalists[0]!
         for (const c of finalists.slice(1)) {
-          if (isBetterPackedBounds(c.result, winner.result)) winner = c
+          if (isBetterNestingResult(c.result, winner.result)) winner = c
         }
         // Explicit regression guard: Stage 2 may not degrade below Stage 1.
-        if (isBetterPackedBounds(baselineCandidate, winner.result)) {
+        if (isBetterNestingResult(baselineCandidate, winner.result)) {
           winner = { name: 'stage1_full', result: baselineCandidate }
         }
 

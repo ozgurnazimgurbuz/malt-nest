@@ -8,6 +8,7 @@ import {
   offsetPolygon,
   offsetSolid,
   partRotationOrigin,
+  polygonContainsPolygon,
   rotatePoints,
   solidFromRings,
   solidInsideHole,
@@ -278,6 +279,25 @@ describe('Stage 7 — NFP topology', () => {
 })
 
 describe('Stage 7 — hole regressions', () => {
+  it('accepts contained concave polygons whose centroid lies in their void', () => {
+    const container = {
+      points: [
+        { x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 10 },
+        { x: 7, y: 10 }, { x: 7, y: 3 }, { x: 3, y: 3 },
+        { x: 3, y: 10 }, { x: 0, y: 10 },
+      ],
+    }
+    const inner = {
+      points: [
+        { x: 1, y: 1 }, { x: 9, y: 1 }, { x: 9, y: 9 },
+        { x: 8, y: 9 }, { x: 8, y: 2 }, { x: 2, y: 2 },
+        { x: 2, y: 9 }, { x: 1, y: 9 },
+      ],
+    }
+
+    expect(polygonContainsPolygon(container, inner)).toBe(true)
+  })
+
   it('1. part fully inside hole — no solid overlap', () => {
     const host = donut()
     const guest = rect(20, 20, 40, 40)

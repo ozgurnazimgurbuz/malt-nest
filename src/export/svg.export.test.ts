@@ -60,10 +60,16 @@ function success(
   placements: Placement[],
   sheets: NestingSuccess['sheets'],
 ): NestingSuccess {
+  const countedSheets = sheets.map((value) => ({
+    ...value,
+    placedCount: placements.filter(
+      (placement) => placement.sheetIndex === value.sheetIndex,
+    ).length,
+  }))
   return {
     status: 'ok',
     placements,
-    sheets,
+    sheets: countedSheets,
     unplacedPartIds: [],
     utilization: 0.1,
     wasteMm2: 0,
@@ -72,7 +78,7 @@ function success(
       partCount: parts.length,
       placedCount: placements.length,
       unplacedCount: 0,
-      sheetCountUsed: sheets.length,
+      sheetCountUsed: countedSheets.length,
       totalPartAreaMm2: parts.reduce((a, p) => a + p.area, 0),
       totalSheetAreaMm2: sheets.reduce((a, s) => a + s.widthMm * s.heightMm, 0),
       overallUtilization: 0.1,
@@ -431,5 +437,137 @@ describe('Stage 8 — SVG export', () => {
       [sheet(0)],
     )
     expect(validateNestExport(result, parts).ok).toBe(false)
+  })
+
+  it('rejects placements on an unknown or invalid sheet index', () => {
+    const parts = [rect('a', 0, 10, 10)]
+    const unknown = success(
+      parts,
+      [{ partId: 'a', sheetIndex: 2, x: 0, y: 0, rotation: 0 }],
+      [sheet(0)],
+    )
+    const fractional = success(
+      parts,
+      [{ partId: 'a', sheetIndex: 0.5, x: 0, y: 0, rotation: 0 }],
+      [sheet(0)],
+    )
+
+    expect(validateNestExport(unknown, parts).ok).toBe(false)
+    expect(validateNestExport(fractional, parts).ok).toBe(false)
+  })
+
+  it('rejects duplicate sheet IDs and duplicate placements by part ID', () => {
+    const parts = [rect('a', 0, 10, 10)]
+    const duplicateSheet = success(
+      parts,
+      [{ partId: 'a', sheetIndex: 0, x: 0, y: 0, rotation: 0 }],
+      [sheet(0), sheet(0)],
+    )
+    const duplicatePart = success(
+      parts,
+      [
+        { partId: 'a', sheetIndex: 0, x: 0, y: 0, rotation: 0 },
+        { partId: 'a', sheetIndex: 0, x: 20, y: 0, rotation: 0 },
+      ],
+      [sheet(0)],
+    )
+
+    expect(validateNestExport(duplicateSheet, parts).ok).toBe(false)
+    expect(validateNestExport(duplicatePart, parts).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'duplicate_placement' }),
+      ]),
+    )
+  })
+
+  it('rejects transformed geometry outside its declared sheet', () => {
+    const parts = [rect('a', 0, 20, 20)]
+    const result = success(
+      parts,
+      [{ partId: 'a', sheetIndex: 0, x: -1, y: 0, rotation: 0 }],
+      [sheet(0, 10, 10)],
+    )
+
+    expect(validateNestExport(result, parts).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'out_of_bounds' }),
+      ]),
+    )
+  })
+
+  it('rejects inconsistent result and per-sheet placement counts', () => {
+    const parts = [rect('a', 0, 10, 10)]
+    const result = success(
+      parts,
+      [{ partId: 'a', sheetIndex: 0, x: 0, y: 0, rotation: 0 }],
+      [sheet(0)],
+    )
+    result.statistics.placedCount = 0
+    result.sheets[0]!.placedCount = 0
+
+    expect(validateNestExport(result, parts).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'inconsistent_counts' }),
+      ]),
+    )
+  })
+
+  it('rejects aliased source IDs and a corrupt placed/unplaced partition', () => {
+    const duplicateParts = [rect('a', 0, 10, 10), rect('a', 1, 12, 12)]
+    const duplicateSource = success(
+      duplicateParts,
+      [{ partId: 'a', sheetIndex: 0, x: 0, y: 0, rotation: 0 }],
+      [sheet(0)],
+    )
+    expect(validateNestExport(duplicateSource, duplicateParts).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'duplicate_part' }),
+      ]),
+    )
+
+    const parts = [rect('a', 0, 10, 10), rect('b', 1, 10, 10)]
+    const corruptPartition = success(
+      parts,
+      [{ partId: 'a', sheetIndex: 0, x: 0, y: 0, rotation: 0 }],
+      [sheet(0)],
+    )
+    corruptPartition.unplacedPartIds = ['a']
+    corruptPartition.statistics.unplacedCount = 1
+    expect(validateNestExport(corruptPartition, parts).ok).toBe(false)
+  })
+
+  it('rejects positive-area overlap between distinct placements on one sheet', () => {
+    const parts = [rect('a', 0, 20, 20), rect('b', 1, 20, 20)]
+    const result = success(
+      parts,
+      [
+        { partId: 'a', sheetIndex: 0, x: 10, y: 10, rotation: 0 },
+        { partId: 'b', sheetIndex: 0, x: 10, y: 10, rotation: 0 },
+      ],
+      [sheet(0)],
+    )
+
+    expect(validateNestExport(result, parts).issues).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: 'overlap' })]),
+    )
+    expect(exportNestingToSvg(result, parts).ok).toBe(false)
+  })
+
+  it('rejects malformed source rings before export', () => {
+    const malformed = {
+      ...rect('a', 0, 20, 20),
+      outer: { points: [{ x: 0, y: 0 }, { x: 20, y: 0 }] },
+    }
+    const result = success(
+      [malformed],
+      [{ partId: 'a', sheetIndex: 0, x: 10, y: 10, rotation: 0 }],
+      [sheet(0)],
+    )
+
+    expect(validateNestExport(result, [malformed]).issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'invalid_geometry' }),
+      ]),
+    )
   })
 })

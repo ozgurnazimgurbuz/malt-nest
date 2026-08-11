@@ -20,6 +20,11 @@ export function geomEps(): number {
   return epsMm
 }
 
+/** ClipperD precision required to preserve the configured length epsilon. */
+export function clipperPrecision(): number {
+  return Math.max(-8, Math.min(8, Math.ceil(-Math.log10(epsMm))))
+}
+
 export function nearlyZero(v: number, tol = epsMm): boolean {
   return Math.abs(v) <= tol
 }

@@ -16,7 +16,10 @@ export { runEvolutionaryNest } from './optimization/geneticOptimizer'
 export { nestInputToRequest, toNestingRequest } from './request'
 export {
   combineScore,
+  compareNestingResults,
+  compareScores,
   DEFAULT_SCORE_WEIGHTS,
+  isBetterNestingResult,
   isBetterScore,
   scoreNestingResult,
 } from './scoring'

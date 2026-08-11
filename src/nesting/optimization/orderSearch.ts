@@ -2,13 +2,13 @@ import type { PreparedPart } from '../core/prepare'
 import type { Rng } from './rng'
 
 function metricWidth(p: PreparedPart): number {
-  return Math.max(...p.variants.map((v) => v.width))
+  return p.maxWidth
 }
 function metricHeight(p: PreparedPart): number {
-  return Math.max(...p.variants.map((v) => v.height))
+  return p.maxHeight
 }
 function metricPerimeter(p: PreparedPart): number {
-  return Math.max(...p.variants.map((v) => v.perimeter))
+  return p.perimeter
 }
 function metricBBoxArea(p: PreparedPart): number {
   return metricWidth(p) * metricHeight(p)
@@ -57,12 +57,13 @@ export type OrderCandidate = {
 }
 
 /**
- * Build 8–16 distinct deterministic placement orders for cheap multi-start search.
+ * Build every distinct deterministic placement order used by multi-start search.
+ * An explicit limit remains available for profiling/diagnostic callers.
  */
 export function buildOrderCandidates(
   parts: PreparedPart[],
   rng: Rng,
-  limit = 14,
+  limit?: number,
 ): OrderCandidate[] {
   if (parts.length === 0) return []
   const out: OrderCandidate[] = []
@@ -89,9 +90,9 @@ export function buildOrderCandidates(
 
   // Deterministic shuffles from area order (reproducible via rng seed).
   const base = orderBy(parts, (p) => p.area)
-  for (let i = 0; i < 5 && out.length < limit; i++) {
+  for (let i = 0; i < 5 && (limit == null || out.length < limit); i++) {
     push(`shuffle_${i}`, rng.shuffle(base))
   }
 
-  return out.slice(0, limit)
+  return limit == null ? out : out.slice(0, limit)
 }

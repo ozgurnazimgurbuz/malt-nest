@@ -27,6 +27,13 @@ export type PreparedPart = {
   sourceIndex: number
   area: number
   variants: PreparedVariant[]
+  /** Allowed values are cheap; rotated solids are built only when evaluated. */
+  rotations: number[]
+  maxWidth: number
+  maxHeight: number
+  perimeter: number
+  widestRotation: number
+  tallestRotation: number
   hasHoles: boolean
   /** Source rings for lazy free-angle variants (mm space). */
   sourceOuter: Point[]
@@ -65,6 +72,7 @@ function buildVariant(
   outer: Point[],
   holes: Point[][],
   rot: number,
+  perimeter = ringPerimeter(outer),
 ): PreparedVariant {
   const solid = rotateSolidLocal(outer, holes, rot)
   const b = solid.bounds
@@ -77,8 +85,30 @@ function buildVariant(
     rankSize: Math.max(b.width, b.height),
     width: b.width,
     height: b.height,
-    perimeter: ringPerimeter(solid.outer.points),
+    perimeter,
   }
+}
+
+export function rotationDimensions(
+  part: Pick<PreparedPart, 'sourceOuter'>,
+  rotation: number,
+): { width: number; height: number } {
+  const radians = (rotation * Math.PI) / 180
+  const cosine = Math.cos(radians)
+  const sine = Math.sin(radians)
+  let minX = Infinity
+  let minY = Infinity
+  let maxX = -Infinity
+  let maxY = -Infinity
+  for (const point of part.sourceOuter) {
+    const x = point.x * cosine - point.y * sine
+    const y = point.x * sine + point.y * cosine
+    minX = Math.min(minX, x)
+    minY = Math.min(minY, y)
+    maxX = Math.max(maxX, x)
+    maxY = Math.max(maxY, y)
+  }
+  return { width: maxX - minX, height: maxY - minY }
 }
 
 export function prepareParts(
@@ -94,24 +124,46 @@ export function prepareParts(
     if (part.outer.points.length < 2) continue
     const sourceOuter = part.outer.points
     const sourceHoles = part.holes.map((h) => h.points)
-    const variants: PreparedVariant[] = []
-    for (const rot of rotations) {
-      variants.push(
-        buildVariant(
-          part.id,
-          i,
-          part.area,
-          sourceOuter,
-          sourceHoles,
-          rot,
-        ),
-      )
+    const firstRotation = rotations[0] ?? 0
+    const perimeter = ringPerimeter(sourceOuter)
+    const variants = [
+      buildVariant(
+        part.id,
+        i,
+        part.area,
+        sourceOuter,
+        sourceHoles,
+        firstRotation,
+        perimeter,
+      ),
+    ]
+    let maxWidth = 0
+    let maxHeight = 0
+    let widestRotation = firstRotation
+    let tallestRotation = firstRotation
+    const dimensionsPart = { sourceOuter }
+    for (const rotation of rotations) {
+      const dimensions = rotationDimensions(dimensionsPart, rotation)
+      if (dimensions.width > maxWidth) {
+        maxWidth = dimensions.width
+        widestRotation = rotation
+      }
+      if (dimensions.height > maxHeight) {
+        maxHeight = dimensions.height
+        tallestRotation = rotation
+      }
     }
     prepared.push({
       partId: part.id,
       sourceIndex: i,
       area: part.area,
       variants,
+      rotations,
+      maxWidth,
+      maxHeight,
+      perimeter,
+      widestRotation,
+      tallestRotation,
       hasHoles: part.holes.length > 0,
       sourceOuter,
       sourceHoles,
@@ -121,8 +173,8 @@ export function prepareParts(
   if (opts.sortByArea !== false) {
     prepared.sort((a, b) => {
       if (b.area !== a.area) return b.area - a.area
-      const as = Math.max(...a.variants.map((v) => v.rankSize))
-      const bs = Math.max(...b.variants.map((v) => v.rankSize))
+      const as = Math.max(a.maxWidth, a.maxHeight)
+      const bs = Math.max(b.maxWidth, b.maxHeight)
       if (bs !== as) return bs - as
       return a.partId.localeCompare(b.partId)
     })
@@ -136,8 +188,9 @@ export function getOrCreateVariant(
   part: PreparedPart,
   rotation: number,
 ): PreparedVariant {
-  const rot = ((rotation % 360) + 360) % 360
-  const exact = part.variants.find((v) => Math.abs(v.rotation - rot) < 1e-6)
+  const remainder = rotation % 360
+  const rot = remainder < 0 ? remainder + 360 : remainder || 0
+  const exact = part.variants.find((v) => Object.is(v.rotation, rot))
   if (exact) return exact
   const v = buildVariant(
     part.partId,
@@ -146,9 +199,32 @@ export function getOrCreateVariant(
     part.sourceOuter,
     part.sourceHoles,
     rot,
+    part.perimeter,
   )
   part.variants.push(v)
   return v
+}
+
+/** Build a one-shot evaluation variant without retaining the rotated solid. */
+export function createVariant(
+  part: PreparedPart,
+  rotation: number,
+): PreparedVariant {
+  const remainder = rotation % 360
+  const rot = remainder < 0 ? remainder + 360 : remainder || 0
+  const cached = part.variants.find((variant) => Object.is(variant.rotation, rot))
+  return (
+    cached ??
+    buildVariant(
+      part.partId,
+      part.sourceIndex,
+      part.area,
+      part.sourceOuter,
+      part.sourceHoles,
+      rot,
+      part.perimeter,
+    )
+  )
 }
 
 export function variantWorldSolid(

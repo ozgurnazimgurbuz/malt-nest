@@ -1,6 +1,12 @@
 import type { BoundingBox, GeometryPart, Point } from '../geometry'
-import { boundingBox, centroid, netArea, unionBounds } from '../geometry'
-import { classifySubpaths } from './contours'
+import {
+  boundingBox,
+  centroid,
+  netArea,
+  normalizeWinding,
+  unionBounds,
+} from '../geometry'
+import { classifySubpaths, type SvgFillRule } from './contours'
 import {
   applyMatrixToPoints,
   multiply,
@@ -63,9 +69,29 @@ function toMmPoints(points: Point[], scale: UserToMm): Point[] {
   const ox = scale.viewBox?.minX ?? 0
   const oy = scale.viewBox?.minY ?? 0
   return points.map((p) => ({
-    x: (p.x - ox) * scale.sx,
-    y: (p.y - oy) * scale.sy,
+    x: (p.x - ox) * scale.sx + scale.offsetXMm,
+    y: (p.y - oy) * scale.sy + scale.offsetYMm,
   }))
+}
+
+function resolveFillRule(el: Element, inherited: SvgFillRule): SvgFillRule {
+  const attribute = el.getAttribute('fill-rule')?.trim().toLowerCase()
+  if (attribute === 'evenodd' || attribute === 'nonzero') return attribute
+  const style = el.getAttribute('style') ?? ''
+  const inline = /(?:^|;)\s*fill-rule\s*:\s*(evenodd|nonzero)\b/i.exec(style)
+  return (inline?.[1]?.toLowerCase() as SvgFillRule | undefined) ?? inherited
+}
+
+/** Maximum physical stretch from element user space into millimeters. */
+function physicalScale(matrix: Matrix, scale: UserToMm): number {
+  const a = scale.sx * matrix.a
+  const b = scale.sy * matrix.b
+  const c = scale.sx * matrix.c
+  const d = scale.sy * matrix.d
+  const sum = a * a + b * b + c * c + d * d
+  const determinant = a * d - b * c
+  const discriminant = Math.max(0, sum * sum - 4 * determinant * determinant)
+  return Math.sqrt((sum + Math.sqrt(discriminant)) / 2)
 }
 
 function makePart(
@@ -79,10 +105,10 @@ function makePart(
     originalTransform: string | null
   },
 ): GeometryPart | null {
-  const outerPts = toMmPoints(outerUser, scale)
+  const outerPts = normalizeWinding(toMmPoints(outerUser, scale), true)
   if (outerPts.length < 2) return null
   const holes = holesUser
-    .map((h) => ({ points: toMmPoints(h, scale) }))
+    .map((h) => ({ points: normalizeWinding(toMmPoints(h, scale), false) }))
     .filter((h) => h.points.length >= 3)
   const all = [...outerPts, ...holes.flatMap((h) => h.points)]
   const box = boundingBox(all)
@@ -123,6 +149,9 @@ export function parseSvgGeometry(
 ): SvgGeometryDocument {
   const warnings: ParserWarning[] = []
   const curveToleranceMm = options.curveToleranceMm ?? 0.25
+  if (!Number.isFinite(curveToleranceMm) || curveToleranceMm <= 0) {
+    throw new RangeError('curveToleranceMm must be finite and positive')
+  }
 
   const doc = new DOMParser().parseFromString(raw, 'image/svg+xml')
   if (doc.querySelector('parsererror')) {
@@ -148,19 +177,26 @@ export function parseSvgGeometry(
     svg.getAttribute('height'),
     svg.getAttribute('viewBox'),
     warnings,
+    svg.getAttribute('preserveAspectRatio'),
   )
-
-  const avgScale = (Math.abs(scale.sx) + Math.abs(scale.sy)) / 2 || 1
-  const toleranceUser = curveToleranceMm / avgScale
+  if (!scale.supported) return emptyDoc(warnings)
 
   const parts: GeometryPart[] = []
   let index = 0
 
-  type Frame = { el: Element; matrix: Matrix }
+  const rootMatrix = parseTransform(
+    svg.getAttribute('transform'),
+    warnings,
+    'svg',
+  )
+  if (!rootMatrix) return emptyDoc(warnings)
+
+  type Frame = { el: Element; matrix: Matrix; fillRule: SvgFillRule }
   const stack: Frame[] = [
     {
       el: svg,
-      matrix: parseTransform(svg.getAttribute('transform'), warnings, 'svg'),
+      matrix: rootMatrix,
+      fillRule: resolveFillRule(svg, 'nonzero'),
     },
   ]
 
@@ -172,19 +208,37 @@ export function parseSvgGeometry(
     // Preview still uses the raw SVG, so paint defs remain visible there.
     if (SKIP_TAGS.has(name)) continue
 
+    if (name === 'svg' && frame.el !== svg) {
+      warnings.push({
+        code: 'unsupported_element',
+        message: 'Nested <svg> viewports are not supported',
+        element: 'svg',
+      })
+      continue
+    }
+
     if (SHAPE_TAGS.has(name)) {
       const local = parseTransform(
         frame.el.getAttribute('transform'),
         warnings,
         name,
       )
+      if (!local) continue
       const matrix = multiply(frame.matrix, local)
+      const scaleMm = physicalScale(matrix, scale)
+      const toleranceUser =
+        scaleMm > 0 && Number.isFinite(scaleMm)
+          ? curveToleranceMm / scaleMm
+          : curveToleranceMm
       const subpaths = elementToSubpaths(frame.el, toleranceUser, warnings)
       const transformed = subpaths.map((sp) => ({
         ...sp,
         points: applyMatrixToPoints(matrix, sp.points),
       }))
-      const groups = classifySubpaths(transformed)
+      const groups = classifySubpaths(
+        transformed,
+        resolveFillRule(frame.el, frame.fillRule),
+      )
       if (groups.length === 0) {
         warnings.push({
           code: 'empty_geometry',
@@ -229,11 +283,20 @@ export function parseSvgGeometry(
           warnings,
           childName,
         )
+        if (!local) continue
         if (CONTAINER_TAGS.has(childName)) {
-          stack.push({ el: child, matrix: multiply(frame.matrix, local) })
+          stack.push({
+            el: child,
+            matrix: multiply(frame.matrix, local),
+            fillRule: resolveFillRule(child, frame.fillRule),
+          })
         } else {
           // Shape: keep parent matrix; shape branch applies its own transform.
-          stack.push({ el: child, matrix: frame.matrix })
+          stack.push({
+            el: child,
+            matrix: frame.matrix,
+            fillRule: frame.fillRule,
+          })
         }
       }
       continue

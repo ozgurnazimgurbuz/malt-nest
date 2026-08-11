@@ -157,6 +157,43 @@ describe('free-angle fixtures', () => {
     expect(full.best?.angleDeg).toBe(14)
     expect(full.best!.position!.y).toBe(3)
   })
+
+  it('streams a caller-requested 0.01° final grid within its resource bound', () => {
+    const result = searchFreeAngle(
+      (angleDeg) => ({
+        angleDeg,
+        ok: true,
+        position: { x: angleDeg, y: 0 },
+        bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+      }),
+      {
+        coarseStepDeg: 90,
+        refineStepDeg: 45,
+        finalStepDeg: 0.01,
+        coarseTopK: 1,
+        baselineAnglesDeg: [0],
+        diversityCount: 0,
+        baselineFloor: false,
+        precision: { decimals: 2 },
+      },
+    )
+
+    expect(result.evalCount).toBe(36_000)
+    expect(result.best?.angleDeg).toBe(0)
+  })
+
+  it('allows an exact 100k final grid plus bounded cascade overhead', () => {
+    const result = searchFreeAngle(
+      (angleDeg) => ({ angleDeg, ok: false }),
+      {
+        finalStepDeg: 0.0036,
+        precision: { decimals: 4 },
+      },
+    )
+
+    expect(result.evalCount).toBeGreaterThanOrEqual(100_000)
+    expect(result.evalCount).toBeLessThan(100_100)
+  })
 })
 
 describe('free-angle validity', () => {

@@ -1,5 +1,6 @@
+import { isValidShape, translateShape } from '../geometry'
 import type { Point, Shape } from '../geometry/types'
-import { DEFAULT_TOLERANCE } from '../geometry/tolerance'
+import type { GeometryTolerance } from '../geometry/tolerance'
 import {
   computeInnerNfp,
   computeOuterNfp,
@@ -12,10 +13,12 @@ import {
   type PlacementConfig,
   type Sheet,
 } from '../placement'
+import { validateKnownValidPlacement } from '../placement/validate'
 import {
   anglesForPolicy,
   canonicalizeAngle,
   isBetterAngleEval,
+  resolveFreeConfig,
   searchFreeAngle,
   unionPackedBoundsMm2,
   type AngleEval,
@@ -26,6 +29,7 @@ import { DEFAULT_ANGLE_PRECISION } from '../rotation/types'
 import { createNfpCache, makeNfpCacheKey, type NfpCache } from './cache'
 import {
   collectCandidatesFromRegions,
+  collectNfpBoundaryIntersections,
   computeFreeRegions,
   sheetAabbFitCandidates,
   sheetContainerShape,
@@ -64,6 +68,7 @@ export type PlaceContext = {
   readonly sheet: Sheet
   readonly placed: readonly Placement[]
   readonly gap: number
+  readonly tolerance: GeometryTolerance
   readonly counters: PlaceCounters
   readonly nfpCache: NfpCache<NfpResult>
   readonly sheetContainer: Shape
@@ -84,6 +89,8 @@ export function evaluateAngleOnSheet(
   part: Shape,
   ctx: PlaceContext,
   rotRaw: number,
+  precision = DEFAULT_ANGLE_PRECISION,
+  sourceKnownValid = false,
 ): {
   eval: AngleEval
   placement: Placement | null
@@ -91,37 +98,74 @@ export function evaluateAngleOnSheet(
   rejected: number
   reasons: Record<string, number>
 } {
-  const rot = canonicalizeAngle(rotRaw, DEFAULT_ANGLE_PRECISION)
+  const rot = canonicalizeAngle(rotRaw, precision)
   const config: PlacementConfig = {
     gap: ctx.gap,
-    tolerance: DEFAULT_TOLERANCE,
+    tolerance: ctx.tolerance,
   }
   const reasons: Record<string, number> = {}
   let rejected = 0
 
   ctx.counters.anglesEvaluated++
-  const orbiting = createPlacement(part, { x: 0, y: 0 }, rot).geometry
-  const ifp = getInnerNfp(ctx, orbiting, rot)
+  const orbiting = createPlacement(
+    part,
+    { x: 0, y: 0 },
+    rot,
+    ctx.tolerance,
+  ).geometry
+  if (!sourceKnownValid && !isValidShape(part, ctx.tolerance)) {
+    return {
+      eval: { angleDeg: rot, ok: false },
+      placement: null,
+      candidateCount: 0,
+      rejected: 0,
+      reasons: { 'invalid-geometry': 1 },
+    }
+  }
+  const ifp = getInnerNfp(ctx, orbiting, rot, precision)
   const forbidden: NfpResult[] = []
   for (const p of ctx.placed) {
-    forbidden.push(getOuterNfp(ctx, p, orbiting, rot))
+    forbidden.push(getOuterNfp(ctx, p, orbiting, rot, precision))
   }
 
-  let candidates =
+  const freeRegions =
     ifp.regions.length > 0
-      ? collectCandidatesFromRegions(computeFreeRegions(ifp, forbidden))
+      ? computeFreeRegions(ifp, forbidden, ctx.tolerance)
       : []
-  if (!candidates.length && ctx.placed.length === 0) {
-    candidates = sheetAabbFitCandidates(orbiting, ctx.sheet)
+  const candidates = collectCandidatesFromRegions(freeRegions)
+  appendUniqueCandidates(
+    candidates,
+    sheetAabbFitCandidates(orbiting, ctx.sheet, ctx.tolerance),
+  )
+  appendUniqueCandidates(candidates, ifp.contactPoints ?? [])
+  appendUniqueCandidates(candidates, contactSegmentCandidates(ifp))
+  for (const nfp of forbidden) {
+    appendUniqueCandidates(candidates, nfp.contactPoints ?? [])
+    appendUniqueCandidates(candidates, contactSegmentCandidates(nfp))
   }
+  const hasContactSegments =
+    (ifp.contactSegments?.length ?? 0) > 0 ||
+    forbidden.some((nfp) => (nfp.contactSegments?.length ?? 0) > 0)
+  if (freeRegions.length === 0 || hasContactSegments) {
+    appendUniqueCandidates(
+      candidates,
+      collectNfpBoundaryIntersections(ifp, forbidden, ctx.tolerance),
+    )
+  }
+  candidates.sort((a, b) => (a.y !== b.y ? a.y - b.y : a.x - b.x))
 
   const candidateCount = candidates.length
   ctx.counters.candidateCount += candidates.length
 
   for (const pos of candidates) {
-    const placement = createPlacement(part, pos, rot)
+    const placement = createPlacement(part, pos, rot, ctx.tolerance)
     ctx.counters.validationCount++
-    const v = validatePlacement(placement, ctx.sheet, ctx.placed, config)
+    const v = validateKnownValidPlacement(
+      placement,
+      ctx.sheet,
+      ctx.placed,
+      config,
+    )
     if (!v.valid) {
       rejected++
       ctx.counters.rejectedCandidates++
@@ -163,6 +207,17 @@ export function placePartOnSheet(
   ctx: PlaceContext,
   rotation: RotationPolicy,
 ): PlaceAttempt {
+  if (!isValidShape(part, ctx.tolerance)) {
+    return {
+      ok: false,
+      reason: 'invalid-geometry',
+      detail: 'source geometry is invalid',
+      candidateCount: 0,
+      rejectedCandidates: 0,
+      rejectionReasons: { 'invalid-geometry': 1 },
+      anglesEvaluated: 0,
+    }
+  }
   if (rotation.kind === 'free') {
     return placeWithFreeSearch(part, ctx, rotation.free)
   }
@@ -182,7 +237,13 @@ function placeWithDiscreteAngles(
   let anglesTried = 0
 
   for (const rot of angles) {
-    const r = evaluateAngleOnSheet(part, ctx, rot)
+    const r = evaluateAngleOnSheet(
+      part,
+      ctx,
+      rot,
+      DEFAULT_ANGLE_PRECISION,
+      true,
+    )
     anglesTried++
     totalCand += r.candidateCount
     totalRej += r.rejected
@@ -240,36 +301,55 @@ function placeWithFreeSearch(
   ctx: PlaceContext,
   free?: FreeAngleConfig,
 ): PlaceAttempt {
+  const resolved = resolveFreeConfig(free)
   let totalCand = 0
   let totalRej = 0
   const rejectionReasons: Record<string, number> = {}
-  const placementByAngle = new Map<number, Placement>()
 
   const searched = searchFreeAngle((angleDeg) => {
-    const r = evaluateAngleOnSheet(part, ctx, angleDeg)
+    const r = evaluateAngleOnSheet(
+      part,
+      ctx,
+      angleDeg,
+      resolved.precision,
+      true,
+    )
     totalCand += r.candidateCount
     totalRej += r.rejected
     for (const [k, v] of Object.entries(r.reasons)) {
       rejectionReasons[k] = (rejectionReasons[k] ?? 0) + v
     }
-    if (r.placement) placementByAngle.set(r.eval.angleDeg, r.placement)
     return r.eval
-  }, free)
+  }, resolved)
 
   const best = searched.best
   if (best?.ok) {
-    const placement =
-      placementByAngle.get(best.angleDeg) ??
-      createPlacement(part, best.position!, best.angleDeg)
-    return {
-      ok: true,
-      placement,
-      rotationDeg: best.angleDeg,
-      candidateCount: totalCand,
-      rejectedCandidates: totalRej,
-      rejectionReasons,
-      anglesEvaluated: searched.evalCount,
+    const placement = createPlacement(
+      part,
+      best.position!,
+      best.angleDeg,
+      ctx.tolerance,
+    )
+    ctx.counters.validationCount++
+    const validation = validatePlacement(placement, ctx.sheet, ctx.placed, {
+      gap: ctx.gap,
+      tolerance: ctx.tolerance,
+    })
+    if (validation.valid) {
+      return {
+        ok: true,
+        placement,
+        rotationDeg: best.angleDeg,
+        candidateCount: totalCand,
+        rejectedCandidates: totalRej,
+        rejectionReasons,
+        anglesEvaluated: searched.evalCount,
+      }
     }
+    totalRej++
+    ctx.counters.rejectedCandidates++
+    rejectionReasons[validation.reason] =
+      (rejectionReasons[validation.reason] ?? 0) + 1
   }
 
   if (totalCand === 0) {
@@ -302,6 +382,7 @@ function getInnerNfp(
   ctx: PlaceContext,
   orbiting: Shape,
   rot: number,
+  precision = DEFAULT_ANGLE_PRECISION,
 ): NfpResult {
   const key = makeNfpCacheKey({
     kind: 'inner',
@@ -310,13 +391,17 @@ function getInnerNfp(
     rotationStationaryDeg: 0,
     rotationOrbitingDeg: rot,
     gap: 0,
+    precision,
+    stationaryGeometry: ctx.sheetContainer,
+    orbitingGeometry: orbiting,
+    tolerance: ctx.tolerance,
   })
   const hit = ctx.nfpCache.get(key)
   if (hit) return hit
   ctx.counters.nfpComputeCount++
   const nfp = computeInnerNfp(ctx.sheetContainer, orbiting, {
     gap: 0,
-    tolerance: DEFAULT_TOLERANCE,
+    tolerance: ctx.tolerance,
   })
   ctx.nfpCache.set(key, nfp)
   return nfp
@@ -327,24 +412,78 @@ function getOuterNfp(
   placed: Placement,
   orbiting: Shape,
   rot: number,
+  precision = DEFAULT_ANGLE_PRECISION,
 ): NfpResult {
+  const localStationary = translateShape(
+    placed.geometry,
+    -placed.position.x,
+    -placed.position.y,
+  )
   const key = makeNfpCacheKey({
     kind: 'outer',
-    stationaryId: `${placed.shapeId}@${placed.position.x},${placed.position.y},${placed.rotationDeg}`,
+    stationaryId: placed.shapeId,
     orbitingId: orbiting.id,
     rotationStationaryDeg: placed.rotationDeg,
     rotationOrbitingDeg: rot,
     gap: ctx.gap,
+    precision,
+    stationaryGeometry: localStationary,
+    orbitingGeometry: orbiting,
+    tolerance: ctx.tolerance,
   })
   const hit = ctx.nfpCache.get(key)
-  if (hit) return hit
+  if (hit) {
+    return translateNfp(hit, placed.position, placed.shapeId)
+  }
   ctx.counters.nfpComputeCount++
-  const nfp = computeOuterNfp(placed.geometry, orbiting, {
+  const nfp = computeOuterNfp(localStationary, orbiting, {
     gap: ctx.gap,
-    tolerance: DEFAULT_TOLERANCE,
+    tolerance: ctx.tolerance,
   })
   ctx.nfpCache.set(key, nfp)
-  return nfp
+  return translateNfp(nfp, placed.position, placed.shapeId)
+}
+
+function translateNfp(
+  nfp: NfpResult,
+  offset: Point,
+  stationaryId: string,
+): NfpResult {
+  const moveRing = (ring: readonly Point[]) =>
+    ring.map((point) => ({
+      x: point.x + offset.x,
+      y: point.y + offset.y,
+    }))
+  return {
+    ...nfp,
+    stationaryId,
+    regions: nfp.regions.map((region) => ({
+      outer: moveRing(region.outer),
+      holes: region.holes.map(moveRing),
+    })),
+    contactPoints: nfp.contactPoints?.map((point) => ({
+      x: point.x + offset.x,
+      y: point.y + offset.y,
+    })),
+    contactSegments: nfp.contactSegments?.map((segment) => ({
+      a: {
+        x: segment.a.x + offset.x,
+        y: segment.a.y + offset.y,
+      },
+      b: {
+        x: segment.b.x + offset.x,
+        y: segment.b.y + offset.y,
+      },
+    })),
+    bounds: nfp.bounds
+      ? {
+          minX: nfp.bounds.minX + offset.x,
+          minY: nfp.bounds.minY + offset.y,
+          maxX: nfp.bounds.maxX + offset.x,
+          maxY: nfp.bounds.maxY + offset.y,
+        }
+      : null,
+  }
 }
 
 export function partDiagFromAttempt(
@@ -363,6 +502,29 @@ export function partDiagFromAttempt(
     rejectedCandidates: attempt.rejectedCandidates,
     rejectionReasons: attempt.rejectionReasons,
   }
+}
+
+function appendUniqueCandidates(target: Point[], extra: readonly Point[]): void {
+  const seen = new Set(
+    target.map((point) => `${point.x},${point.y}`),
+  )
+  for (const point of extra) {
+    const key = `${point.x},${point.y}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    target.push(point)
+  }
+}
+
+function contactSegmentCandidates(nfp: NfpResult): Point[] {
+  return (nfp.contactSegments ?? []).flatMap((segment) => [
+    segment.a,
+    segment.b,
+    {
+      x: (segment.a.x + segment.b.x) / 2,
+      y: (segment.a.y + segment.b.y) / 2,
+    },
+  ])
 }
 
 export { createNfpCache, sheetContainerShape }

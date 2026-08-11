@@ -4,6 +4,7 @@ import {
   computeIfp,
   computeNfp,
   canFitInHole,
+  findPartInPartPlacement,
   configureGeometryTolerance,
   geomEps,
   normalizePolygon,
@@ -13,6 +14,7 @@ import {
   solidInsideSheet,
   solidsCollide,
   solidsOverlap,
+  translationInNfp,
   translateSolid,
   validateGeometry,
 } from './index'
@@ -132,6 +134,33 @@ describe('Stage 6 — collision', () => {
     expect(sep.kind).toBe('touching')
     expect(solidsOverlap(a, b)).toBe(false)
     expect(solidsCollide(a, b, 0)).toBe(false)
+  })
+
+  it('detects thin collinear overlap without treating exact touch as overlap', () => {
+    const a = rect(10, 10, 0, 0)
+    const overlapping = rect(10.0005, 10, 9.9995, 0)
+    const touching = rect(10, 10, 10, 0)
+
+    expect(solidsOverlap(a, overlapping)).toBe(true)
+    expect(solidsCollide(a, overlapping, 0)).toBe(true)
+    expect(solidsOverlap(a, touching)).toBe(false)
+  })
+
+  it('uses Euclidean spacing at diagonal corners in canonical NFPs', () => {
+    const spacing = 2
+    const diagonal = spacing / Math.sqrt(2)
+    const stationary = rect(10, 10)
+    const moving = rect(1, 1)
+    const translation = { x: 10 + diagonal, y: 10 + diagonal }
+    const placed = translateSolid(moving, translation.x, translation.y)
+
+    expect(solidsCollide(stationary, placed, spacing)).toBe(false)
+    expect(
+      translationInNfp(
+        translation,
+        computeNfp(stationary, moving, spacing, { fidelity: 'exact' }),
+      ),
+    ).toBe(false)
   })
 
   it('7. overlapping polygons', () => {
@@ -295,6 +324,309 @@ describe('Stage 6 — part-in-part', () => {
     const guest = rect(55, 55)
     const fit = canFitInHole(host, guest, 0, 5)
     expect(fit.fits).toBe(false)
+  })
+
+  it('finds an off-center fit in an asymmetric hole and checks obstacles', () => {
+    const host = solidFromRings(
+      [
+        { x: 0, y: 0 },
+        { x: 30, y: 0 },
+        { x: 30, y: 30 },
+        { x: 0, y: 30 },
+      ],
+      [[
+        { x: 5, y: 5 },
+        { x: 25, y: 25 },
+        { x: 25, y: 5 },
+      ]],
+    )
+    const guest = rect(10, 10)
+
+    const fit = findPartInPartPlacement(host, guest, 0)
+    expect(fit?.fits).toBe(true)
+    expect(fit?.translation?.x).toBeCloseTo(15)
+    expect(fit?.translation?.y).toBeCloseTo(5)
+
+    const blocker = rect(10, 10, 15, 5)
+    expect(findPartInPartPlacement(host, guest, 0, [host, blocker])).toBeNull()
+  })
+
+  it('searches every component when spacing splits a concave hole', () => {
+    const opening = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 2 },
+      { x: 110, y: 2 },
+      { x: 110, y: 0 },
+      { x: 130, y: 0 },
+      { x: 130, y: 20 },
+      { x: 110, y: 20 },
+      { x: 110, y: 3 },
+      { x: 100, y: 3 },
+      { x: 100, y: 5 },
+      { x: 0, y: 5 },
+    ]
+    const host = solidFromRings(
+      [
+        { x: -10, y: -10 },
+        { x: 140, y: -10 },
+        { x: 140, y: 30 },
+        { x: -10, y: 30 },
+      ],
+      [opening.slice().reverse()],
+    )
+
+    const fit = findPartInPartPlacement(host, rect(50, 2), 0.6)
+    expect(fit?.translation?.x).toBeLessThan(50)
+  })
+
+  it('finds dense-ring fits independently of the guest cyclic start vertex', () => {
+    const segmentedRectangle = (): Array<{ x: number; y: number }> => [
+      ...Array.from({ length: 20 }, (_, i) => ({ x: i * 5, y: 0 })),
+      ...Array.from({ length: 20 }, (_, i) => ({ x: 100, y: i * 5 })),
+      ...Array.from({ length: 20 }, (_, i) => ({ x: 100 - i * 5, y: 100 })),
+      ...Array.from({ length: 20 }, (_, i) => ({ x: 0, y: 100 - i * 5 })),
+    ]
+    const opening = segmentedRectangle().flatMap((point) => {
+      if (point.x === 0 && point.y === 0) {
+        return [point, { x: 0, y: -2 }, { x: 5, y: -2 }]
+      }
+      if (point.x === 100 && point.y === 0) {
+        return [point, { x: 104, y: 0 }, { x: 104, y: 5 }]
+      }
+      if (point.x === 100 && point.y === 100) {
+        return [point, { x: 100, y: 105 }, { x: 95, y: 105 }]
+      }
+      if (point.x === 0 && point.y === 100) {
+        return [point, { x: -3, y: 100 }, { x: -3, y: 95 }]
+      }
+      return [point]
+    })
+    const host = solidFromRings(
+      [
+        { x: -10, y: -10 },
+        { x: 110, y: -10 },
+        { x: 110, y: 110 },
+        { x: -10, y: 110 },
+      ],
+      [opening.slice().reverse()],
+    )
+    const unshifted = segmentedRectangle()
+    const shifted = [...unshifted.slice(3), ...unshifted.slice(0, 3)]
+
+    for (const ring of [unshifted, shifted]) {
+      const fit = findPartInPartPlacement(host, solidFromRings(ring, []), 0)
+      expect(fit?.translation?.x).toBeCloseTo(0)
+      expect(fit?.translation?.y).toBeCloseTo(0)
+    }
+  })
+
+  it('finds the exact zero-area IFP in a four-bump rotated chamber', () => {
+    const width = 9.7918
+    const height = 8.414057
+    const guestRing = [
+      { x: 1.805445, y: 0 },
+      { x: width, y: 6.01815 },
+      { x: 7.986355, y: height },
+      { x: 0, y: 2.395907 },
+    ]
+    const opening = [
+      { x: 0, y: 0 },
+      { x: width * 0.2, y: 0 },
+      { x: width * 0.2, y: -5 },
+      { x: width * 0.3, y: -5 },
+      { x: width * 0.3, y: 0 },
+      { x: width, y: 0 },
+      { x: width, y: height * 0.2 },
+      { x: width + 5, y: height * 0.2 },
+      { x: width + 5, y: height * 0.3 },
+      { x: width, y: height * 0.3 },
+      { x: width, y: height },
+      { x: width * 0.8, y: height },
+      { x: width * 0.8, y: height + 6 },
+      { x: width * 0.7, y: height + 6 },
+      { x: width * 0.7, y: height },
+      { x: 0, y: height },
+      { x: 0, y: height * 0.8 },
+      { x: -4, y: height * 0.8 },
+      { x: -4, y: height * 0.7 },
+      { x: 0, y: height * 0.7 },
+    ]
+    const host = solidFromRings(
+      [
+        { x: -20, y: -20 },
+        { x: 30, y: -20 },
+        { x: 30, y: 30 },
+        { x: -20, y: 30 },
+      ],
+      [opening.slice().reverse()],
+    )
+
+    const fit = findPartInPartPlacement(
+      host,
+      solidFromRings(guestRing, []),
+      0,
+    )
+    expect(fit?.translation?.x).toBeCloseTo(0)
+    expect(fit?.translation?.y).toBeCloseTo(0)
+  })
+
+  it('falls through from failed centroid alignment for near-equal shapes', () => {
+    const opening = [
+      { x: 0, y: 0 },
+      { x: 1_000_000, y: 0 },
+      { x: 1_000_000, y: 1 },
+      { x: 1, y: 1 },
+      { x: 1, y: 1_000_000 },
+      { x: 0, y: 1_000_000 },
+    ]
+    const guest = solidFromRings(
+      [
+        { x: 0, y: 0 },
+        { x: 999_999.9, y: 0 },
+        { x: 999_999.9, y: 1 },
+        { x: 1, y: 1 },
+        { x: 1, y: 1_000_000 },
+        { x: 0, y: 1_000_000 },
+      ],
+      [],
+    )
+    const host = solidFromRings(
+      [
+        { x: -1, y: -1 },
+        { x: 1_000_001, y: -1 },
+        { x: 1_000_001, y: 1_000_001 },
+        { x: -1, y: 1_000_001 },
+      ],
+      [opening.slice().reverse()],
+    )
+
+    const fit = canFitInHole(host, guest, 0, 0)
+
+    expect(fit.translation?.x).toBeCloseTo(0)
+    expect(fit.translation?.y).toBeCloseTo(0)
+  })
+
+  it('collapses dense collinear rings before configuration-space search', () => {
+    const sideSegments = 250
+    const step = 100 / sideSegments
+    const ring = [
+      ...Array.from({ length: sideSegments }, (_, i) => ({ x: i * step, y: 0 })),
+      ...Array.from({ length: sideSegments }, (_, i) => ({ x: 100, y: i * step })),
+      ...Array.from({ length: sideSegments }, (_, i) => ({ x: 100 - i * step, y: 100 })),
+      ...Array.from({ length: sideSegments }, (_, i) => ({ x: 0, y: 100 - i * step })),
+    ]
+    const host = solidFromRings(
+      [
+        { x: -10, y: -10 },
+        { x: 110, y: -10 },
+        { x: 110, y: 110 },
+        { x: -10, y: 110 },
+      ],
+      [ring.slice().reverse()],
+    )
+    const shifted = [...ring.slice(337), ...ring.slice(0, 337)]
+    const started = performance.now()
+
+    const fit = findPartInPartPlacement(
+      host,
+      solidFromRings(shifted, []),
+      0,
+    )
+
+    expect(fit?.translation).toEqual({ x: 0, y: 0 })
+    expect(performance.now() - started).toBeLessThan(1_500)
+  })
+
+  it('subtracts obstacle forbidden regions before probing a positive-area IFP', () => {
+    const opening = [
+      { x: 5, y: 5 },
+      { x: 5, y: 25 },
+      { x: 35, y: 25 },
+      { x: 35, y: 5 },
+    ]
+    const host = solidFromRings(
+      [
+        { x: 0, y: 0 },
+        { x: 40, y: 0 },
+        { x: 40, y: 30 },
+        { x: 0, y: 30 },
+      ],
+      [opening],
+    )
+    const guest = rect(4, 4)
+    const finiteProbes = [5, 18, 31].flatMap((x) =>
+      [5, 13, 21].map((y) => rect(1, 1, x + 1.5, y + 1.5)),
+    )
+
+    const fit = findPartInPartPlacement(host, guest, 0, [host, ...finiteProbes])
+
+    expect(fit?.translation).toBeDefined()
+    const placed = translateSolid(
+      guest,
+      fit!.translation!.x,
+      fit!.translation!.y,
+    )
+    expect(finiteProbes.some((blocker) => solidsCollide(blocker, placed, 0))).toBe(
+      false,
+    )
+  })
+
+  it('keeps zero-width fit branches when a positive-area room is blocked', () => {
+    const opening = [
+      { x: 0, y: 0 },
+      { x: 4, y: 0 },
+      { x: 4, y: 1 },
+      { x: 8, y: 1 },
+      { x: 8, y: 3 },
+      { x: 4, y: 3 },
+      { x: 4, y: 4 },
+      { x: 0, y: 4 },
+    ]
+    const host = solidFromRings(
+      [
+        { x: -1, y: -1 },
+        { x: 9, y: -1 },
+        { x: 9, y: 5 },
+        { x: -1, y: 5 },
+      ],
+      [opening.reverse()],
+    )
+    const blockers = [
+      rect(2, 2),
+      rect(2, 2, 2, 0),
+      rect(2, 2, 0, 2),
+      rect(2, 2, 2, 2),
+    ]
+
+    const fit = findPartInPartPlacement(host, rect(2, 2), 0, [host, ...blockers])
+
+    expect(fit?.translation?.x).toBeGreaterThanOrEqual(4)
+    expect(fit?.translation?.y).toBeCloseTo(1)
+  })
+
+  it('rejects a dense near-fit without quadratic contact intersections', () => {
+    const count = 200
+    const radius = 10
+    const regularRing = (phase: number) =>
+      Array.from({ length: count }, (_, index) => {
+        const angle = phase + (index * Math.PI * 2) / count
+        return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius }
+      })
+    const host = solidFromRings(
+      [
+        { x: -20, y: -20 },
+        { x: 20, y: -20 },
+        { x: 20, y: 20 },
+        { x: -20, y: 20 },
+      ],
+      [regularRing(0).reverse()],
+    )
+    const guest = solidFromRings(regularRing(Math.PI / count), [])
+    const started = performance.now()
+
+    expect(findPartInPartPlacement(host, guest, 0)).toBeNull()
+    expect(performance.now() - started).toBeLessThan(1_500)
   })
 })
 

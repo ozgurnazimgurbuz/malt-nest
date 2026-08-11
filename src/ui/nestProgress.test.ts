@@ -109,6 +109,24 @@ describe('Stage 10A/10F nest progress UI state', () => {
     expect(ui?.statusLine).toContain('Aday')
   })
 
+  it('keeps finalize progress in a running state', () => {
+    const ui = nestUiFromEngineProgress(
+      {
+        ratio: 0.98,
+        phase: 'finalize',
+        placedCount: 16,
+        partCount: 16,
+        jobId: 'j1',
+        message: 'Full-angle polish',
+      },
+      'j1',
+    )
+
+    expect(ui?.phase).toBe('finalizing')
+    expect(ui?.title).toContain('sonlandırılıyor')
+    expect(ui?.percent).toBe(98)
+  })
+
   it('ignores stale jobId progress', () => {
     const prev = nestUiPreparing('job-active', 16, 'fast')
     const stale: NestProgress = {
@@ -166,10 +184,27 @@ describe('Stage 10A/10F nest progress UI state', () => {
     expect(ui.errorMessage).toBe('Worker crashed')
   })
 
-  it('isBetterNestResult uses existing fitness (lower waste wins)', () => {
+  it('isBetterNestResult uses the canonical result order', () => {
     const a = fakeResult({ wasteMm2: 50, utilization: 0.9 })
     const b = fakeResult({ wasteMm2: 200, utilization: 0.5 })
     expect(isBetterNestResult(a, b)).toBe(true)
     expect(isBetterNestResult(b, a)).toBe(false)
+
+    const complete = fakeResult({
+      statistics: {
+        ...a.statistics,
+        sheetCountUsed: 2,
+      },
+    })
+    const partial = fakeResult({
+      wasteMm2: 0,
+      statistics: {
+        ...a.statistics,
+        placedCount: 15,
+        unplacedCount: 1,
+        sheetCountUsed: 1,
+      },
+    })
+    expect(isBetterNestResult(complete, partial)).toBe(true)
   })
 })

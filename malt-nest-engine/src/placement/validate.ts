@@ -73,8 +73,23 @@ export function validatePlacement(
   config: PlacementConfig = DEFAULT_PLACEMENT_CONFIG,
 ): PlacementValidationResult {
   const tol = config.tolerance ?? DEFAULT_TOLERANCE
-  const onSheet = validatePlacementOnSheet(placement, sheet, tol)
-  if (!onSheet.valid) return onSheet
+  if (!isValidShape(placement.geometry, tol)) {
+    return { valid: false, reason: 'invalid-geometry' }
+  }
+  return validateKnownValidPlacement(placement, sheet, others, config)
+}
+
+/** Internal fast path after a rigidly transformed geometry was validated once. */
+export function validateKnownValidPlacement(
+  placement: Placement,
+  sheet: Sheet,
+  others: readonly Placement[] = [],
+  config: PlacementConfig = DEFAULT_PLACEMENT_CONFIG,
+): PlacementValidationResult {
+  const tol = config.tolerance ?? DEFAULT_TOLERANCE
+  if (!isInsideSheet(placement, sheet, tol)) {
+    return { valid: false, reason: 'outside-sheet' }
+  }
 
   const gap = Math.max(0, config.gap)
   for (const other of others) {

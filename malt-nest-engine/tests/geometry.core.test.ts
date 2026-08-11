@@ -10,7 +10,9 @@ import {
   normalizeShape,
   pointInPolygon,
   pointInShape,
+  pointOnSegment,
   polygonContainsPolygon,
+  ringCentroid,
   rotateShape,
   scaleShape,
   shapeArea,
@@ -220,6 +222,36 @@ describe('measurement', () => {
 })
 
 describe('robustness', () => {
+  it('scales point-on-segment tolerance by edge length', () => {
+    const tolerance = { ...DEFAULT_TOLERANCE, abs: 0.1 }
+
+    expect(
+      pointOnSegment(
+        { x: 500, y: 0.0002 },
+        { x: 0, y: 0 },
+        { x: 1000, y: 0 },
+        tolerance,
+      ),
+    ).toBe(true)
+    expect(
+      pointOnSegment(
+        { x: 0.0005, y: 0.2 },
+        { x: 0, y: 0 },
+        { x: 0.001, y: 0 },
+        tolerance,
+      ),
+    ).toBe(false)
+  })
+
+  it('uses an area tolerance for thin valid rings', () => {
+    const tolerance = { ...DEFAULT_TOLERANCE, abs: 0.1 }
+    const thin = rect(0.45, 0.11, 'thin')
+
+    expect(ringCentroid(thin.polygons[0]!.outer, tolerance)).not.toBeNull()
+    expect(shapeCentroid(thin, tolerance)).not.toBeNull()
+    expect(validateShape(thin, tolerance).ok).toBe(true)
+  })
+
   it('18. duplicate points cleaned', () => {
     const dirty = makeShape('dup', [
       { x: 0, y: 0 },
@@ -281,6 +313,207 @@ describe('robustness', () => {
       { x: 1, y: 0 },
     ])
     expect(validateShape(bad).ok).toBe(false)
+  })
+
+  it('rejects non-finite coordinates', () => {
+    const nan = makeShape('nan', [
+      { x: 0, y: 0 },
+      { x: Number.NaN, y: 0 },
+      { x: 0, y: 1 },
+    ])
+    const infinite = makeShape('infinite', [
+      { x: 0, y: 0 },
+      { x: Number.POSITIVE_INFINITY, y: 0 },
+      { x: 0, y: 1 },
+    ])
+
+    expect(validateShape(nan)).toMatchObject({
+      ok: false,
+      issues: expect.arrayContaining(['non_finite_coordinate']),
+    })
+    expect(validateShape(infinite)).toMatchObject({
+      ok: false,
+      issues: expect.arrayContaining(['non_finite_coordinate']),
+    })
+  })
+
+  it('reports an explicit closing point instead of treating it as a vertex', () => {
+    const closed = makeShape('closed', [
+      { x: 0, y: 0 },
+      { x: 4, y: 0 },
+      { x: 4, y: 4 },
+      { x: 0, y: 4 },
+      { x: 0, y: 0 },
+    ])
+
+    expect(validateShape(closed)).toMatchObject({
+      ok: false,
+      issues: expect.arrayContaining(['open_ring_duplicate']),
+    })
+  })
+
+  it('rejects non-adjacent vertex touches and collinear edge overlaps', () => {
+    const selfTouching = makeShape('self-touching', [
+      { x: 0, y: 0 },
+      { x: 4, y: 0 },
+      { x: 4, y: 4 },
+      { x: 2, y: 2 },
+      { x: 0, y: 4 },
+      { x: 2, y: 2 },
+      { x: 0, y: 2 },
+    ])
+    const overlappingEdges = makeShape('overlapping-edges', [
+      { x: 0, y: 0 },
+      { x: 4, y: 0 },
+      { x: 4, y: 4 },
+      { x: 0, y: 4 },
+      { x: 0, y: 2 },
+      { x: 3, y: 2 },
+      { x: 3, y: 3 },
+      { x: 1, y: 3 },
+      { x: 1, y: 2 },
+      { x: 4, y: 2 },
+      { x: 4, y: 1 },
+      { x: 0, y: 1 },
+    ])
+
+    for (const shape of [selfTouching, overlappingEdges]) {
+      expect(validateShape(shape)).toMatchObject({
+        ok: false,
+        issues: expect.arrayContaining(['self_intersecting']),
+      })
+    }
+  })
+
+  it('requires holes to be strictly inside the outer ring', () => {
+    const outer = rect(10, 10).polygons[0]!.outer
+    const outside = [
+      { x: 8, y: 2 },
+      { x: 12, y: 2 },
+      { x: 12, y: 4 },
+      { x: 8, y: 4 },
+    ]
+    const touching = [
+      { x: 0, y: 2 },
+      { x: 2, y: 2 },
+      { x: 2, y: 4 },
+      { x: 0, y: 4 },
+    ]
+
+    for (const hole of [outside, touching]) {
+      expect(validateShape(makeShape('bad-hole', outer, [hole]))).toMatchObject(
+        {
+          ok: false,
+          issues: expect.arrayContaining(['hole_outside']),
+        },
+      )
+    }
+  })
+
+  it('rejects overlapping or touching holes but accepts disjoint holes', () => {
+    const outer = rect(20, 10).polygons[0]!.outer
+    const left = [
+      { x: 2, y: 2 },
+      { x: 8, y: 2 },
+      { x: 8, y: 8 },
+      { x: 2, y: 8 },
+    ]
+    const overlapping = [
+      { x: 6, y: 3 },
+      { x: 10, y: 3 },
+      { x: 10, y: 7 },
+      { x: 6, y: 7 },
+    ]
+    const touching = [
+      { x: 8, y: 3 },
+      { x: 10, y: 3 },
+      { x: 10, y: 7 },
+      { x: 8, y: 7 },
+    ]
+    const right = [
+      { x: 12, y: 2 },
+      { x: 18, y: 2 },
+      { x: 18, y: 8 },
+      { x: 12, y: 8 },
+    ]
+
+    for (const second of [overlapping, touching]) {
+      expect(validateShape(makeShape('bad-holes', outer, [left, second]))).toMatchObject(
+        {
+          ok: false,
+          issues: expect.arrayContaining(['holes_intersect']),
+        },
+      )
+    }
+    expect(validateShape(makeShape('good-holes', outer, [left, right])).ok).toBe(
+      true,
+    )
+  })
+
+  it('rejects provably overlapping multipolygons', () => {
+    const ringAt = (x: number, y: number, w: number, h: number) => [
+      { x, y },
+      { x: x + w, y },
+      { x: x + w, y: y + h },
+      { x, y: y + h },
+    ]
+    const shape = (second: ReturnType<typeof ringAt>) => ({
+      id: 'multi',
+      polygons: [
+        { outer: ringAt(0, 0, 5, 5), holes: [] },
+        { outer: second, holes: [] },
+      ],
+    })
+
+    expect(validateShape(shape(ringAt(4, 1, 5, 3)))).toMatchObject({
+      ok: false,
+      issues: expect.arrayContaining(['polygons_overlap']),
+    })
+    expect(validateShape(shape(ringAt(1, 1, 2, 2)))).toMatchObject({
+      ok: false,
+      issues: expect.arrayContaining(['polygons_overlap']),
+    })
+    expect(validateShape(shape(ringAt(4, 0, 5, 5)))).toMatchObject({
+      ok: false,
+      issues: expect.arrayContaining(['polygons_overlap']),
+    })
+    expect(validateShape(shape(ringAt(6, 0, 2, 2))).ok).toBe(true)
+    expect(validateShape(shape(ringAt(5, 0, 2, 2))).ok).toBe(true)
+  })
+
+  it('allows a multipolygon island inside another polygon hole', () => {
+    const shape = {
+      id: 'island',
+      polygons: [
+        {
+          outer: [
+            { x: 0, y: 0 },
+            { x: 20, y: 0 },
+            { x: 20, y: 20 },
+            { x: 0, y: 20 },
+          ],
+          holes: [
+            [
+              { x: 5, y: 5 },
+              { x: 15, y: 5 },
+              { x: 15, y: 15 },
+              { x: 5, y: 15 },
+            ],
+          ],
+        },
+        {
+          outer: [
+            { x: 8, y: 8 },
+            { x: 12, y: 8 },
+            { x: 12, y: 12 },
+            { x: 8, y: 12 },
+          ],
+          holes: [],
+        },
+      ],
+    }
+
+    expect(validateShape(shape).ok).toBe(true)
   })
 })
 

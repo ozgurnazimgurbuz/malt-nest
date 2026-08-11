@@ -11,4 +11,10 @@ export {
   type ScoreBreakdown,
   type ScoreWeights,
 } from './weights'
-export { isBetterScore, scoreNestingResult } from './fitness'
+export {
+  compareNestingResults,
+  compareScores,
+  isBetterNestingResult,
+  isBetterScore,
+  scoreNestingResult,
+} from './fitness'

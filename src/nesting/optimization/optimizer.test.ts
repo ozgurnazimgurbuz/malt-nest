@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { GeometryPart } from '../../geometry'
 import { boundingBox } from '../../geometry'
 import { runBottomLeftNest } from '../placement/blf'
-import { scoreNestingResult, isBetterScore } from '../scoring/fitness'
+import {
+  compareNestingResults,
+  isBetterNestingResult,
+  scoreNestingResult,
+  isBetterScore,
+} from '../scoring/fitness'
 import type { NestingRequest, NestingSettings } from '../types'
 import { orderCrossover } from './crossover'
 import { runEvolutionaryNest } from './geneticOptimizer'
@@ -210,12 +215,18 @@ describe('evolutionary optimizer primitives', () => {
 
   it('13. termination by generation', () => {
     const parts = [rect('a', 0, 30, 20), rect('b', 1, 25, 25), rect('c', 2, 15, 40)]
+    let lastGeneration = 0
     const result = runEvolutionaryNest(req(parts), {
       maxGenerations: 3,
       timeLimitMs: 60_000,
       seed: 11,
+      deterministic: true,
+      onProgress: (progress) => {
+        lastGeneration = Math.max(lastGeneration, progress.generation ?? 0)
+      },
     })
     expect(result.status).toBe('ok')
+    expect(lastGeneration).toBe(3)
   })
 
   it('14. termination by time budget', () => {
@@ -364,4 +375,182 @@ describe('evolutionary optimizer primitives', () => {
     expect(r1.statistics.sheetCountUsed).toBe(r2.statistics.sheetCountUsed)
     expect(r1.utilization).toBeCloseTo(r2.utilization, 10)
   })
+
+  it('19. deterministic free-angle polish covers every distinct order trial', () => {
+    const parts = [
+      rect('a', 0, 30, 20),
+      rect('b', 1, 25, 25),
+      rect('c', 2, 15, 40),
+      rect('d', 3, 22, 18),
+    ]
+    const request = req(parts, {
+      rotationMode: 'free',
+      allowRotation: true,
+      allowArbitraryRotation: true,
+      deterministic: true,
+    })
+    let orderNames: string[] = []
+    let candidateNames: string[] = []
+    let evaluatedNames: string[] = []
+
+    runEvolutionaryNest(request, {
+      deterministic: true,
+      maxGenerations: 0,
+      onOrderSearch: (info) => {
+        orderNames = info.names
+      },
+      onFinalPolish: (info) => {
+        candidateNames = info.candidateNames
+        evaluatedNames = info.evaluatedNames
+      },
+    })
+
+    expect(orderNames.length).toBeGreaterThan(2)
+    expect(candidateNames).toEqual(expect.arrayContaining(orderNames))
+    expect(candidateNames.length).toBeGreaterThanOrEqual(orderNames.length)
+    expect(new Set(candidateNames).size).toBe(candidateNames.length)
+    expect(evaluatedNames).toEqual(candidateNames)
+  }, 20_000)
+
+  it('20. non-deterministic final polish stops at the whole-run deadline', () => {
+    const parts = [
+      rect('a', 0, 17, 36),
+      rect('b', 1, 28, 20),
+      rect('c', 2, 29, 21),
+      rect('d', 3, 20, 26),
+      rect('e', 4, 23, 13),
+    ]
+    const request = req(parts, {
+      spacingMm: 0,
+      rotationMode: 'free',
+      allowRotation: true,
+      allowArbitraryRotation: true,
+      deterministic: false,
+    })
+    request.sheets[0] = {
+      widthMm: 70,
+      heightMm: 55,
+      marginMm: 0,
+      quantity: parts.length,
+    }
+    let diagnostic:
+      | { candidateNames: string[]; evaluatedNames: string[]; timedOut: boolean }
+      | undefined
+    let bestBeforeDeadline: Extract<
+      ReturnType<typeof runEvolutionaryNest>,
+      { status: 'ok' }
+    > | null = null
+
+    const result = runEvolutionaryNest(request, {
+      deterministic: false,
+      timeLimitMs: 0,
+      maxGenerations: 0,
+      onProgress: (progress) => {
+        const candidate = progress.bestSoFar
+        if (
+          candidate?.status === 'ok' &&
+          (!bestBeforeDeadline ||
+            isBetterNestingResult(candidate, bestBeforeDeadline))
+        ) {
+          bestBeforeDeadline = candidate
+        }
+      },
+      onFinalPolish: (info) => {
+        diagnostic = info
+      },
+    })
+
+    expect(diagnostic?.candidateNames.length).toBeGreaterThan(1)
+    expect(diagnostic?.evaluatedNames).toEqual(['area_desc'])
+    expect(diagnostic?.timedOut).toBe(true)
+    expect(result.status).toBe('ok')
+    if (result.status === 'ok' && bestBeforeDeadline) {
+      expect(compareNestingResults(result, bestBeforeDeadline)).toBeLessThanOrEqual(
+        0,
+      )
+    }
+  }, 20_000)
+
+  it('21. validates evolutionary option overrides before looping', () => {
+    const request = req([rect('a', 0, 10, 10)])
+
+    expect(() =>
+      runEvolutionaryNest(request, {
+        deterministic: true,
+        maxGenerations: Number.POSITIVE_INFINITY,
+      }),
+    ).toThrow('maxGenerations')
+    expect(() =>
+      runEvolutionaryNest(request, { timeLimitMs: Number.NaN }),
+    ).toThrow('timeLimitMs')
+    expect(() =>
+      runEvolutionaryNest(request, { seed: Number.POSITIVE_INFINITY }),
+    ).toThrow('seed')
+    expect(() =>
+      runEvolutionaryNest(request, {
+        deterministic: true,
+        maxGenerations: 0,
+      }),
+    ).not.toThrow()
+  })
+
+  it('22. honors deterministic mode from direct request settings', () => {
+    const request = req(
+      [rect('a', 0, 30, 20), rect('b', 1, 20, 25), rect('c', 2, 15, 35)],
+      {
+        rotationMode: 'free',
+        allowRotation: true,
+        allowArbitraryRotation: true,
+        deterministic: true,
+        timeLimitMs: 1,
+      },
+    )
+    let diagnostic:
+      | { candidateNames: string[]; evaluatedNames: string[]; timedOut: boolean }
+      | undefined
+
+    runEvolutionaryNest(request, {
+      maxGenerations: 0,
+      onFinalPolish: (info) => {
+        diagnostic = info
+      },
+    })
+
+    expect(diagnostic?.candidateNames.length).toBeGreaterThan(1)
+    expect(diagnostic?.evaluatedNames).toEqual(diagnostic?.candidateNames)
+    expect(diagnostic?.timedOut).toBe(false)
+  }, 20_000)
+
+  it('23. returns cancelled with the best snapshot when stopped during final polish', () => {
+    const controller = new AbortController()
+    let reachedStage2 = false
+    const request = req(
+      [rect('a', 0, 30, 20), rect('b', 1, 20, 25), rect('c', 2, 15, 35)],
+      {
+        spacingMm: 0,
+        rotationMode: 'free',
+        allowRotation: true,
+        allowArbitraryRotation: true,
+        deterministic: true,
+      },
+    )
+
+    const result = runEvolutionaryNest(request, {
+      signal: controller.signal,
+      deterministic: true,
+      maxGenerations: 0,
+      onProgress: (progress) => {
+        if (progress.message?.startsWith('Stage2 full cascade')) {
+          reachedStage2 = true
+          controller.abort()
+        }
+      },
+    })
+
+    expect(reachedStage2).toBe(true)
+    expect(result.status).toBe('cancelled')
+    if (result.status === 'cancelled') {
+      expect(result.bestSoFar?.status).toBe('ok')
+    }
+  }, 20_000)
 })

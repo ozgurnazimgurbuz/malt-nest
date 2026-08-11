@@ -2,14 +2,22 @@ import { describe, expect, it } from 'vitest'
 import type { GeometryPart } from '../../geometry'
 import {
   boundingBox,
+  centroid,
+  netArea,
   partRotationOrigin,
   rotatePoints,
   solidFromRings,
   solidsCollide,
   solidsOverlap,
 } from '../../geometry'
-import { runBottomLeftNest } from './blf'
+import {
+  placeWithOrder,
+  placeWithPlan,
+  placeWithPlanUnchecked,
+  runBottomLeftNest,
+} from './blf'
 import type { NestingRequest, NestingSettings, Placement } from '../types'
+import { prepareParts } from '../core/prepare'
 
 const baseSettings: NestingSettings = {
   spacingMm: 0,
@@ -193,7 +201,7 @@ describe('runBottomLeftNest', () => {
       holes: [],
       boundingBox: boundingBox(points),
       area: 40 * 15 + 15 * 25,
-      centroid: { x: 15, y: 15 },
+      centroid: centroid(points),
       originalTransform: null,
     }
     const result = runBottomLeftNest(request([part, rectPart('r', 1, 0, 0, 10, 10)]))
@@ -274,9 +282,9 @@ describe('runBottomLeftNest', () => {
     ]
     const hole = [
       { x: 15, y: 15 },
-      { x: 35, y: 15 },
-      { x: 35, y: 35 },
       { x: 15, y: 35 },
+      { x: 35, y: 35 },
+      { x: 35, y: 15 },
     ]
     const frame: GeometryPart = {
       id: 'frame',
@@ -418,5 +426,548 @@ describe('runBottomLeftNest', () => {
     expect(dikey.placements).not.toEqual(yatay.placements)
     expect(both.placements).not.toEqual(off.placements)
     expect(dikey.placements).not.toEqual(off.placements)
+  })
+
+  it('15. full free-angle search finds an exact 37° fit outside coarse windows', () => {
+    const part = rectPart('bar', 0, 0, 0, 100, 1)
+    const radians = (37 * Math.PI) / 180
+    const width = 100 * Math.cos(radians) + Math.sin(radians)
+    const height = 100 * Math.sin(radians) + Math.cos(radians)
+    const result = runBottomLeftNest(
+      request([part], {
+        sheet: {
+          widthMm: width + 1e-6,
+          heightMm: height + 1e-6,
+          marginMm: 0,
+          quantity: 1,
+        },
+        settings: {
+          rotationMode: 'free',
+          allowRotation: true,
+          allowArbitraryRotation: true,
+        },
+      }),
+      { freeAngleDepth: 'full' },
+    )
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements).toHaveLength(1)
+    expect([37, 143, 217, 323]).toContain(result.placements[0]?.rotation)
+  })
+
+  it('honors explicit rotations even when rotationMode is free', () => {
+    const result = runBottomLeftNest(
+      request([rectPart('bar', 0, 0, 0, 20, 5)], {
+        settings: {
+          rotationMode: 'free',
+          allowRotation: true,
+          allowArbitraryRotation: true,
+          allowedRotationsExplicit: [37],
+        },
+      }),
+      { freeAngleDepth: 'full' },
+    )
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements[0]?.rotation).toBe(37)
+  })
+
+  it('does not round away a material sub-millidegree explicit rotation', () => {
+    const source = rectPart('precision-bar', 0, 0, 0, 100_000, 1)
+    const points = rotatePoints(
+      source.outer.points,
+      -0.0004,
+      partRotationOrigin(source.outer.points),
+    )
+    const part: GeometryPart = {
+      ...source,
+      outer: { points },
+      boundingBox: boundingBox(points),
+      centroid: centroid(points),
+    }
+    const req = request([part], {
+      sheet: {
+        widthMm: 100_000.001,
+        heightMm: 1.001,
+        marginMm: 0,
+        quantity: 1,
+      },
+      settings: {
+        allowedRotationsExplicit: [0.0004],
+        allowRotation: true,
+      },
+    })
+
+    const result = runBottomLeftNest(req)
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBe(1)
+    expect(result.placements[0]?.rotation).toBe(0.0004)
+  })
+
+  it('16. tries later sheet definitions when an earlier stock cannot fit', () => {
+    const part = rectPart('a', 0, 0, 0, 20, 20)
+    const req = request([part])
+    req.sheets = [
+      { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 1 },
+      { widthMm: 30, heightMm: 30, marginMm: 0, quantity: 1 },
+    ]
+
+    const result = runBottomLeftNest(req)
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements).toHaveLength(1)
+    expect(result.sheets[0]).toMatchObject({
+      sheetIndex: 0,
+      widthMm: 30,
+      heightMm: 30,
+    })
+  })
+
+  it('16b. reserves less-constrained stock regardless of definition order', () => {
+    const parts = [
+      rectPart('compact', 0, 0, 0, 7, 7),
+      rectPart('long', 1, 0, 0, 10, 4),
+    ]
+    const stocks = [
+      { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 1 },
+      { widthMm: 7, heightMm: 7, marginMm: 0, quantity: 1 },
+    ]
+
+    for (const sheets of [stocks, stocks.slice().reverse()]) {
+      const req = request(parts)
+      req.sheets = sheets
+      const result = runBottomLeftNest(req)
+
+      expect(result.status).toBe('ok')
+      if (result.status !== 'ok') continue
+      expect(result.statistics.placedCount).toBe(2)
+      expect(result.unplacedPartIds).toEqual([])
+      expect(result.sheets.map((sheet) => [sheet.widthMm, sheet.heightMm]))
+        .toEqual([[7, 7], [10, 10]])
+    }
+  })
+
+  it('16c. preserves uniquely compatible stock before comparing sheet area', () => {
+    const parts = [
+      rectPart('flexible', 0, 0, 0, 6, 10),
+      rectPart('wide', 1, 0, 0, 9, 6),
+    ]
+    const stocks = [
+      { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 1 },
+      { widthMm: 6, heightMm: 20, marginMm: 0, quantity: 1 },
+    ]
+
+    for (const sheets of [stocks, stocks.slice().reverse()]) {
+      const req = request(parts)
+      req.sheets = sheets
+      const result = runBottomLeftNest(req)
+
+      expect(result.status).toBe('ok')
+      if (result.status !== 'ok') continue
+      expect(result.statistics.placedCount).toBe(2)
+      expect(result.unplacedPartIds).toEqual([])
+      expect(result.sheets.map((sheet) => [sheet.widthMm, sheet.heightMm]))
+        .toEqual([[6, 20], [10, 10]])
+    }
+  })
+
+  it('16d. preserves a maximum Hall-safe heterogeneous-stock assignment', () => {
+    const parts = [
+      rectPart('p', 0, 0, 0, 6, 4),
+      rectPart('q', 1, 0, 0, 4, 9),
+      rectPart('r', 2, 0, 0, 9, 4),
+      rectPart('s', 3, 0, 0, 4, 6),
+    ]
+    const stocks = [
+      { widthMm: 6, heightMm: 6, marginMm: 0, quantity: 1 },
+      { widthMm: 10, heightMm: 4, marginMm: 0, quantity: 2 },
+      { widthMm: 4, heightMm: 10, marginMm: 0, quantity: 1 },
+    ]
+
+    for (const sheets of [stocks, stocks.slice().reverse()]) {
+      const req = request(parts)
+      req.sheets = sheets
+      const result = placeWithOrder(req, ['p', 'q', 'r', 's'])
+
+      expect(result.status).toBe('ok')
+      if (result.status !== 'ok') continue
+      expect(result.statistics.placedCount).toBe(4)
+      expect(result.unplacedPartIds).toEqual([])
+      expect(result.sheets.map((sheet) => [sheet.widthMm, sheet.heightMm]))
+        .toEqual([[10, 4], [4, 10], [10, 4], [6, 6]])
+    }
+  })
+
+  it('16e. stock lookahead sees future fits at non-coarse free angles', () => {
+    const flexible = rectPart('flexible', 0, 0, 0, 20, 20)
+    const bar = rectPart('bar', 1, 0, 0, 100, 1)
+    const rotated = rotatePoints(
+      bar.outer.points,
+      37,
+      partRotationOrigin(bar.outer.points),
+    )
+    const exact = boundingBox(rotated)
+    const stocks = [
+      {
+        widthMm: exact.width,
+        heightMm: exact.height,
+        marginMm: 0,
+        quantity: 1,
+      },
+      { widthMm: 71, heightMm: 71, marginMm: 0, quantity: 1 },
+    ]
+
+    for (const sheets of [stocks, stocks.slice().reverse()]) {
+      const req = request([flexible, bar], {
+        settings: {
+          rotationMode: 'free',
+          allowRotation: true,
+          allowArbitraryRotation: true,
+        },
+      })
+      req.sheets = sheets
+      const result = placeWithOrder(req, ['flexible', 'bar'], {
+        freeAngleDepth: 'full',
+      })
+
+      expect(result.status).toBe('ok')
+      if (result.status !== 'ok') continue
+      expect(result.statistics.placedCount).toBe(2)
+      expect(result.sheets[0]).toMatchObject({ widthMm: 71, heightMm: 71 })
+      const placement = result.placements.find(
+        (candidate) => candidate.partId === 'bar',
+      )
+      expect(placement?.sheetIndex).toBe(1)
+      expect([37, 143, 217, 323]).toContain(placement?.rotation)
+    }
+  })
+
+  it('16f. merges huge equivalent inventories without slot expansion', () => {
+    const parts = Array.from({ length: 2_000 }, (_, index) =>
+      rectPart(`bulk-${index.toString().padStart(4, '0')}`, index, 0, 0, 1, 1),
+    )
+    const req = request(parts)
+    req.sheets = Array.from({ length: 10 }, () => ({
+      widthMm: 1,
+      heightMm: 1,
+      marginMm: 0,
+      quantity: 2_000,
+    }))
+    let abort = false
+    const started = performance.now()
+
+    const result = runBottomLeftNest(req, {
+      signal: {
+        get aborted() {
+          return abort
+        },
+      } as AbortSignal,
+      onProgress: () => {
+        abort = true
+      },
+    })
+
+    expect(result.status).toBe('cancelled')
+    expect(performance.now() - started).toBeLessThan(3_000)
+  })
+
+  it('16g. lookahead accounts for multiple future parts sharing one sheet', () => {
+    const parts = [
+      rectPart('current', 0, 0, 0, 6, 7),
+      rectPart('q', 1, 0, 0, 10, 7),
+      rectPart('p1', 2, 0, 0, 3, 10),
+      rectPart('p2', 3, 0, 0, 3, 10),
+    ]
+    const stocks = [
+      { widthMm: 6, heightMm: 10, marginMm: 0, quantity: 1 },
+      { widthMm: 10, heightMm: 7, marginMm: 0, quantity: 1 },
+    ]
+
+    for (const sheets of [stocks, stocks.slice().reverse()]) {
+      const req = request(parts)
+      req.sheets = sheets
+      const result = placeWithOrder(req, ['current', 'q', 'p1', 'p2'])
+
+      expect(result.status).toBe('ok')
+      if (result.status !== 'ok') continue
+      expect(result.statistics.placedCount).toBe(3)
+      expect(result.unplacedPartIds).toEqual(['q'])
+      expect(result.sheets[0]).toMatchObject({ widthMm: 10, heightMm: 7 })
+      expect(
+        result.placements.filter((placement) => placement.sheetIndex === 1),
+      ).toHaveLength(2)
+    }
+  })
+
+  it('16h. skips suffix simulations when area proves one part per sheet', () => {
+    const parts = Array.from({ length: 60 }, (_, index) =>
+      rectPart(`single-${index}`, index, 0, 0, 9, 9),
+    )
+    const req = request(parts)
+    req.sheets = [
+      { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 60 },
+      { widthMm: 11, heightMm: 11, marginMm: 0, quantity: 60 },
+    ]
+    const started = performance.now()
+
+    const result = placeWithOrder(req, parts.map((part) => part.id))
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBe(60)
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
+  it('does not repeat complete suffix simulations for shareable stock', () => {
+    const parts = Array.from({ length: 60 }, (_, index) =>
+      rectPart(`small-${index}`, index, 0, 0, 1, 1),
+    )
+    const req = request(parts)
+    req.sheets = [
+      { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 1 },
+      { widthMm: 11, heightMm: 11, marginMm: 0, quantity: 1 },
+    ]
+    const started = performance.now()
+
+    const result = placeWithOrder(req, parts.map(({ id }) => id))
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBe(60)
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
+  it('16i. opens alternate stock instead of blocking a restricted future part', () => {
+    const parts = [
+      rectPart('first', 0, 0, 0, 10, 4),
+      rectPart('flex', 1, 0, 0, 5, 5),
+      rectPart('future', 2, 0, 0, 10, 4),
+    ]
+    const req = request(parts)
+    req.sheets = [
+      { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 1 },
+      { widthMm: 5, heightMm: 5, marginMm: 0, quantity: 1 },
+    ]
+
+    const result = placeWithOrder(req, ['first', 'flex', 'future'], {
+      nfpFidelity: 'exact',
+    })
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBe(3)
+    expect(result.placements.find((placement) => placement.partId === 'flex'))
+      .toMatchObject({ sheetIndex: 1 })
+  })
+
+  it('opens alternate stock to preserve shared capacity on an existing sheet', () => {
+    const parts = [
+      rectPart('first', 0, 0, 0, 10, 5),
+      rectPart('current', 1, 0, 0, 5, 5),
+      rectPart('f1', 2, 0, 0, 3, 5),
+      rectPart('f2', 3, 0, 0, 3, 5),
+      rectPart('f3', 4, 0, 0, 3, 5),
+    ]
+    const req = request(parts)
+    req.sheets = [
+      { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 1 },
+      { widthMm: 5, heightMm: 5, marginMm: 0, quantity: 1 },
+    ]
+
+    const result = placeWithOrder(req, parts.map(({ id }) => id))
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBe(5)
+    expect(result.placements.find(({ partId }) => partId === 'current'))
+      .toMatchObject({ sheetIndex: 1 })
+  })
+
+  it('keeps cancelled lookahead results partitioned without duplicate part ids', () => {
+    const parts = [
+      rectPart('first', 0, 0, 0, 10, 4),
+      rectPart('flex', 1, 0, 0, 5, 5),
+      rectPart('future', 2, 0, 0, 10, 4),
+    ]
+    let sawCancellationAfterPlacement = false
+
+    for (let abortAfter = 1; abortAfter <= 64; abortAfter++) {
+      const req = request(parts)
+      req.sheets = [
+        { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 1 },
+        { widthMm: 5, heightMm: 5, marginMm: 0, quantity: 1 },
+      ]
+      let checks = 0
+      const result = placeWithOrder(req, ['first', 'flex', 'future'], {
+        nfpFidelity: 'exact',
+        signal: {
+          get aborted() {
+            return ++checks >= abortAfter
+          },
+        } as AbortSignal,
+      })
+      if (result.status !== 'cancelled' || !result.bestSoFar) continue
+
+      const placed = result.bestSoFar.placements.map(({ partId }) => partId)
+      const all = [...placed, ...result.bestSoFar.unplacedPartIds]
+      expect(all).toHaveLength(parts.length)
+      expect(new Set(all)).toEqual(new Set(parts.map(({ id }) => id)))
+      if (placed.length > 0) sawCancellationAfterPlacement = true
+    }
+
+    expect(sawCancellationAfterPlacement).toBe(true)
+  })
+
+  it('does not rebuild quadratic progress snapshots when no listener exists', () => {
+    const req = request([
+      rectPart('a', 0, 0, 0, 10, 10),
+      rectPart('b', 1, 0, 0, 10, 10),
+      rectPart('c', 2, 0, 0, 10, 10),
+    ])
+    let reductions = 0
+    let finds = 0
+    req.parts = new Proxy(req.parts, {
+      get(target, property, receiver) {
+        if (property === 'reduce') reductions += 1
+        if (property === 'find') finds += 1
+        return Reflect.get(target, property, receiver)
+      },
+    })
+
+    const result = runBottomLeftNest(req)
+
+    expect(result.status).toBe('ok')
+    expect(reductions).toBe(1)
+    expect(finds).toBe(0)
+  })
+
+  it('keeps dense explicit rotation grids lazy', () => {
+    const parts = [
+      rectPart('dense-angles-a', 0, 0, 0, 10, 2),
+      rectPart('dense-angles-b', 1, 0, 0, 8, 3),
+    ]
+    const settings = { ...baseSettings, rotationStepDeg: 0.01 }
+
+    const prepared = prepareParts(parts, settings)
+
+    expect(prepared[0]!.rotations).toHaveLength(36_000)
+    expect(prepared.every(({ variants }) => variants.length === 1)).toBe(true)
+    expect(prepared[0]!.rotations).toBe(prepared[1]!.rotations)
+  })
+
+  it('17. plan placement never duplicates a source part', () => {
+    const req = request([rectPart('a', 0, 0, 0, 20, 20)])
+    const duplicate = { order: ['a', 'a'], rotations: [0, 0] }
+
+    expect(() => placeWithPlan(req, duplicate)).toThrow('duplicate')
+    const defensive = placeWithPlanUnchecked(req, duplicate)
+    expect(defensive.status).toBe('ok')
+    if (defensive.status !== 'ok') return
+    expect(defensive.placements.map((placement) => placement.partId)).toEqual([
+      'a',
+    ])
+    expect(defensive.statistics.placedCount).toBe(1)
+  })
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY])(
+    '18. rejects a non-finite plan rotation (%s)',
+    (rotation) => {
+      const req = request([rectPart('a', 0, 0, 0, 20, 20)])
+      const plan = { order: ['a'], rotations: [rotation] }
+
+      expect(() => placeWithPlan(req, plan)).toThrow('rotation')
+      expect(() => placeWithPlanUnchecked(req, plan)).toThrow('rotation')
+    },
+  )
+
+  it('19. canonical BLF path finds an off-center asymmetric-hole placement', () => {
+    const outer = [
+      { x: 0, y: 0 },
+      { x: 30, y: 0 },
+      { x: 30, y: 30 },
+      { x: 0, y: 30 },
+    ]
+    const hole = [
+      { x: 5, y: 5 },
+      { x: 25, y: 25 },
+      { x: 25, y: 5 },
+    ]
+    const host: GeometryPart = {
+      id: 'host',
+      sourceElement: 'path',
+      originalIndex: 0,
+      sourceId: 'host',
+      outer: { points: outer },
+      holes: [{ points: hole }],
+      boundingBox: boundingBox(outer),
+      area: netArea({ points: outer }, [{ points: hole }]),
+      centroid: centroid(outer),
+      originalTransform: null,
+    }
+    const guest = rectPart('guest', 1, 0, 0, 10, 10)
+    const result = runBottomLeftNest(
+      request([host, guest], {
+        sheet: { widthMm: 30, heightMm: 30, marginMm: 0, quantity: 1 },
+        settings: { allowPartInPart: true },
+      }),
+    )
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBe(2)
+    expect(result.placements.find((placement) => placement.partId === 'guest'))
+      .toMatchObject({ x: 15, y: 5, sheetIndex: 0 })
+  })
+
+  it('20. discrete canonical placement preserves a dense sub-0.5mm contact', () => {
+    const outer = Array.from({ length: 117 }, (_, index) => ({
+      x: (20 * index) / 116,
+      y: index % 2 === 0 ? 0 : 0.05,
+    }))
+    outer.push(
+      { x: 20, y: 5 },
+      { x: 20, y: 10 },
+      { x: 15, y: 10 },
+      { x: 12, y: 10 },
+      { x: 10.4, y: 10 },
+      { x: 10.4, y: 9.6 },
+      { x: 10, y: 9.6 },
+      { x: 10, y: 10 },
+      { x: 0, y: 10 },
+    )
+    const host: GeometryPart = {
+      id: 'dense-host',
+      sourceElement: 'path',
+      originalIndex: 0,
+      sourceId: 'dense-host',
+      outer: { points: outer },
+      holes: [],
+      boundingBox: boundingBox(outer),
+      area: netArea({ points: outer }, []),
+      centroid: centroid(outer),
+      originalTransform: null,
+    }
+    const guest = rectPart('tiny', 1, 0, 0, 0.35, 0.35)
+    const req = request([host, guest], {
+      sheet: { widthMm: 20, heightMm: 10, marginMm: 0, quantity: 1 },
+      settings: { allowedRotations: [0] },
+    })
+
+    const canonical = runBottomLeftNest(req)
+    const cheap = runBottomLeftNest(req, { nfpFidelity: 'simplified' })
+
+    expect(canonical.status).toBe('ok')
+    expect(cheap.status).toBe('ok')
+    if (canonical.status !== 'ok' || cheap.status !== 'ok') return
+    expect(canonical.statistics.placedCount).toBe(2)
+    expect(canonical.placements.find((placement) => placement.partId === 'tiny'))
+      .toMatchObject({ x: 10, y: 9.6 })
+    expect(cheap.placements.find((placement) => placement.partId === 'tiny'))
+      .toMatchObject({ x: 10.05, y: 9.65 })
   })
 })

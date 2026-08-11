@@ -54,6 +54,9 @@ export function lengthToMm(
 export type UserToMm = {
   sx: number
   sy: number
+  offsetXMm: number
+  offsetYMm: number
+  supported: boolean
   /** Document width/height in mm when known. */
   widthMm: number | null
   heightMm: number | null
@@ -69,10 +72,35 @@ export function resolveUserToMm(
   heightAttr: string | null,
   viewBoxAttr: string | null,
   warnings: ParserWarning[],
+  preserveAspectRatioAttr: string | null = null,
 ): UserToMm {
   const viewBox = parseViewBox(viewBoxAttr)
   const wLen = parseLength(widthAttr)
   const hLen = parseLength(heightAttr)
+
+  const invalidLength = (raw: string | null, parsed: Length | null) =>
+    raw !== null &&
+    (parsed === null || parsed.unit === '%' || parsed.value <= 0)
+  if (
+    invalidLength(widthAttr, wLen) ||
+    invalidLength(heightAttr, hLen) ||
+    (viewBoxAttr !== null && viewBox === null)
+  ) {
+    warnings.push({
+      code: 'invalid_dimensions',
+      message: 'Malformed or unsupported SVG dimensions.',
+    })
+    return {
+      sx: MM_PER_PX,
+      sy: MM_PER_PX,
+      offsetXMm: 0,
+      offsetYMm: 0,
+      supported: false,
+      widthMm: null,
+      heightMm: null,
+      viewBox: null,
+    }
+  }
 
   let widthMm =
     wLen && wLen.unit !== '%'
@@ -83,18 +111,14 @@ export function resolveUserToMm(
       ? lengthToMm(hLen)
       : null
 
-  if (wLen?.unit === '%' || hLen?.unit === '%') {
-    warnings.push({
-      code: 'invalid_dimensions',
-      message: 'Percentage width/height is not fully supported without a parent size.',
-    })
-  }
-
   if (widthMm == null && heightMm == null && viewBox) {
     // No physical size: user unit = px
     return {
       sx: MM_PER_PX,
       sy: MM_PER_PX,
+      offsetXMm: 0,
+      offsetYMm: 0,
+      supported: true,
       widthMm: viewBox.width * MM_PER_PX,
       heightMm: viewBox.height * MM_PER_PX,
       viewBox,
@@ -105,6 +129,9 @@ export function resolveUserToMm(
     return {
       sx: MM_PER_PX,
       sy: MM_PER_PX,
+      offsetXMm: 0,
+      offsetYMm: 0,
+      supported: true,
       widthMm: null,
       heightMm: null,
       viewBox: null,
@@ -120,9 +147,34 @@ export function resolveUserToMm(
     }
     if (widthMm == null) widthMm = viewBox.width * MM_PER_PX
     if (heightMm == null) heightMm = viewBox.height * MM_PER_PX
+    const rawSx = widthMm / viewBox.width
+    const rawSy = heightMm / viewBox.height
+    const preserve = parsePreserveAspectRatio(preserveAspectRatioAttr)
+    if (!preserve) {
+      warnings.push({
+        code: 'invalid_dimensions',
+        message: 'Unsupported or malformed preserveAspectRatio value.',
+      })
+      return {
+        sx: rawSx,
+        sy: rawSy,
+        offsetXMm: 0,
+        offsetYMm: 0,
+        supported: false,
+        widthMm,
+        heightMm,
+        viewBox,
+      }
+    }
+    const uniform = preserve.none ? null : Math.min(rawSx, rawSy)
+    const sx = uniform ?? rawSx
+    const sy = uniform ?? rawSy
     return {
-      sx: widthMm / viewBox.width,
-      sy: heightMm / viewBox.height,
+      sx,
+      sy,
+      offsetXMm: (widthMm - viewBox.width * sx) * preserve.alignX,
+      offsetYMm: (heightMm - viewBox.height * sy) * preserve.alignY,
+      supported: true,
       widthMm,
       heightMm,
       viewBox,
@@ -141,6 +193,9 @@ export function resolveUserToMm(
     return {
       sx,
       sy,
+      offsetXMm: 0,
+      offsetYMm: 0,
+      supported: true,
       widthMm,
       heightMm: heightMm ?? (userH != null ? userH * sy : null),
       viewBox: null,
@@ -150,9 +205,35 @@ export function resolveUserToMm(
   return {
     sx: MM_PER_PX,
     sy: MM_PER_PX,
+    offsetXMm: 0,
+    offsetYMm: 0,
+    supported: true,
     widthMm,
     heightMm,
     viewBox,
+  }
+}
+
+function parsePreserveAspectRatio(
+  attr: string | null,
+): { none: boolean; alignX: number; alignY: number } | null {
+  const tokens = (attr?.trim() || 'xMidYMid meet').split(/\s+/)
+  if (tokens[0] === 'defer') tokens.shift()
+  if (tokens[0] === 'none') {
+    return tokens.length === 1
+      ? { none: true, alignX: 0, alignY: 0 }
+      : null
+  }
+  const match = /^(xMin|xMid|xMax)(YMin|YMid|YMax)$/.exec(tokens[0] ?? '')
+  if (!match || tokens.length > 2 || (tokens[1] && tokens[1] !== 'meet')) {
+    return null
+  }
+  const align = (value: string) =>
+    value.endsWith('Min') ? 0 : value.endsWith('Mid') ? 0.5 : 1
+  return {
+    none: false,
+    alignX: align(match[1]!),
+    alignY: align(match[2]!),
   }
 }
 
@@ -178,7 +259,7 @@ export function userPointToMm(
   const ox = scale.viewBox?.minX ?? 0
   const oy = scale.viewBox?.minY ?? 0
   return {
-    x: (x - ox) * scale.sx,
-    y: (y - oy) * scale.sy,
+    x: (x - ox) * scale.sx + scale.offsetXMm,
+    y: (y - oy) * scale.sy + scale.offsetYMm,
   }
 }

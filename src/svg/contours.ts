@@ -1,12 +1,14 @@
 import type { Point } from '../geometry'
 import {
-  centroid,
   cleanClosedRing,
   normalizeWinding,
-  pointInPolygon,
   polygonArea,
+  polygonContainsPolygon,
+  signedArea,
 } from '../geometry'
 import type { Subpath } from './pathData'
+
+export type SvgFillRule = 'nonzero' | 'evenodd'
 
 export type ContourGroup = {
   outer: Point[]
@@ -19,7 +21,10 @@ export type ContourGroup = {
  *
  * Open polylines (≥2 points, endpoints not coincident) become hole-less parts.
  */
-export function classifySubpaths(subpaths: Subpath[]): ContourGroup[] {
+export function classifySubpaths(
+  subpaths: Subpath[],
+  fillRule: SvgFillRule = 'nonzero',
+): ContourGroup[] {
   type Node = {
     points: Point[]
     area: number
@@ -38,7 +43,11 @@ export function classifySubpaths(subpaths: Subpath[]): ContourGroup[] {
     const treatClosed = sp.closed || endpointsMatch
 
     if (!treatClosed) {
-      if (sp.points.length >= 2) groups.push({ outer: sp.points.slice(), holes: [] })
+      // SVG fill implicitly closes open subpaths, but a two-point line has no
+      // filled area and therefore cannot be a nesting part.
+      if (sp.points.length >= 3 && polygonArea(sp.points) > 1e-12) {
+        groups.push({ outer: sp.points.slice(), holes: [] })
+      }
       continue
     }
 
@@ -54,14 +63,18 @@ export function classifySubpaths(subpaths: Subpath[]): ContourGroup[] {
 
   for (let i = 0; i < closed.length; i++) {
     const ci = closed[i]!
-    const probe = centroid(ci.points)
     let best = -1
     let bestArea = Infinity
     for (let j = 0; j < closed.length; j++) {
       if (i === j) continue
       const cj = closed[j]!
       if (cj.area <= ci.area + 1e-9) continue
-      if (pointInPolygon(probe, cj.points) && cj.area < bestArea) {
+      if (
+        polygonContainsPolygon(
+          { points: cj.points },
+          { points: ci.points },
+        ) && cj.area < bestArea
+      ) {
         bestArea = cj.area
         best = j
       }
@@ -70,34 +83,50 @@ export function classifySubpaths(subpaths: Subpath[]): ContourGroup[] {
     if (best >= 0) closed[best]!.children.push(i)
   }
 
-  function depthOf(idx: number): number {
-    let d = 0
-    let p = closed[idx]!.parent
-    const guard = closed.length + 1
-    let n = 0
-    while (p >= 0 && n++ < guard) {
-      d++
-      p = closed[p]!.parent
+  const isFilled = (winding: number) =>
+    fillRule === 'evenodd'
+      ? Math.abs(winding) % 2 === 1
+      : winding !== 0
+  type Frame = {
+    index: number
+    parentWinding: number
+    activeSolid: ContourGroup | null
+  }
+  const stack: Frame[] = []
+  for (let i = closed.length - 1; i >= 0; i--) {
+    if (closed[i]!.parent < 0) {
+      stack.push({ index: i, parentWinding: 0, activeSolid: null })
     }
-    return d
   }
 
-  function emitSolid(idx: number): void {
-    const outer = normalizeWinding(closed[idx]!.points, true)
-    const holes: Point[][] = []
-    for (const child of closed[idx]!.children) {
-      if (depthOf(child) === depthOf(idx) + 1) {
-        holes.push(normalizeWinding(closed[child]!.points, false))
-        for (const grand of closed[child]!.children) {
-          if (depthOf(grand) === depthOf(idx) + 2) emitSolid(grand)
-        }
+  while (stack.length > 0) {
+    const frame = stack.pop()!
+    const node = closed[frame.index]!
+    const delta =
+      fillRule === 'evenodd' ? 1 : Math.sign(signedArea(node.points))
+    const winding = frame.parentWinding + delta
+    const parentFilled = isFilled(frame.parentWinding)
+    const filled = isFilled(winding)
+    let activeSolid = frame.activeSolid
+
+    if (!parentFilled && filled) {
+      activeSolid = {
+        outer: normalizeWinding(node.points, true),
+        holes: [],
       }
+      groups.push(activeSolid)
+    } else if (parentFilled && !filled) {
+      activeSolid?.holes.push(normalizeWinding(node.points, false))
+      activeSolid = null
     }
-    groups.push({ outer, holes })
-  }
 
-  for (let i = 0; i < closed.length; i++) {
-    if (depthOf(i) === 0) emitSolid(i)
+    for (let i = node.children.length - 1; i >= 0; i--) {
+      stack.push({
+        index: node.children[i]!,
+        parentWinding: winding,
+        activeSolid,
+      })
+    }
   }
 
   return groups

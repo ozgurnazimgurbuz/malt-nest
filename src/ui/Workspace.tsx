@@ -47,6 +47,7 @@ export function Workspace({
       nestProgress.phase === 'preparing' ||
       nestProgress.phase === 'blf' ||
       nestProgress.phase === 'optimize' ||
+      nestProgress.phase === 'finalizing' ||
       nestProgress.phase === 'stopping')
 
   return (

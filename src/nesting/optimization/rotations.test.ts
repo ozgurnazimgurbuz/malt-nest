@@ -53,4 +53,20 @@ describe('free-angle cascade helpers', () => {
     expect(resolveAllowedAngles(settings, [])).toEqual(coarseFreeAngles())
     expect(usesFreeAngleCascade(settings)).toBe(true)
   })
+
+  it('preserves distinct explicit sub-millidegree angles', () => {
+    const settings: NestingSettings = {
+      spacingMm: 0,
+      allowedRotations: [0],
+      allowedRotationsExplicit: [0.0004, 0.0005],
+      rotationStepDeg: null,
+      allowArbitraryRotation: true,
+      rotationMode: 'free',
+      allowRotation: true,
+      optimizationLevel: 'fast',
+      timeLimitMs: 500,
+    }
+
+    expect(resolveAllowedAngles(settings, [])).toEqual([0.0004, 0.0005])
+  })
 })

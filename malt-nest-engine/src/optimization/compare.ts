@@ -3,22 +3,36 @@
  * NOT ETAP 7 scoring — no weighted fitness, no magic scores.
  *
  * Priority (better first):
- * 1. fewer sheets
- * 2. more placed parts
+ * 1. more placed parts (feasibility)
+ * 2. fewer sheets
  * 3. higher utilization
  * 4. lower packedBoundsMm2
  * 5. strategy name ascending (deterministic tie-break)
  */
 import type { OrderingEval } from './types'
 
-export function compareOrderingEvals(a: OrderingEval, b: OrderingEval): number {
+export type QualityMetrics = Pick<
+  OrderingEval,
+  'placed' | 'sheets' | 'utilization' | 'packedBoundsMm2'
+>
+
+export function compareQualityMetrics(
+  a: QualityMetrics,
+  b: QualityMetrics,
+): number {
   // negative ⇒ a better than b (sort ascending = best first)
-  if (a.sheets !== b.sheets) return a.sheets - b.sheets
   if (a.placed !== b.placed) return b.placed - a.placed
+  if (a.sheets !== b.sheets) return a.sheets - b.sheets
   if (a.utilization !== b.utilization) return b.utilization - a.utilization
   if (a.packedBoundsMm2 !== b.packedBoundsMm2) {
     return a.packedBoundsMm2 - b.packedBoundsMm2
   }
+  return 0
+}
+
+export function compareOrderingEvals(a: OrderingEval, b: OrderingEval): number {
+  const quality = compareQualityMetrics(a, b)
+  if (quality !== 0) return quality
   if (a.strategy < b.strategy) return -1
   if (a.strategy > b.strategy) return 1
   return 0

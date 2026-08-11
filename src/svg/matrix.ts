@@ -55,36 +55,55 @@ export function applyMatrixToPoints(m: Matrix, points: Point[]): Point[] {
 const TRANSFORM_RE =
   /(matrix|translate|scale|rotate|skewX|skewY)\s*\(([^)]*)\)/gi
 
-function nums(args: string): number[] {
-  return args
-    .trim()
-    .split(/[\s,]+/)
-    .filter(Boolean)
-    .map(Number)
+function nums(args: string): number[] | null {
+  const pattern = /[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?/g
+  const values: number[] = []
+  let cursor = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(args))) {
+    if (!/^[\s,]*$/.test(args.slice(cursor, match.index))) return null
+    const value = Number(match[0])
+    if (!Number.isFinite(value)) return null
+    values.push(value)
+    cursor = pattern.lastIndex
+  }
+  return /^[\s,]*$/.test(args.slice(cursor)) ? values : null
 }
 
 /**
  * Parse SVG transform attribute into a matrix.
- * Unsupported functions (skew*) yield identity contribution + warning.
+ * Returns null when any part of the transform list is malformed. Applying a
+ * partial transform would silently nest geometry at the wrong coordinates.
  */
 export function parseTransform(
   value: string | null,
   warnings: ParserWarning[],
   element?: string,
-): Matrix {
+): Matrix | null {
   if (!value || !value.trim()) return IDENTITY
   let m = IDENTITY
-  let matched = false
+  let cursor = 0
   const re = new RegExp(TRANSFORM_RE.source, 'gi')
   let match: RegExpExecArray | null
+  const malformed = (message: string): null => {
+    warnings.push({
+      code: 'unsupported_transform',
+      message,
+      element,
+    })
+    return null
+  }
   while ((match = re.exec(value)) !== null) {
-    matched = true
+    if (!/^[\s,]*$/.test(value.slice(cursor, match.index))) {
+      return malformed(`Unrecognized transform syntax: ${value}`)
+    }
     const kind = match[1]!.toLowerCase()
     const args = nums(match[2] ?? '')
+    if (!args) return malformed(`Malformed transform: ${match[0]}`)
     let next: Matrix | null = null
     switch (kind) {
       case 'matrix':
-        if (args.length === 6 && args.every((n) => Number.isFinite(n))) {
+        if (args.length === 6) {
           next = {
             a: args[0]!,
             b: args[1]!,
@@ -96,47 +115,47 @@ export function parseTransform(
         }
         break
       case 'translate':
-        if (args.length >= 1 && Number.isFinite(args[0]!)) {
+        if (args.length === 1 || args.length === 2) {
           next = translate(args[0]!, args[1] ?? 0)
         }
         break
       case 'scale':
-        if (args.length >= 1 && Number.isFinite(args[0]!)) {
+        if (args.length === 1 || args.length === 2) {
           next = scale(args[0]!, args[1] ?? args[0]!)
         }
         break
       case 'rotate':
-        if (args.length >= 1 && Number.isFinite(args[0]!)) {
+        if (args.length === 1 || args.length === 3) {
           next = rotate(args[0]!, args[1] ?? 0, args[2] ?? 0)
         }
         break
-      case 'skewx':
-      case 'skewy':
-        warnings.push({
-          code: 'unsupported_transform',
-          message: `Unsupported transform: ${kind}()`,
-          element,
-        })
-        next = IDENTITY
+      case 'skewx': {
+        if (args.length === 1) {
+          const tangent = Math.tan((args[0]! * Math.PI) / 180)
+          if (Number.isFinite(tangent)) {
+            next = { a: 1, b: 0, c: tangent, d: 1, e: 0, f: 0 }
+          }
+        }
         break
+      }
+      case 'skewy': {
+        if (args.length === 1) {
+          const tangent = Math.tan((args[0]! * Math.PI) / 180)
+          if (Number.isFinite(tangent)) {
+            next = { a: 1, b: tangent, c: 0, d: 1, e: 0, f: 0 }
+          }
+        }
+        break
+      }
       default:
         break
     }
     if (next) m = multiply(m, next)
-    else {
-      warnings.push({
-        code: 'unsupported_transform',
-        message: `Malformed transform: ${match[0]}`,
-        element,
-      })
-    }
+    else return malformed(`Malformed transform: ${match[0]}`)
+    cursor = re.lastIndex
   }
-  if (!matched && value.trim()) {
-    warnings.push({
-      code: 'unsupported_transform',
-      message: `Unrecognized transform syntax: ${value}`,
-      element,
-    })
+  if (cursor === 0 || !/^[\s,]*$/.test(value.slice(cursor))) {
+    return malformed(`Unrecognized transform syntax: ${value}`)
   }
   return m
 }

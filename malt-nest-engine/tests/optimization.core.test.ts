@@ -219,10 +219,10 @@ describe('ETAP 4 / 5 regression via multi-start orchestration', () => {
 })
 
 describe('compare helper', () => {
-  it('prefers fewer sheets then more placed', () => {
+  it('prefers more placed before fewer sheets', () => {
     const a = fakeEval('area_desc', { sheets: 1, placed: 2 })
     const b = fakeEval('bbox_area_desc', { sheets: 2, placed: 3 })
-    expect(compareOrderingEvals(a, b)).toBeLessThan(0)
+    expect(compareOrderingEvals(b, a)).toBeLessThan(0)
   })
 })
 

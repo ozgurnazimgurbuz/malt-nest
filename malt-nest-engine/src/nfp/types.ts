@@ -1,4 +1,4 @@
-import type { BoundingBox, Ring } from '../geometry/types'
+import type { BoundingBox, Point, Ring } from '../geometry/types'
 import type { GeometryTolerance } from '../geometry/tolerance'
 import { DEFAULT_TOLERANCE } from '../geometry/tolerance'
 
@@ -14,6 +14,11 @@ export type NfpRegion = {
   readonly holes: readonly Ring[]
 }
 
+export type NfpContactSegment = {
+  readonly a: Point
+  readonly b: Point
+}
+
 export type NfpResult = {
   readonly kind: 'outer' | 'inner'
   /** Stationary / container shape id */
@@ -25,6 +30,10 @@ export type NfpResult = {
   readonly gap: number
   /** One or more regions (usually one). */
   readonly regions: readonly NfpRegion[]
+  /** Valid zero-measure poses that polygon booleans cannot represent. */
+  readonly contactPoints?: readonly Point[]
+  /** Valid zero-measure pose intervals that polygon booleans cannot represent. */
+  readonly contactSegments?: readonly NfpContactSegment[]
   readonly bounds: BoundingBox | null
   readonly algorithm: 'minkowski-clipper2'
 }

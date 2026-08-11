@@ -33,10 +33,12 @@ describe('Stage 9 fabrication fixtures', () => {
       '```',
       '',
     ].join('\n')
-    writeFileSync(
-      resolve(__dirname, '../../docs/benchmarks/stage-9-after.md'),
-      md,
-    )
+    if (process.env.UPDATE_BENCHMARK_DOCS === '1') {
+      writeFileSync(
+        resolve(__dirname, '../../docs/benchmarks/stage-9-after.md'),
+        md,
+      )
+    }
 
     // Compact before/after style table vs BLF (same run)
     const cmp: string[] = [
@@ -58,9 +60,11 @@ describe('Stage 9 fabrication fixtures', () => {
       )
     }
     cmp.push('')
-    writeFileSync(
-      resolve(__dirname, '../../docs/benchmarks/stage-9-comparison.md'),
-      cmp.join('\n'),
-    )
+    if (process.env.UPDATE_BENCHMARK_DOCS === '1') {
+      writeFileSync(
+        resolve(__dirname, '../../docs/benchmarks/stage-9-comparison.md'),
+        cmp.join('\n'),
+      )
+    }
   }, 300_000)
 })

@@ -31,13 +31,33 @@ function worldSolid(part: GeometryPart, pl: Placement) {
 }
 
 describe('SVG → nest integration', () => {
+  it.each([
+    ['implicitly closed clockwise polyline', '<polyline points="0,0 0,10 10,10 10,0"/>'],
+    ['reflected rectangle', '<rect width="10" height="10" transform="scale(-1 1)"/>'],
+  ])('normalizes %s before request validation', (_label, body) => {
+    const doc = parseSvgGeometry(`
+      <svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="100mm" viewBox="-20 -20 100 100">
+        ${body}
+      </svg>`)
+    expect(doc.partCount).toBe(1)
+
+    const result = runBottomLeftNest({
+      parts: doc.parts,
+      sheets: [{ widthMm: 30, heightMm: 30, marginMm: 0, quantity: 1 }],
+      settings: { ...settings, spacingMm: 0 },
+    })
+
+    expect(result.status).toBe('ok')
+    if (result.status === 'ok') expect(result.statistics.placedCount).toBe(1)
+  })
+
   it('nests irregular paths, hole, and rectangles without overlap', () => {
     const svg = `
       <svg xmlns="http://www.w3.org/2000/svg" width="400mm" height="300mm" viewBox="0 0 400 300">
         <rect x="0" y="0" width="40" height="25"/>
         <rect x="0" y="0" width="30" height="30"/>
         <path d="M0 0 H50 V20 H20 V50 H0 Z"/>
-        <path d="M0 0 H60 V60 H0 Z M15 15 H45 V45 H15 Z"/>
+        <path fill-rule="evenodd" d="M0 0 H60 V60 H0 Z M15 15 H45 V45 H15 Z"/>
         <polygon points="0,0 35,0 35,15 15,15 15,35 0,35"/>
       </svg>`
     const doc = parseSvgGeometry(svg)

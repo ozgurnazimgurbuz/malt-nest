@@ -14,6 +14,8 @@ export {
   normalizeDeg,
   canonicalizeAngle,
   anglesEqual,
+  validateAnglePrecision,
+  MAX_ANGLE_PRECISION_DECIMALS,
 } from './angle'
 
 export { anglesForPolicy } from './policy'

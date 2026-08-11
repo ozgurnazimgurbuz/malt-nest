@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   downloadAllSvgSheets,
   downloadSvgSheet,
@@ -6,9 +6,8 @@ import {
   exportNestingToSvg,
 } from './export'
 import {
-  isBetterScore,
+  isBetterNestingResult,
   nestAsync,
-  scoreNestingResult,
   type NestingSuccess,
 } from './nesting'
 import {
@@ -42,6 +41,16 @@ function formatCompleted(result: NestingSuccess, prefix = 'Completed'): string {
   return `${prefix} · ${placedCount} / ${partCount}${unplaced} · ${sheetCountUsed} tabaka · ${(result.utilization * 100).toFixed(1)}%`
 }
 
+function nestSeedForIteration(
+  baseSeed: number,
+  iteration: number,
+  deterministic: boolean,
+): number {
+  if (deterministic) return baseSeed
+  const base = (baseSeed >>> 0) || 1
+  return (base + Math.imul(Math.max(0, iteration - 1), 0x9e3779b9)) >>> 0 || 1
+}
+
 export default function App() {
   const [svg, setSvg] = useState<SvgMeta | null>(null)
   const [sheet, setSheet] = useState<SheetSettings>(DEFAULT_SHEET)
@@ -62,21 +71,46 @@ export default function App() {
   const bestResultRef = useRef<NestingSuccess | null>(null)
   const nestProgressRef = useRef<NestUiProgress | null>(null)
   const iterationRef = useRef(0)
+  const fileLoadIdRef = useRef(0)
+  useEffect(
+    () => () => {
+      fileLoadIdRef.current += 1
+      activeJobIdRef.current = null
+      abortRef.current?.abort()
+    },
+    [],
+  )
   nestResultRef.current = nestResult
   bestResultRef.current = bestResult
   nestProgressRef.current = nestProgress
 
+  function invalidateNestingState() {
+    activeJobIdRef.current = null
+    abortRef.current?.abort()
+    abortRef.current = null
+    setCalculating(false)
+    setNestResult(null)
+    nestResultRef.current = null
+    setBestResult(null)
+    bestResultRef.current = null
+    setBestIteration(0)
+    setIterationCount(0)
+    iterationRef.current = 0
+    setNestSheetIndex(0)
+    setNestProgress(null)
+    nestProgressRef.current = null
+    setPreviewMode('svg')
+    setStatus({ kind: 'idle' })
+  }
+
   async function handleFile(file: File) {
+    const loadId = ++fileLoadIdRef.current
+    invalidateNestingState()
+    setSvg(null)
     try {
       const meta = await readSvgFile(file)
+      if (fileLoadIdRef.current !== loadId) return
       setSvg(meta)
-      setNestResult(null)
-      setBestResult(null)
-      setBestIteration(0)
-      setIterationCount(0)
-      iterationRef.current = 0
-      setNestProgress(null)
-      setPreviewMode('svg')
       if (meta.warnings.length > 0) {
         setStatus({
           kind: 'info',
@@ -89,10 +123,8 @@ export default function App() {
         })
       }
     } catch (err) {
+      if (fileLoadIdRef.current !== loadId) return
       setSvg(null)
-      setNestResult(null)
-      setBestResult(null)
-      setNestProgress(null)
       setStatus({
         kind: 'error',
         message: err instanceof Error ? err.message : 'Dosya yüklenemedi.',
@@ -118,7 +150,7 @@ export default function App() {
     const prevBest = bestResultRef.current
     const isBest =
       !prevBest ||
-      isBetterScore(scoreNestingResult(result), scoreNestingResult(prevBest))
+      isBetterNestingResult(result, prevBest)
     if (isBest) {
       setBestResult(result)
       bestResultRef.current = result
@@ -147,6 +179,14 @@ export default function App() {
     abortRef.current = ac
     activeJobIdRef.current = jobId
     const level = nestSettings.optimizationLevel
+    const runSettings = {
+      ...nestSettings,
+      seed: nestSeedForIteration(
+        nestSettings.seed,
+        nextIter,
+        nestSettings.deterministic,
+      ),
+    }
     setCalculating(true)
     const preparing = nestUiPreparing(jobId, svg.partCount, level, nextIter)
     setNestProgress(preparing)
@@ -160,7 +200,7 @@ export default function App() {
         {
           parts: svg.parts,
           sheet,
-          settings: nestSettings,
+          settings: runSettings,
         },
         {
           signal: ac.signal,
@@ -314,14 +354,11 @@ export default function App() {
         nestDebug={nestDebug}
         onFile={handleFile}
         onSheet={(next) => {
+          invalidateNestingState()
           setSheet(next)
-          setNestResult(null)
-          setBestResult(null)
-          setBestIteration(0)
-          setIterationCount(0)
-          iterationRef.current = 0
         }}
         onNest={(next) => {
+          invalidateNestingState()
           setNestSettings(next)
         }}
         onAutoNest={() => {

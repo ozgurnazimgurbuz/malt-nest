@@ -17,7 +17,7 @@ Convex decomp fallback unused on success path (would be worse: ~239×108 pieces)
 
 ## CHANGE
 
-1. **`clipperInflate` → `JoinType.Miter` (miterLimit=4)** — stops Round arc densification; offset verts stay ≈ input (110→~108). Miter flares at sharp corners (≥ Round) → spacing envelope stays conservative; final `solidsCollide(..., spacing)` still enforces gap.
+1. **Cheap ranking used `JoinType.Miter` (miterLimit=4)** — stops Round arc densification; offset verts stay ≈ input (110→~108). Canonical/final geometry now uses Round joins so the requested Euclidean corner clearance is not over-expanded; Miter remains only in explicitly simplified trials.
 2. **`simplifyRingForMinkowski`** before `minkowskiDiffD`: exact collinear strip + closed-ring **RDP ε=0.5 mm** when verts > 32 (Hausdorff budget ≪ 5 mm spacing). Covered by `minkowskiSimplify.test.ts`.
 3. NFP cache **not** used as the main fix (Stage 10D: ≤11.7% / ~0.6 s).
 

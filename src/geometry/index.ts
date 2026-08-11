@@ -59,7 +59,7 @@ export {
   type GeometryTolerance,
 } from './tolerance'
 export { normalizePolygon, validateGeometry } from './normalize'
-export { offsetPolygon, offsetSolid } from './offset'
+export { offsetPolygon, offsetPolygonComponents, offsetSolid } from './offset'
 export {
   union,
   difference,
@@ -73,10 +73,10 @@ export {
   nfpAsSolid,
   nfpBoundaryTranslations,
   nfpBounds,
-  solidFingerprint,
   translationInNfp,
   GEOMETRY_BACKEND_ID,
   type NfpResult,
+  type NfpOptions,
 } from './nfp'
 export {
   computeIfp,
@@ -96,6 +96,7 @@ export {
   canFitInHole,
   candidateHolesForPart,
   findPartInPartPlacement,
+  findPartInPartPlacements,
   type HoleFitResult,
 } from './partInPart'
 export {

@@ -3,6 +3,7 @@ import type { GeometryPart } from '../geometry'
 import { presetForLevel } from './optimization/presets'
 import { coarseFreeAngles } from './optimization/rotations'
 import type { NestInput, NestingRequest, NestingSettings, SheetDefinition } from './types'
+import { validateNestingRequest } from './core/validate'
 
 /** Map Stage 1 UI sheet + nest settings into an engine NestingRequest. */
 export function toNestingRequest(
@@ -15,15 +16,14 @@ export function toNestingRequest(
       widthMm: sheet.widthMm,
       heightMm: sheet.heightMm,
       marginMm: settings.marginMm,
-      quantity: 100,
+      quantity: Math.max(1, parts.length),
     },
   ]
 
   const level = settings.optimizationLevel
   const preset = presetForLevel(level)
 
-  // Free-angle cascade (coarse 15° → refine 5° → final 1°). Per-part angles;
-  // user never picks rotations. Gene pool uses the coarse grid only.
+  // The gene pool uses the coarse grid; full placement checks every integer degree.
   const nestingSettings: NestingSettings = {
     spacingMm: settings.gapMm,
     allowedRotations: coarseFreeAngles(),
@@ -41,7 +41,9 @@ export function toNestingRequest(
     dayamaY: true,
   }
 
-  return { parts, sheets, settings: nestingSettings }
+  const request = { parts, sheets, settings: nestingSettings }
+  validateNestingRequest(request)
+  return request
 }
 
 export function nestInputToRequest(input: NestInput): NestingRequest {

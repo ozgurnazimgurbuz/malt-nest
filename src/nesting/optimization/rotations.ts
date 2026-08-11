@@ -21,11 +21,13 @@ export const FREE_ANGLE_FINAL_RADIUS = 5
 export const FREE_ANGLE_FINAL_STEP = 1
 
 export function normDeg(a: number): number {
-  return ((a % 360) + 360) % 360
+  const normalized = a % 360
+  if (normalized === 0) return 0
+  return normalized < 0 ? normalized + 360 : normalized
 }
 
 export function uniqSorted(angles: number[]): number[] {
-  const set = new Set(angles.map((a) => Math.round(normDeg(a) * 1000) / 1000))
+  const set = new Set(angles.map(normDeg))
   return [...set].sort((a, b) => a - b)
 }
 
@@ -55,7 +57,7 @@ export function anglesAround(
 }
 
 /**
- * Cascade angle sets for free search:
+ * Refinement angle sets for medium/seed free search:
  * coarse → refine(±15°, 5°) around seeds → final(±5°, 1°) around seeds.
  */
 export function freeAngleCascadeStages(seedCenters?: readonly number[]): {
@@ -177,7 +179,12 @@ export function defaultModeForLevel(level: OptimizationLevel): RotationMode {
   return 'orthogonal'
 }
 
-/** True when engine should run coarse→refine→final placement search. */
+/** True when engine should run free-angle placement search. */
 export function usesFreeAngleCascade(settings: NestingSettings): boolean {
-  return settings.allowRotation !== false && settings.rotationMode === 'free'
+  return (
+    settings.allowRotation !== false &&
+    settings.rotationMode === 'free' &&
+    !settings.allowedRotationsExplicit?.length &&
+    settings.rotationStepDeg == null
+  )
 }

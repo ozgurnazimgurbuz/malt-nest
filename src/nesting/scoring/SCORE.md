@@ -1,14 +1,14 @@
 /**
  * Nesting score — Stage 9
  *
- * Lower `total` is better.
+ * `total` remains a diagnostic value; result selection is lexicographic.
  *
- * Priority (via weights):
- * 1. unplacedPenalty × 10_000_000
- * 2. sheetPenalty × 1_000_000
- * 3. wastePenalty × 1.5
- * 4. compactnessPenalty × 0.15
+ * Priority:
+ * 1. Fewer unplaced parts (feasibility)
+ * 2. Fewer sheets
+ * 3. Less waste, then higher utilization
+ * 4. Smaller packed bounds
  *
- * Compactness must never outweigh material efficiency.
+ * Lower-priority metrics never outweigh higher-priority metrics.
  */
 export {}

@@ -1,6 +1,6 @@
 # ETAP 0 — Nesting Rebuild: Architecture & Research Report
 
-**Status:** Research only — no new engine code, no legacy patches, no commit required for this document.  
+**Status:** Historical rebuild plan; the 2026-08-12 nesting audit subsequently hardened both engines.
 **Date:** 2026-08-11  
 **Decision:** Treat `malt-nest` nesting stack as **LEGACY ENGINE**. New work builds a **separate** engine.
 
@@ -35,7 +35,7 @@ SVG file
   → NestingSuccess
 ```
 
-Fallback without `Worker`: **BLF only** (`blfNestingEngine`), not evolutionary.
+Fallback without `Worker`: the same evolutionary engine runs on the main thread.
 
 ### A.2 Module map
 
@@ -43,11 +43,11 @@ Fallback without `Worker`: **BLF only** (`blfNestingEngine`), not evolutionary.
 |-------|------|------|
 | Prepare | `src/nesting/core/prepare.ts` | Rotation variants, metrics, lazy `getOrCreateVariant`, optional area sort |
 | BLF placer | `src/nesting/placement/blf.ts` | Bottom-left + free-angle depths; `runBottomLeftNest` / `placeWithOrder` / `placeWithPlan` |
-| NFP candidates | `src/nesting/nfp/candidates.ts` | Discrete translations from NFP boundary (edge×vertex capped) |
-| Rotations | `src/nesting/optimization/rotations.ts` | 15° / 5° / 1° cascade helpers |
-| Order search | `src/nesting/optimization/orderSearch.ts` | ~12 heuristic orders |
-| Optimizer | `src/nesting/optimization/geneticOptimizer.ts` | Stage1 full floor + 0° order search + GA + Stage2 shortlist |
-| Scoring | `src/nesting/scoring/{fitness,weights}.ts` | Weighted GA score + packed-bounds final pick |
+| NFP candidates | `src/nesting/nfp/candidates.ts` | Exact/fallback contact translations, hole symmetry, local-frame LRU |
+| Rotations | `src/nesting/optimization/rotations.ts` | exhaustive 1° full search + refinement helpers |
+| Order search | `src/nesting/optimization/orderSearch.ts` | Distinct deterministic and seeded heuristic orders |
+| Optimizer | `src/nesting/optimization/geneticOptimizer.ts` | Stage1 full floor + cheap order/GA search + deadline-bound exhaustive polish |
+| Scoring | `src/nesting/scoring/{fitness,weights}.ts` | Canonical feasibility-first lexicographic order; weighted diagnostics |
 | Geometry | `src/geometry/*` | Clipper2 booleans, Minkowski NFP, LRU cache |
 
 ### A.3 Free-angle model (legacy)
@@ -57,7 +57,7 @@ Fallback without `Worker`: **BLF only** (`blfNestingEngine`), not evolutionary.
 | `quick` | 45° grid |
 | `coarse` | 15° (24 angles) |
 | `medium` | 15° → top-3 refine @ 5° (no 1°) — profiling only |
-| `full` | 15° → top-3 @ 5° → ±5° @ 1° |
+| `full` | exhaustive 0°..359° at 1° |
 | `seed` | Refine around gene angle → 1° |
 
 ### A.4 Architecture strengths
@@ -70,11 +70,11 @@ Fallback without `Worker`: **BLF only** (`blfNestingEngine`), not evolutionary.
 ### A.5 Architecture debts (why rebuild, not patch)
 
 1. **Proxy mismatch:** order ranking at **0°** does not predict free-angle quality (`area_desc` ranked #9 at 0°, #1 at full).
-2. **Dual objective:** GA uses weighted score (waste + compactness); free-mode finish uses packed AABB — can disagree.
+2. **Historical dual objective (fixed by the audit):** all selection paths now use one feasibility-first comparator.
 3. **Search cost shape:** full cascade on Demo is ~3–6 min per thorough multi-order experiment; Stage2 shortlist historically missed Stage1 winner.
-4. **NFP candidate sparsity:** Stage 10B capped edge×vertex for speed — possible missed contacts.
+4. **NFP candidate cost:** exact final contacts and bounded cheap-ranking geometry must remain clearly separated.
 5. **Gene vs cascade:** GA `placeWithPlan` locks rotations; cascade `placeWithOrder` picks angles — two search spaces glued together.
-6. **Worker asymmetry:** no Worker → BLF-only quality path.
+6. **Worker cost:** no Worker preserves quality but runs the evolutionary path on the main thread.
 7. **Monolith coupling:** geometry + nesting + UI live in one app; hard to evolve core without UI risk.
 
 ---

@@ -92,24 +92,24 @@ function offsetPolygonMiter(
  * Offset a closed ring by `distance` mm (Clipper round join).
  * Positive expands a CCW outer; use offsetSolid for solids with holes.
  */
-export function offsetPolygon(
+export function offsetPolygonComponents(
   polygon: Polygon,
   distance: number,
-): { polygon: Polygon; issues: GeometryIssue[]; backend: 'clipper' | 'miter' } {
+): { polygons: Polygon[]; issues: GeometryIssue[]; backend: 'clipper' | 'miter' } {
   const issues: GeometryIssue[] = []
   if (!Number.isFinite(distance)) {
-    throw new GeometryError('offsetPolygon: non-finite distance', [
+    throw new GeometryError('offsetPolygonComponents: non-finite distance', [
       { code: 'offset_failed', message: 'Non-finite distance' },
     ])
   }
   const norm = normalizePolygon(polygon.points, signedArea(polygon.points) >= 0)
   issues.push(...norm.issues)
   if (!norm.ok) {
-    return { polygon: { points: [] }, issues, backend: 'clipper' }
+    return { polygons: [], issues, backend: 'clipper' }
   }
   if (Math.abs(distance) <= geomEps()) {
     return {
-      polygon: { points: norm.polygon.points.map((p) => ({ ...p })) },
+      polygons: [{ points: norm.polygon.points.map((p) => ({ ...p })) }],
       issues,
       backend: 'clipper',
     }
@@ -123,12 +123,11 @@ export function offsetPolygon(
   const inflated = clipperInflate([path], distance)
   issues.push(...inflated.issues)
   const mps = pathsDToMultiPolygons(inflated.paths)
-  if (mps.length && mps[0]!.outer.points.length >= 3) {
-    // For a single ring offset, take the primary outer (or hole if negative)
-    if (distance < 0 && mps[0]!.holes.length === 0) {
-      return { polygon: mps[0]!.outer, issues, backend: 'clipper' }
-    }
-    return { polygon: mps[0]!.outer, issues, backend: 'clipper' }
+  const polygons = mps
+    .map((mp) => mp.outer)
+    .filter((outer) => outer.points.length >= 3)
+  if (polygons.length) {
+    return { polygons, issues, backend: 'clipper' }
   }
 
   const fallback = offsetPolygonMiter(polygon, distance)
@@ -137,13 +136,31 @@ export function offsetPolygon(
     code: 'offset_failed',
     message: 'Clipper inflate empty; used miter fallback',
   })
-  return { polygon: fallback.polygon, issues, backend: 'miter' }
+  return {
+    polygons: fallback.polygon.points.length >= 3 ? [fallback.polygon] : [],
+    issues,
+    backend: 'miter',
+  }
+}
+
+/** Offset a ring, retaining the first component for legacy single-polygon callers. */
+export function offsetPolygon(
+  polygon: Polygon,
+  distance: number,
+): { polygon: Polygon; issues: GeometryIssue[]; backend: 'clipper' | 'miter' } {
+  const result = offsetPolygonComponents(polygon, distance)
+  return {
+    polygon: result.polygons[0] ?? { points: [] },
+    issues: result.issues,
+    backend: result.backend,
+  }
 }
 
 /** Offset a solid: outer expands with +d, holes shrink with +d (solid grows). */
 export function offsetSolid(
   solid: Solid,
   distance: number,
+  join: 'round' | 'miter' = 'round',
 ): { solid: Solid; issues: GeometryIssue[]; backend: 'clipper' | 'miter' } {
   const issues: GeometryIssue[] = []
   if (Math.abs(distance) <= geomEps()) {
@@ -158,7 +175,7 @@ export function offsetSolid(
   }
 
   const paths = solidToPathsD(solid)
-  const inflated = clipperInflate(paths, distance)
+  const inflated = clipperInflate(paths, distance, join)
   issues.push(...inflated.issues)
   const mps = pathsDToMultiPolygons(inflated.paths)
   if (mps.length) {

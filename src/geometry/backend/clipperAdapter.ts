@@ -5,8 +5,8 @@ import {
   intersectD,
   isPositiveD,
   JoinType,
+  Minkowski,
   EndType,
-  minkowskiDiffD,
   unionD,
   xorD,
   areaD,
@@ -15,9 +15,14 @@ import {
 } from 'clipper2-ts'
 import type { Point, Polygon, MultiPolygon } from '../types'
 import { solidFromRings, type Solid } from '../collide'
-import { geomEps, type GeometryIssue } from '../tolerance'
+import {
+  clipperPrecision,
+  geomEps,
+  type GeometryIssue,
+} from '../tolerance'
 import { normalizePolygon } from '../normalize'
-import { signedArea } from '../ops'
+import { polygonArea, signedArea } from '../ops'
+import { polygonContainsPolygon } from '../containment'
 import {
   blfProfileRecordClipper,
   isBlfProfiling,
@@ -87,42 +92,20 @@ export function pathsDToMultiPolygons(paths: PathsD): MultiPolygon[] {
   }))
 
   for (const hole of holes) {
-    const c = centroidOf(hole.points)
-    let assigned = false
+    let owner: MultiPolygon | undefined
+    let ownerArea = Infinity
     for (const mp of result) {
-      if (pointInRing(c, mp.outer.points)) {
-        mp.holes.push(hole)
-        assigned = true
-        break
+      if (polygonContainsPolygon(mp.outer, hole)) {
+        const area = polygonArea(mp.outer.points)
+        if (area < ownerArea) {
+          owner = mp
+          ownerArea = area
+        }
       }
     }
-    if (!assigned && result[0]) result[0].holes.push(hole)
+    owner?.holes.push(hole)
   }
   return result
-}
-
-function centroidOf(pts: Point[]): Point {
-  let x = 0
-  let y = 0
-  for (const p of pts) {
-    x += p.x
-    y += p.y
-  }
-  const n = pts.length || 1
-  return { x: x / n, y: y / n }
-}
-
-function pointInRing(p: Point, ring: Point[]): boolean {
-  let inside = false
-  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
-    const pi = ring[i]!
-    const pj = ring[j]!
-    const inter =
-      pi.y > p.y !== pj.y > p.y &&
-      p.x < ((pj.x - pi.x) * (p.y - pi.y)) / (pj.y - pi.y + 1e-30) + pi.x
-    if (inter) inside = !inside
-  }
-  return inside
 }
 
 export function multiPolygonToSolid(mp: MultiPolygon): Solid {
@@ -133,37 +116,42 @@ export function multiPolygonToSolid(mp: MultiPolygon): Solid {
 }
 
 export function clipperUnion(a: PathsD, b: PathsD): PathsD {
-  return timedClipper('union', () => unionD(a, b, FillRule.NonZero))
+  return timedClipper('union', () =>
+    unionD(a, b, FillRule.NonZero, clipperPrecision()),
+  )
 }
 
 export function clipperDifference(a: PathsD, b: PathsD): PathsD {
-  return timedClipper('difference', () => differenceD(a, b, FillRule.NonZero))
+  return timedClipper('difference', () =>
+    differenceD(a, b, FillRule.NonZero, clipperPrecision()),
+  )
 }
 
 export function clipperIntersect(a: PathsD, b: PathsD): PathsD {
-  return timedClipper('intersect', () => intersectD(a, b, FillRule.NonZero))
+  return timedClipper('intersect', () =>
+    intersectD(a, b, FillRule.NonZero, clipperPrecision()),
+  )
 }
 
 export function clipperXor(a: PathsD, b: PathsD): PathsD {
-  return timedClipper('xor', () => xorD(a, b, FillRule.NonZero))
+  return timedClipper('xor', () =>
+    xorD(a, b, FillRule.NonZero, clipperPrecision()),
+  )
 }
 
 export function clipperInflate(
   paths: PathsD,
   delta: number,
+  join: 'round' | 'miter' = 'round',
 ): { paths: PathsD; issues: GeometryIssue[] } {
   return timedClipper('offset', () => {
     const issues: GeometryIssue[] = []
     try {
-      // Round+default arcTol=0 densified corners (Demo 110→241) and made
-      // minkowskiDiffD O(n·m) dominate BLF. Miter keeps vertex count ≈ input
-      // (110→~108) and is ≥ Round at convex corners (miter flares), so spacing
-      // envelope stays conservative; final collide still enforces spacingMm.
-      const precision = 2
+      const precision = clipperPrecision()
       const out = inflatePathsD(
         paths,
         delta,
-        JoinType.Miter,
+        join === 'round' ? JoinType.Round : JoinType.Miter,
         EndType.Polygon,
         4,
         precision,
@@ -184,18 +172,28 @@ export function clipperInflate(
  * A ⊕ (−B) = Clipper minkowskiDiffD(pattern=B, path=A).
  *
  * Clipper builds |A|×|B| quads then unions them — vertex count dominates cost.
- * Pre-simplify rings within a tight Hausdorff budget before Minkowski.
+ * Cheap ranking may simplify within a tight Hausdorff budget; canonical passes
+ * request exact source rings.
  */
 export function clipperMinkowskiDiffNfp(
   stationary: Point[],
   moving: Point[],
+  options: { fidelity?: 'simplified' | 'exact' } = {},
 ): { paths: PathsD; issues: GeometryIssue[] } {
   return timedClipper('minkowski', () => {
     const issues: GeometryIssue[] = []
     try {
-      const pathA = ensurePositive(ringToPathD(simplifyRingForMinkowski(stationary)))
-      const patternB = ensurePositive(ringToPathD(simplifyRingForMinkowski(moving)))
-      const paths = minkowskiDiffD(patternB, pathA, true)
+      const exact = options.fidelity === 'exact'
+      const inputA = exact ? stationary : simplifyRingForMinkowski(stationary)
+      const inputB = exact ? moving : simplifyRingForMinkowski(moving)
+      const pathA = ensurePositive(ringToPathD(inputA))
+      const patternB = ensurePositive(ringToPathD(inputB))
+      const paths = Minkowski.diffD(
+        patternB,
+        pathA,
+        true,
+        clipperPrecision(),
+      )
       return { paths, issues }
     } catch (err) {
       issues.push({
@@ -205,6 +203,37 @@ export function clipperMinkowskiDiffNfp(
       return { paths: [], issues }
     }
   })
+}
+
+/** Positive-area translation regions where `moving` is contained by `container`. */
+export function clipperInnerFitPolygons(
+  container: Point[],
+  moving: Point[],
+): { polygons: Polygon[]; issues: GeometryIssue[] } {
+  const issues: GeometryIssue[] = []
+  try {
+    const containerPath = ensurePositive(ringToPathD(container))
+    const movingPath = ensurePositive(ringToPathD(moving))
+    const paths = Minkowski.diffD(
+      movingPath,
+      containerPath,
+      true,
+      clipperPrecision(),
+    )
+    const polygons: Polygon[] = []
+    for (const path of paths) {
+      if (path.length < 3 || isPositiveD(path)) continue
+      const normalized = normalizePolygon(pathDToRing(path), true)
+      if (normalized.ok) polygons.push(normalized.polygon)
+    }
+    return { polygons, issues }
+  } catch (err) {
+    issues.push({
+      code: 'nfp_failed',
+      message: err instanceof Error ? err.message : 'inner-fit Minkowski failed',
+    })
+    return { polygons: [], issues }
+  }
 }
 
 /** Max Hausdorff error (mm) for Minkowski input simplification. ≪ typical spacing (5mm). */

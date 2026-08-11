@@ -52,9 +52,17 @@ function tokenizePath(d: string): Cmd[] {
     /([MmLlHhVvCcSsQqTtAaZz])|([+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)/g
   const tokens: string[] = []
   let m: RegExpExecArray | null
+  let cursor = 0
   while ((m = re.exec(d))) {
+    if (!/^[\s,]*$/.test(d.slice(cursor, m.index))) {
+      throw new Error('Invalid SVG path data')
+    }
     if (m[1]) tokens.push(m[1])
     else if (m[2]) tokens.push(m[2])
+    cursor = re.lastIndex
+  }
+  if (!/^[\s,]*$/.test(d.slice(cursor))) {
+    throw new Error('Invalid SVG path data')
   }
 
   let i = 0
@@ -63,7 +71,11 @@ function tokenizePath(d: string): Cmd[] {
     if (!Number.isFinite(v)) throw new Error('Invalid path number')
     return v
   }
-  const flag = () => num() !== 0
+  const flag = () => {
+    const value = num()
+    if (value !== 0 && value !== 1) throw new Error('Invalid SVG arc flag')
+    return value === 1
+  }
 
   while (i < tokens.length) {
     const op = tokens[i++]!
@@ -146,6 +158,9 @@ function tokenizePath(d: string): Cmd[] {
       throw new Error(`Unsupported path command: ${op}`)
     }
   }
+  if (cmds.length > 0 && cmds[0]!.t !== 'M') {
+    throw new Error('SVG path must begin with a move command')
+  }
   return cmds
 }
 
@@ -184,6 +199,9 @@ export function pathToRings(
   }
 
   for (const c of cmds) {
+    if (c.t !== 'M' && c.t !== 'Z' && pts.length === 0) {
+      pts = [cur]
+    }
     if (c.t === 'M') {
       finishSub()
       cur = abs(c.x, c.y, c.rel)

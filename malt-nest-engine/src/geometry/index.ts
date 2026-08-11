@@ -11,6 +11,8 @@ export { point, bboxWidth, bboxHeight, bboxArea } from './types'
 export type { GeometryTolerance } from './tolerance'
 export {
   DEFAULT_TOLERANCE,
+  areaTolerance,
+  clipperPrecision,
   nearlyEqual,
   nearlyZero,
 } from './tolerance'

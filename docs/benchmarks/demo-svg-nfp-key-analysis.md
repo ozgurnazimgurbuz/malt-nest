@@ -1,5 +1,10 @@
 # Demo.svg — NFP call / cache-key analysis
 
+> Historical pre-audit snapshot. Production now computes and caches NFPs in a
+> translation-normalized, ID-independent local frame, keys tolerance/fidelity,
+> and restores world coordinates on retrieval. The zero-hit diagnosis below is
+> retained as the benchmark evidence that motivated that fix.
+
 Measure only. Placement/NFP/scoring logic unchanged (profiler key logging only when `profileBlf`).
 
 Fixture: `/Users/ozgurnazimgurbuz/Desktop/Demo.svg`
@@ -17,8 +22,11 @@ Existing production cache hits: **0** / 480
 | Repeat rate | 0.0% | 0.0% | 11.7% | 0.0% |
 | Theoretical ms saved | 0 | 0 | 607 | 0 |
 
-### Why production cache hits are ~0
-Current `geometryVersion` uses `solidFingerprint(placed)` on **world** coordinates. Each placed pose changes the hash, so the same part-pair at a new sheet position never hits — even when relative shape is identical.
+### Why the historical production cache had ~0 hits
+At the time of this snapshot, `geometryVersion` hashed **world** coordinates.
+Each placed pose changed the hash, so the same part-pair at a new sheet
+position missed even when relative geometry was identical. The current cache
+uses translation-normalized geometry plus exact collision verification.
 
 ### Single BLF pass: identity keys never repeat
 Each `(stationary, moving, rotA, rotB)` is computed once in area-sorted BLF. Cache only helps via **shape twins** (`localShapeKey`, 56/480) or across later GA re-evals (not in this measure).

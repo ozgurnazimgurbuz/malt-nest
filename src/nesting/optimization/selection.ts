@@ -1,5 +1,5 @@
 import type { ScoreBreakdown } from '../scoring/fitness'
-import { isBetterScore } from '../scoring/fitness'
+import { compareScores, isBetterScore } from '../scoring/fitness'
 import type { Individual } from './individual'
 import { cloneIndividual } from './individual'
 import type { Rng } from './rng'
@@ -31,7 +31,7 @@ export function elitistSurvive(
 ): RankedIndividual[] {
   const sorted = population
     .slice()
-    .sort((a, b) => a.score.total - b.score.total)
+    .sort((a, b) => compareScores(a.score, b.score))
   return sorted.slice(0, Math.max(0, eliteCount)).map((r) => ({
     individual: cloneIndividual(r.individual),
     score: r.score,

@@ -2,6 +2,7 @@ import type { Individual } from './individual'
 import { cloneIndividual } from './individual'
 import type { Rng } from './rng'
 import type { EvaluateFn } from './localSearch'
+import { isBetterScore } from '../scoring/fitness'
 
 /**
  * Destroy / repair (large-neighborhood): remove a subset, shuffle/rotate, reinsert.
@@ -15,7 +16,7 @@ export function destroyRepairImprove(
   now: () => number = () => performance.now(),
 ): Individual {
   let best = cloneIndividual(start)
-  let bestTotal = evaluate(best).score.total
+  let bestScore = evaluate(best).score
   const n = best.order.length
   if (n < 3) return best
 
@@ -54,10 +55,10 @@ export function destroyRepairImprove(
       }
     }
 
-    const total = evaluate(cand).score.total
-    if (total < bestTotal - 1e-9) {
+    const score = evaluate(cand).score
+    if (isBetterScore(score, bestScore)) {
       best = cand
-      bestTotal = total
+      bestScore = score
     }
   }
 

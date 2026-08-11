@@ -8,17 +8,23 @@ export type NfpCacheKey = {
   spacing: number
   geometryVersion: string
   backend?: string
+  fidelity?: 'simplified' | 'exact'
+  tolerance?: number
+  /** Exact local-coordinate identity used to reject digest collisions. */
+  geometrySignature?: Float64Array
 }
 
 function keyString(k: NfpCacheKey): string {
   return [
     k.stationaryPartId,
     k.movingPartId,
-    k.rotationA.toFixed(4),
-    k.rotationB.toFixed(4),
-    k.spacing.toFixed(6),
+    String(k.rotationA),
+    String(k.rotationB),
+    String(k.spacing),
     k.geometryVersion,
     k.backend ?? '',
+    k.fidelity ?? 'simplified',
+    (k.tolerance ?? 0).toExponential(),
   ].join('|')
 }
 
@@ -27,28 +33,42 @@ function keyString(k: NfpCacheKey): string {
  * Safe across nesting requests: call clearNfpCache() or create a fresh cache per run.
  */
 export class NfpCache {
-  private map = new Map<string, NfpResult>()
-  private order: string[] = []
+  private map = new Map<
+    string,
+    { value: NfpResult; points: number; geometrySignature?: Float64Array }
+  >()
+  private cachedPoints = 0
   hits = 0
   misses = 0
   private readonly maxEntries: number
+  private readonly maxPoints: number
 
-  constructor(maxEntries = 256) {
+  // ponytail: point-weighting approximates object memory; switch to measured
+  // byte weights only if profiles show this bound is materially inaccurate.
+  constructor(maxEntries = 4096, maxPoints = 200_000) {
+    if (
+      !Number.isSafeInteger(maxEntries) ||
+      maxEntries <= 0 ||
+      !Number.isSafeInteger(maxPoints) ||
+      maxPoints <= 0
+    ) {
+      throw new RangeError('NFP cache limits must be positive safe integers')
+    }
     this.maxEntries = maxEntries
+    this.maxPoints = maxPoints
   }
 
   get(key: NfpCacheKey): NfpResult | undefined {
     const ks = keyString(key)
-    const v = this.map.get(ks)
-    if (v) {
+    const entry = this.map.get(ks)
+    if (
+      entry &&
+      signaturesEqual(entry.geometrySignature, key.geometrySignature)
+    ) {
       this.hits++
-      // refresh LRU
-      const i = this.order.indexOf(ks)
-      if (i >= 0) {
-        this.order.splice(i, 1)
-        this.order.push(ks)
-      }
-      return v
+      this.map.delete(ks)
+      this.map.set(ks, entry)
+      return entry.value
     }
     this.misses++
     return undefined
@@ -56,26 +76,33 @@ export class NfpCache {
 
   set(key: NfpCacheKey, value: NfpResult): void {
     const ks = keyString(key)
-    if (this.map.has(ks)) {
-      this.map.set(ks, value)
-      const i = this.order.indexOf(ks)
-      if (i >= 0) {
-        this.order.splice(i, 1)
-        this.order.push(ks)
-      }
-      return
+    const existing = this.map.get(ks)
+    if (existing) {
+      this.cachedPoints -= existing.points
+      this.map.delete(ks)
     }
-    while (this.order.length >= this.maxEntries) {
-      const old = this.order.shift()
-      if (old) this.map.delete(old)
+    const points =
+      nfpPointCount(value) + Math.ceil((key.geometrySignature?.length ?? 0) / 2)
+    this.map.set(ks, {
+      value,
+      points,
+      geometrySignature: key.geometrySignature,
+    })
+    this.cachedPoints += points
+    while (
+      this.map.size > this.maxEntries ||
+      this.cachedPoints > this.maxPoints
+    ) {
+      const old = this.map.keys().next().value as string | undefined
+      if (old === undefined) break
+      this.cachedPoints -= this.map.get(old)?.points ?? 0
+      this.map.delete(old)
     }
-    this.map.set(ks, value)
-    this.order.push(ks)
   }
 
   clear(): void {
     this.map.clear()
-    this.order = []
+    this.cachedPoints = 0
     this.hits = 0
     this.misses = 0
   }
@@ -84,18 +111,48 @@ export class NfpCache {
     return this.map.size
   }
 
+  get pointCount(): number {
+    return this.cachedPoints
+  }
+
   hitRate(): number {
     const t = this.hits + this.misses
     return t > 0 ? this.hits / t : 0
   }
 }
 
+function signaturesEqual(a?: Float64Array, b?: Float64Array): boolean {
+  if (!a || !b) return a === b
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (!Object.is(a[i], b[i])) return false
+  }
+  return true
+}
+
 /** Module-level cache for a single nesting run — clear between requests. */
 let shared: NfpCache | null = null
 
 export function getSharedNfpCache(): NfpCache {
-  if (!shared) shared = new NfpCache(256)
+  if (!shared) shared = new NfpCache()
   return shared
+}
+
+function nfpPointCount(value: NfpResult): number {
+  const rings = new Set<unknown>()
+  let count = 0
+  const add = (points: NfpResult['outer']['points']) => {
+    if (rings.has(points)) return
+    rings.add(points)
+    count += points.length
+  }
+  for (const region of value.regions) {
+    add(region.outer.points)
+    for (const hole of region.holes) add(hole.points)
+  }
+  for (const outer of value.outers) add(outer.points)
+  add(value.outer.points)
+  return Math.max(1, count)
 }
 
 export function clearSharedNfpCache(): void {
@@ -105,6 +162,6 @@ export function clearSharedNfpCache(): void {
 
 export function beginNestingGeometrySession(): NfpCache {
   clearSharedNfpCache()
-  shared = new NfpCache(256)
+  shared = new NfpCache()
   return shared
 }

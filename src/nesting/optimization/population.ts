@@ -8,13 +8,13 @@ import {
 import type { Rng } from './rng'
 
 function metricWidth(p: PreparedPart): number {
-  return Math.max(...p.variants.map((v) => v.width))
+  return p.maxWidth
 }
 function metricHeight(p: PreparedPart): number {
-  return Math.max(...p.variants.map((v) => v.height))
+  return p.maxHeight
 }
 function metricPerimeter(p: PreparedPart): number {
-  return Math.max(...p.variants.map((v) => v.perimeter))
+  return p.perimeter
 }
 function metricCompact(p: PreparedPart): number {
   const w = metricWidth(p)
@@ -63,15 +63,7 @@ function rotationsForOrder(
 }
 
 function bestFitRotation(part: PreparedPart, preferWide: boolean): number {
-  let best = part.variants[0]
-  if (!best) return 0
-  for (const v of part.variants) {
-    if (!best) best = v
-    else if (preferWide) {
-      if (v.width > best.width) best = v
-    } else if (v.height > best.height) best = v
-  }
-  return best.rotation
+  return preferWide ? part.widestRotation : part.tallestRotation
 }
 
 /** Build initial population with strong heuristic seeds + random diversity. */
@@ -109,8 +101,8 @@ export function createInitialPopulation(
   }
 
   const defaultRot = (p: PreparedPart) =>
-    p.variants.find((v) => v.rotation === (allowed[0] ?? 0))?.rotation ??
-    p.variants[0]?.rotation ??
+    p.rotations.find((rotation) => rotation === (allowed[0] ?? 0)) ??
+    p.rotations[0] ??
     0
 
   // 2–8 deterministic heuristic seeds
@@ -152,18 +144,16 @@ export function createInitialPopulation(
   }
 
   // Random seeded diversity
-  while (out.length < populationSize) {
+  let attempts = 0
+  while (out.length < populationSize && attempts < populationSize * 10) {
+    attempts++
     const order = rng.shuffle(ids)
     const rotations = order.map(() => rng.pick(allowed))
     push({ order, rotations })
-    if (seen.size > populationSize * 10) break
   }
 
   while (out.length < populationSize && out.length > 0) {
-    const base = cloneIndividual(out[rng.int(out.length)]!)
-    const order = rng.shuffle(base.order)
-    const map = new Map(base.order.map((id, i) => [id, base.rotations[i]!]))
-    push(individualFromMaps(order, map))
+    out.push(cloneIndividual(out[rng.int(out.length)]!))
   }
 
   return out.slice(0, populationSize)

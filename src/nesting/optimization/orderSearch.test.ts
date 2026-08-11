@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { prepareParts } from '../core/prepare'
+import { prepareParts, type PreparedPart } from '../core/prepare'
 import type { GeometryPart } from '../../geometry'
 import { boundingBox } from '../../geometry'
 import { buildOrderCandidates } from './orderSearch'
@@ -57,5 +57,60 @@ describe('buildOrderCandidates', () => {
     expect(keys.size).toBe(cands.length)
     expect(cands.some((c) => c.name === 'area_desc')).toBe(true)
     expect(cands.some((c) => c.name.startsWith('shuffle_'))).toBe(true)
+  })
+
+  it('keeps every generated seeded order when no diagnostic limit is requested', () => {
+    const metrics = [
+      ['a', 83, 65, 2766.85, 464.47, false],
+      ['b', 42, 53, 1837.83, 374.41, true],
+      ['c', 82, 63, 1895.62, 384.85, true],
+      ['d', 47, 9, 204.78, 134.34, false],
+      ['e', 23, 70, 892.57, 297.2, false],
+      ['f', 40, 6, 163.74, 163.07, false],
+      ['g', 52, 14, 633.42, 187.45, false],
+      ['h', 16, 52, 329.82, 168.9, true],
+      ['i', 32, 12, 311.15, 164.14, false],
+      ['j', 14, 17, 91.78, 112.45, false],
+      ['k', 77, 72, 2283.14, 415.01, false],
+      ['l', 63, 32, 1307.27, 338.28, true],
+    ] as const
+    const parts: PreparedPart[] = metrics.map(
+      ([partId, width, height, area, perimeter, hasHoles], sourceIndex) => ({
+        partId,
+        sourceIndex,
+        area,
+        hasHoles,
+        sourceOuter: [],
+        sourceHoles: [],
+        rotations: [0],
+        maxWidth: width,
+        maxHeight: height,
+        perimeter,
+        widestRotation: 0,
+        tallestRotation: 0,
+        variants: [{
+          partId,
+          sourceIndex,
+          rotation: 0,
+          solid: null as never,
+          area,
+          rankSize: Math.max(width, height),
+          width,
+          height,
+          perimeter,
+        }],
+      }),
+    )
+
+    const names = buildOrderCandidates(parts, createRng(7)).map(
+      (candidate) => candidate.name,
+    )
+    expect(names).toEqual(expect.arrayContaining([
+      'shuffle_0',
+      'shuffle_1',
+      'shuffle_2',
+      'shuffle_3',
+      'shuffle_4',
+    ]))
   })
 })

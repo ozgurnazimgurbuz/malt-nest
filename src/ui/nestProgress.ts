@@ -1,11 +1,12 @@
 import type { NestingSuccess, NestProgress, OptimizationLevel } from '../nesting'
-import { isBetterScore, scoreNestingResult } from '../nesting'
+import { isBetterNestingResult } from '../nesting'
 
 /** UI-facing nest progress phase (observability only). */
 export type NestUiPhase =
   | 'preparing'
   | 'blf'
   | 'optimize'
+  | 'finalizing'
   | 'completed'
   | 'stopping'
   | 'cancelled'
@@ -60,15 +61,12 @@ function levelLabel(level?: string): string {
   return level
 }
 
-/** Existing fitness only — no new scoring. */
+/** Shared canonical nesting-result order. */
 export function isBetterNestResult(
   candidate: NestingSuccess,
   currentBest: NestingSuccess,
 ): boolean {
-  return isBetterScore(
-    scoreNestingResult(candidate),
-    scoreNestingResult(currentBest),
-  )
+  return isBetterNestingResult(candidate, currentBest)
 }
 
 function partsLine(p: NestProgress): string | null {
@@ -157,6 +155,23 @@ export function nestUiFromEngineProgress(
       percent,
       detail: [start, gen, parts, sheet].filter(Boolean).join('\n') || '…',
       statusLine: p.message ?? 'Aday pozisyonlar değerlendiriliyor…',
+      optimizationLevel: level,
+      awaitingStop: false,
+      startedAtMs,
+      elapsedMs,
+      iteration,
+    }
+  }
+
+  if (p.phase === 'finalize') {
+    return {
+      visible: true,
+      jobId: p.jobId ?? activeJobId,
+      phase: 'finalizing',
+      title: 'Nest sonlandırılıyor',
+      percent,
+      detail: [parts, sheet].filter(Boolean).join('\n') || '…',
+      statusLine: p.message ?? 'Son adaylar değerlendiriliyor…',
       optimizationLevel: level,
       awaitingStop: false,
       startedAtMs,
