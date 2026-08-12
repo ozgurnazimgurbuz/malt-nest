@@ -51,7 +51,7 @@ export type AutomaticOptions = {
   }) => void
 }
 
-type ExactStage = 'fixed' | 'refine' | 'seed'
+type ExactStage = 'fixed' | 'coarse' | 'refine' | 'seed'
 
 function individualFromResult(
   result: NestingSuccess,
@@ -324,8 +324,13 @@ export function runAutomaticNest(
     candidate: RankedCandidate | null
     cancelled: boolean
   }
-  const rank = (individual: Individual): RankOutcome => {
-    const key = individualKey(individual, runKey)
+  type RankDepth = Extract<FreeAngleDepth, 'quick' | 'coarse'>
+  const rank = (
+    individual: Individual,
+    depth: RankDepth = 'quick',
+  ): RankOutcome => {
+    const individualCacheKey = individualKey(individual, runKey)
+    const key = `${depth}:${individualCacheKey}`
     if (cheapCache.has(key)) {
       return {
         candidate: cheapCache.get(key) ?? null,
@@ -336,7 +341,7 @@ export function runAutomaticNest(
     const started = now()
     const placed = placeWithOrderUnchecked(request, individual.order, {
       signal: options.signal,
-      freeAngleDepth: 'quick',
+      freeAngleDepth: depth,
       nfpFidelity: 'simplified',
       preparedParts,
       engineId: 'automatic-anytime-v1',
@@ -347,7 +352,7 @@ export function runAutomaticNest(
     }
 
     recordEvaluation(convergence)
-    cheapEvaluatedKeys.add(key)
+    if (depth === 'quick') cheapEvaluatedKeys.add(individualCacheKey)
     if (placed.status !== 'ok') {
       cheapCache.set(key, null)
       notifyEvaluation('rank', elapsedMs, false)
@@ -359,8 +364,8 @@ export function runAutomaticNest(
     const candidate = { individual: actual, result }
     const actualKey = individualKey(actual, runKey)
     cheapCache.set(key, candidate)
-    cheapCache.set(actualKey, candidate)
-    cheapEvaluatedKeys.add(actualKey)
+    cheapCache.set(`${depth}:${actualKey}`, candidate)
+    if (depth === 'quick') cheapEvaluatedKeys.add(actualKey)
     // Rank diagnostics compare like-for-like against the current champion.
     const improved = !cheapThreshold || isBetterNestingResult(result, cheapThreshold)
     notifyEvaluation('rank', elapsedMs, improved)
@@ -513,11 +518,38 @@ export function runAutomaticNest(
       ratio: 0.65,
       phase: 'optimize',
       message: source === 'repair'
+        ? 'Improving layout · coarse repair champion'
+        : 'Improving layout · coarse finalist',
+    })
+    const coarsened = rank(individual, 'coarse')
+    if (coarsened.cancelled || options.signal?.aborted) return 'cancelled'
+    if (halted()) {
+      return options.signal?.aborted ? 'cancelled' : 'halted'
+    }
+    let refinementGene = individual
+    if (
+      coarsened.candidate &&
+      improvesCheapChampion(coarsened.candidate)
+    ) {
+      const exact = evaluateAndRefreshExact(
+        coarsened.candidate.individual,
+        'coarse',
+      )
+      if (exact.cancelled || options.signal?.aborted) return 'cancelled'
+      if (exact.improved && exact.gene) refinementGene = exact.gene
+      if (halted()) {
+        return options.signal?.aborted ? 'cancelled' : 'halted'
+      }
+    }
+    emit({
+      ratio: 0.65,
+      phase: 'optimize',
+      message: source === 'repair'
         ? 'Improving layout · refining repair champion'
         : 'Improving layout · refining finalist',
     })
     const refined = evaluateAndRefreshExact(
-      individual,
+      refinementGene,
       'refine',
       'refine',
     )

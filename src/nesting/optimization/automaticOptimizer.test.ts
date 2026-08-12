@@ -386,7 +386,7 @@ async function repairImprovementScenario(repairExactWaste = 50) {
     const rewardSpy = vi.mocked(repairModule.rewardRepairOperator)
     const controller = new AbortController()
     let inRepair = false
-    let repairStage: 'candidate' | 'refine' | 'seed' = 'candidate'
+    let repairStage: 'candidate' | 'coarse' | 'refine' | 'seed' = 'candidate'
     const result = runMockedAutomaticNest(req, {
       deterministic: true,
       now: () => 0,
@@ -399,7 +399,10 @@ async function repairImprovementScenario(repairExactWaste = 50) {
         }
         if (!inRepair) return
         if (bestSoFar) sequence.push('repair:champion')
-        if (message === 'Improving layout · refining repair champion') {
+        if (message === 'Improving layout · coarse repair champion') {
+          repairStage = 'coarse'
+          sequence.push('repair:coarse:start')
+        } else if (message === 'Improving layout · refining repair champion') {
           repairStage = 'refine'
           sequence.push('repair:refine:start')
         } else if (message === 'Improving layout · polishing repair champion') {
@@ -671,24 +674,42 @@ describe('runAutomaticNest', () => {
     expect(result.unplacedPartIds).toEqual([])
   })
 
-  it('returns before progress or evaluations when already aborted', () => {
-    const controller = new AbortController()
-    controller.abort()
-    const progress: NestProgress[] = []
-    const evaluations: string[] = []
-    const attempts: unknown[] = []
-
-    const result = runAutomaticNest(request([rect('a', 0, 20, 10)]), {
-      signal: controller.signal,
-      onProgress: (item) => progress.push(item),
-      onEvaluation: ({ kind }) => evaluations.push(kind),
-      onAttempt: (attempt) => attempts.push(attempt),
+  it('returns before preparation when already aborted', async () => {
+    vi.resetModules()
+    vi.doMock('../core/prepare', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../core/prepare')>()
+      return { ...actual, prepareParts: vi.fn(actual.prepareParts) }
     })
 
-    expect(result).toMatchObject({ status: 'cancelled', bestSoFar: null })
-    expect(progress).toEqual([])
-    expect(evaluations).toEqual([])
-    expect(attempts).toEqual([])
+    try {
+      const { runAutomaticNest: runMockedAutomaticNest } =
+        await import('./automaticOptimizer')
+      const prepareModule = await import('../core/prepare')
+      const controller = new AbortController()
+      controller.abort()
+      const progress: NestProgress[] = []
+      const evaluations: string[] = []
+      const attempts: unknown[] = []
+
+      const result = runMockedAutomaticNest(
+        request([rect('a', 0, 20, 10)]),
+        {
+          signal: controller.signal,
+          onProgress: (item) => progress.push(item),
+          onEvaluation: ({ kind }) => evaluations.push(kind),
+          onAttempt: (attempt) => attempts.push(attempt),
+        },
+      )
+
+      expect(result).toMatchObject({ status: 'cancelled', bestSoFar: null })
+      expect(vi.mocked(prepareModule.prepareParts)).not.toHaveBeenCalled()
+      expect(progress).toEqual([])
+      expect(evaluations).toEqual([])
+      expect(attempts).toEqual([])
+    } finally {
+      vi.doUnmock('../core/prepare')
+      vi.resetModules()
+    }
   })
 
   it('stops before preparation when its progress observer aborts', () => {
@@ -774,11 +795,66 @@ describe('runAutomaticNest', () => {
     ])
   })
 
+  it('finds an exact-validated coarse rotation before local refinement', () => {
+    const part = rect('bar', 0, 100, 1)
+    const radians = (30 * Math.PI) / 180
+    const req = request([part])
+    req.sheets = [{
+      widthMm: 100 * Math.cos(radians) + Math.sin(radians) + 1e-6,
+      heightMm: 100 * Math.sin(radians) + Math.cos(radians) + 1e-6,
+      marginMm: 0,
+      quantity: 1,
+    }]
+    const messages: string[] = []
+    const evaluations: Array<{
+      stage: 'search' | 'coarse' | 'refine'
+      kind: 'rank' | 'exact'
+      improved: boolean
+    }> = []
+    let stage: 'search' | 'coarse' | 'refine' = 'search'
+
+    const result = runAutomaticNest(req, {
+      deterministic: true,
+      now: () => 0,
+      onProgress: ({ message }) => {
+        if (!message) return
+        messages.push(message)
+        if (message === 'Improving layout · coarse finalist') stage = 'coarse'
+        if (message === 'Improving layout · refining finalist') stage = 'refine'
+      },
+      onEvaluation: ({ kind, improved }) => {
+        evaluations.push({ stage, kind, improved })
+      },
+    })
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBe(1)
+    expect([30, 150, 210, 330]).toContain(result.placements[0]?.rotation)
+    const replay = placeWithPlan(req, planFor(result), { nfpFidelity: 'exact' })
+    expect(replay.status).toBe('ok')
+    if (replay.status === 'ok') {
+      expect(compareNestingResults(replay, result)).toBe(0)
+    }
+    const coarseIndex = messages.indexOf('Improving layout · coarse finalist')
+    const refineIndex = messages.indexOf('Improving layout · refining finalist')
+    expect(coarseIndex).toBeGreaterThan(-1)
+    expect(refineIndex).toBeGreaterThan(coarseIndex)
+    expect(evaluations).toContainEqual({
+      stage: 'coarse',
+      kind: 'exact',
+      improved: true,
+    })
+    expect(evaluations.length).toBeLessThan(20)
+  })
+
   it('refines a repair champion before evaluating another repair', async () => {
     const { sequence } = await repairImprovementScenario()
     const repairRank = sequence.indexOf('rank:candidate:true')
     const repairChampion = sequence.indexOf('repair:champion')
     const repairExact = sequence.indexOf('exact:candidate:true')
+    const coarseStart = sequence.indexOf('repair:coarse:start')
+    const coarseRank = sequence.indexOf('rank:coarse:false')
     const refineStart = sequence.indexOf('repair:refine:start')
     const refineExact = sequence.indexOf('exact:refine:true')
     const nextRepairRank = sequence.findIndex(
@@ -788,7 +864,9 @@ describe('runAutomaticNest', () => {
     expect(repairRank).toBeGreaterThan(-1)
     expect(repairChampion).toBeGreaterThan(repairRank)
     expect(repairExact).toBeGreaterThan(repairChampion)
-    expect(refineStart).toBeGreaterThan(repairExact)
+    expect(coarseStart).toBeGreaterThan(repairExact)
+    expect(coarseRank).toBeGreaterThan(coarseStart)
+    expect(refineStart).toBeGreaterThan(coarseRank)
     expect(refineExact).toBeGreaterThan(refineStart)
     expect(nextRepairRank === -1 || nextRepairRank > refineExact).toBe(true)
   })
