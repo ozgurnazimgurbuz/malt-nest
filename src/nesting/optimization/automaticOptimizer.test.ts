@@ -13,7 +13,10 @@ import type {
   NestingSettings,
   NestingSuccess,
 } from '../types'
-import { runAutomaticNest } from './automaticOptimizer'
+import {
+  runAutomaticNest,
+  type AutomaticOptions,
+} from './automaticOptimizer'
 import { buildOrderCandidates } from './orderSearch'
 import { createRng } from './rng'
 
@@ -28,6 +31,25 @@ const settings: NestingSettings = {
   timeLimitMs: 500,
   seed: 7,
 }
+
+type ApprovedAutomaticOptionKey =
+  | 'onProgress'
+  | 'onAttempt'
+  | 'onAttemptFlush'
+  | 'signal'
+  | 'seed'
+  | 'deterministic'
+  | 'now'
+  | 'onEvaluation'
+
+type AutomaticOptionsHaveExactKeys =
+  Exclude<keyof AutomaticOptions, ApprovedAutomaticOptionKey> extends never
+    ? Exclude<ApprovedAutomaticOptionKey, keyof AutomaticOptions> extends never
+      ? true
+      : false
+    : false
+
+const automaticOptionsHaveExactKeys: AutomaticOptionsHaveExactKeys = true
 
 function rect(id: string, index: number, width: number, height: number): GeometryPart {
   const points = [
@@ -144,7 +166,8 @@ async function fidelityPromotionScenario(
   const seedKey = seedOrder.join(',')
   const alternatives = required.filter(({ order }) => order.join(',') !== seedKey)
   if (alternatives.length < 5) throw new Error('fixture needs five alternative orders')
-  const targetOrder = alternatives[4]!.order
+  const target = alternatives[4]!
+  const targetOrder = target.order
   const requiredKeys = new Set(required.map(({ order }) => order.join(',')))
   const cheapWaste = new Map<string, number>([
     [seedKey, 50],
@@ -183,43 +206,47 @@ async function fidelityPromotionScenario(
   try {
     const { runAutomaticNest: runMockedAutomaticNest } =
       await import('./automaticOptimizer')
-    const exactOrderKeys: string[] = []
-    const exactEvents: Array<{
-      source: string
-      stage: string
-      order: readonly string[]
-      improved: boolean
-    }> = []
-    const beamLayers: Array<{ layer: number; stable: boolean }> = []
+    const exactOrderNames: string[] = []
+    const exactEvents: Array<{ orderName: string | null; improved: boolean }> = []
+    const beamLayers: number[] = []
+    const stableBeamLayers: number[] = []
     let publishedChampions = 0
+    let currentOrderName: string | null = null
     let clock = 0
     runMockedAutomaticNest(req, {
       deterministic: options.stopAtFirstLayer === false,
       now: () => clock,
-      onBeamLayer: (info) => beamLayers.push(info),
-      onExactReplay: (info) => {
-        exactEvents.push(info)
-        const { source, stage, order } = info
-        if (source === 'order' && stage === 'fixed') {
-          exactOrderKeys.push(order.join(','))
+      onEvaluation: ({ kind, improved }) => {
+        if (kind === 'exact') {
+          exactEvents.push({ orderName: currentOrderName, improved })
+          if (currentOrderName) exactOrderNames.push(currentOrderName)
         }
       },
       onProgress: ({ bestSoFar, message }) => {
         if (bestSoFar) publishedChampions++
-        if (
-          options.stopAtFirstLayer !== false &&
-          message?.startsWith('Improving layout · layer')
-        ) {
-          clock = 5_000
+        const orderPrefix = 'Trying orders · '
+        if (message?.startsWith(orderPrefix)) {
+          currentOrderName = message.slice(orderPrefix.length)
         }
+        const layerMatch = message?.match(/^Improving layout · layer (\d+)$/)
+        if (layerMatch) {
+          currentOrderName = null
+          beamLayers.push(Number(layerMatch[1]))
+          if (options.stopAtFirstLayer !== false) clock = 5_000
+        }
+        const stableLayerMatch = message?.match(
+          /^Improving layout · layer (\d+) stable$/,
+        )
+        if (stableLayerMatch) stableBeamLayers.push(Number(stableLayerMatch[1]))
       },
     })
     return {
       beamLayers,
       exactEvents,
-      exactOrderKeys,
+      exactOrderNames,
       publishedChampions,
-      targetKey: targetOrder.join(','),
+      stableBeamLayers,
+      targetName: target.name,
     }
   } finally {
     vi.doUnmock('../placement/blf')
@@ -261,12 +288,22 @@ async function refinementScenario(refineWaste: number) {
   try {
     const { runAutomaticNest: runMockedAutomaticNest } =
       await import('./automaticOptimizer')
-    const finalistStages: Array<{ stage: string; improved: boolean }> = []
+    const finalistStages: Array<{ stage: 'refine' | 'seed'; improved: boolean }> = []
+    let finalistStage: 'refine' | 'seed' | null = null
     runMockedAutomaticNest(req, {
       deterministic: true,
       now: () => 0,
-      onExactReplay: ({ source, stage, improved }) => {
-        if (source === 'finalist') finalistStages.push({ stage, improved })
+      onProgress: ({ message }) => {
+        if (message === 'Improving layout · refining finalist') {
+          finalistStage = 'refine'
+        } else if (message === 'Improving layout · polishing finalist') {
+          finalistStage = 'seed'
+        }
+      },
+      onEvaluation: ({ kind, improved }) => {
+        if (kind !== 'exact' || !finalistStage) return
+        finalistStages.push({ stage: finalistStage, improved })
+        finalistStage = null
       },
     })
     return finalistStages
@@ -323,21 +360,33 @@ async function repairImprovementScenario() {
       await import('./automaticOptimizer')
     const controller = new AbortController()
     const sequence: string[] = []
+    let inRepair = false
+    let repairStage: 'candidate' | 'refine' | 'seed' = 'candidate'
     runMockedAutomaticNest(req, {
       deterministic: true,
       now: () => 0,
       signal: controller.signal,
-      onProgress: ({ message }) => {
-        if (message === 'Improving layout') phase = 'repair'
+      onProgress: ({ bestSoFar, message }) => {
+        if (message === 'Improving layout' && !inRepair) {
+          phase = 'repair'
+          inRepair = true
+          sequence.push('repair:start')
+        }
+        if (!inRepair) return
+        if (bestSoFar) sequence.push('repair:champion')
+        if (message === 'Improving layout · refining repair champion') {
+          repairStage = 'refine'
+          sequence.push('repair:refine:start')
+        } else if (message === 'Improving layout · polishing repair champion') {
+          repairStage = 'seed'
+          sequence.push('repair:seed:start')
+        }
       },
-      onExactReplay: ({ source, stage }) => {
-        if (source !== 'repair') return
-        sequence.push(`exact:${stage}`)
-        if (stage === 'refine') controller.abort()
-      },
-      onRepairReward: (operator) => {
-        sequence.push(`reward:${operator}`)
-        throw new Error('ignored repair observer')
+      onEvaluation: ({ kind, improved }) => {
+        if (!inRepair) return
+        sequence.push(`${kind}:${repairStage}:${improved}`)
+        if (kind === 'exact' && repairStage === 'refine') controller.abort()
+        if (kind === 'exact') repairStage = 'candidate'
       },
     })
     return sequence
@@ -348,6 +397,10 @@ async function repairImprovementScenario() {
 }
 
 describe('runAutomaticNest', () => {
+  it('exports exactly the approved automatic options', () => {
+    expect(automaticOptionsHaveExactKeys).toBe(true)
+  })
+
   it('publishes an exact seed before optimize and never regresses', () => {
     const req = request([
       rect('big', 0, 55, 55),
@@ -389,7 +442,7 @@ describe('runAutomaticNest', () => {
     }
   })
 
-  it('preserves the selected seed order when result placements are grouped by sheet', () => {
+  it('preserves the selected seed order when result placements are grouped by sheet', async () => {
     const req = request([
       rect('a', 0, 6, 10),
       rect('b', 1, 6, 10),
@@ -407,13 +460,40 @@ describe('runAutomaticNest', () => {
       'a', 'c', 'b',
     ])
 
-    const exactOrders: string[][] = []
-    runAutomaticNest(req, {
-      deterministic: true,
-      onExactReplay: ({ order }) => exactOrders.push([...order]),
+    vi.resetModules()
+    vi.doMock('../placement/blf', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../placement/blf')>()
+      const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
+        (nestRequest, plan) => {
+          const selectedSeedOrder = plan.order.join(',') === 'a,b,c'
+          return scoredResult(
+            nestRequest,
+            plan.order,
+            selectedSeedOrder ? 100 : 200,
+          )
+        }
+      return { ...actual, placeWithPlanUnchecked }
     })
 
-    expect(exactOrders[0]).toEqual(['a', 'b', 'c'])
+    let firstChampion: NestingSuccess | undefined
+    try {
+      const { runAutomaticNest: runMockedAutomaticNest } =
+        await import('./automaticOptimizer')
+      runMockedAutomaticNest(req, {
+        deterministic: true,
+        onProgress: ({ bestSoFar }) => {
+          firstChampion ??= bestSoFar
+        },
+      })
+    } finally {
+      vi.doUnmock('../placement/blf')
+      vi.resetModules()
+    }
+
+    expect(firstChampion?.wasteMm2).toBe(100)
+    expect(firstChampion?.placements.map(({ partId }) => partId)).toEqual([
+      'a', 'b', 'c',
+    ])
   })
 
   it('is reproducible for the same deterministic seed and evaluation count', () => {
@@ -505,41 +585,34 @@ describe('runAutomaticNest', () => {
   })
 
   it('does not replay a non-beam candidate that only beats the exact champion', async () => {
-    const { exactOrderKeys, targetKey } = await fidelityPromotionScenario(75)
+    const { exactOrderNames, targetName } = await fidelityPromotionScenario(75)
 
-    expect(exactOrderKeys).not.toContain(targetKey)
+    expect(exactOrderNames).not.toContain(targetName)
   })
 
   it('replays a non-beam candidate that improves the champion cheap result', async () => {
-    const { exactOrderKeys, targetKey } = await fidelityPromotionScenario(45)
+    const { exactOrderNames, targetName } = await fidelityPromotionScenario(45)
 
-    expect(exactOrderKeys).toContain(targetKey)
+    expect(exactOrderNames).toContain(targetName)
   })
 
   it('preserves the champion when an exact replay rejects a cheap improvement', async () => {
-    const { exactEvents, publishedChampions, targetKey } =
+    const { exactEvents, publishedChampions, targetName } =
       await fidelityPromotionScenario(45)
 
-    expect(exactEvents).toContainEqual(
-      expect.objectContaining({
-        source: 'order',
-        stage: 'fixed',
-        order: targetKey.split(','),
-        improved: false,
-      }),
-    )
+    expect(exactEvents).toContainEqual({ orderName: targetName, improved: false })
     expect(publishedChampions).toBe(1)
   })
 
   it('runs a genuine second beam layer and then stabilizes', async () => {
-    const { beamLayers } = await fidelityPromotionScenario(75, {
+    const { beamLayers, stableBeamLayers } = await fidelityPromotionScenario(75, {
       stopAtFirstLayer: false,
       childWaste: 1,
     })
 
     expect(beamLayers.length).toBeGreaterThan(1)
-    expect(beamLayers[0]).toMatchObject({ layer: 1, stable: false })
-    expect(beamLayers.at(-1)).toMatchObject({ stable: true })
+    expect(beamLayers).toEqual(beamLayers.map((_, index) => index + 1))
+    expect(stableBeamLayers).toEqual([beamLayers.at(-1)])
   })
 
   it('runs seed one-degree polish only after a strict refine improvement', async () => {
@@ -555,23 +628,23 @@ describe('runAutomaticNest', () => {
     ])
   })
 
-  it('rewards a repair operator only after its exact result becomes champion', async () => {
-    const sequence = await repairImprovementScenario()
-
-    expect(sequence.some((event) => event.startsWith('reward:'))).toBe(true)
-    expect(sequence.indexOf('exact:fixed')).toBeLessThan(
-      sequence.findIndex((event) => event.startsWith('reward:')),
-    )
-  })
-
   it('refines a repair champion before evaluating another repair', async () => {
     const sequence = await repairImprovementScenario()
+    const repairRank = sequence.indexOf('rank:candidate:true')
+    const repairChampion = sequence.indexOf('repair:champion')
+    const repairExact = sequence.indexOf('exact:candidate:true')
+    const refineStart = sequence.indexOf('repair:refine:start')
+    const refineExact = sequence.indexOf('exact:refine:true')
+    const nextRepairRank = sequence.findIndex(
+      (event, index) => index > repairExact && event.startsWith('rank:candidate:'),
+    )
 
-    expect(sequence.slice(0, 3)).toEqual([
-      'exact:fixed',
-      expect.stringMatching(/^reward:/),
-      'exact:refine',
-    ])
+    expect(repairRank).toBeGreaterThan(-1)
+    expect(repairChampion).toBeGreaterThan(repairRank)
+    expect(repairExact).toBeGreaterThan(repairChampion)
+    expect(refineStart).toBeGreaterThan(repairExact)
+    expect(refineExact).toBeGreaterThan(refineStart)
+    expect(nextRepairRank === -1 || nextRepairRank > refineExact).toBe(true)
   })
 
   it('forwards attempt telemetry only from the initial BLF pass', () => {
@@ -689,12 +762,6 @@ describe('runAutomaticNest', () => {
       onEvaluation: (info) => {
         diagnostics.push(info)
         throw new Error('ignored diagnostic observer')
-      },
-      onExactReplay: () => {
-        throw new Error('ignored exact observer')
-      },
-      onBeamLayer: () => {
-        throw new Error('ignored beam observer')
       },
     })
 

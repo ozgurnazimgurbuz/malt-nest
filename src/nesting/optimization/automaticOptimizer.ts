@@ -30,7 +30,6 @@ import {
   createRepairState,
   proposeRepair,
   rewardRepairOperator,
-  type RepairOperator,
 } from './destroyRepair'
 import {
   individualKey,
@@ -54,18 +53,9 @@ export type AutomaticOptions = {
     elapsedMs: number
     improved: boolean
   }) => void
-  onExactReplay?: (info: {
-    source: 'seed' | 'order' | 'beam' | 'finalist' | 'repair'
-    stage: 'fixed' | 'refine' | 'seed'
-    order: readonly string[]
-    improved: boolean
-  }) => void
-  onBeamLayer?: (info: { layer: number; stable: boolean }) => void
-  onRepairReward?: (operator: RepairOperator) => void
 }
 
 type ExactStage = 'fixed' | 'refine' | 'seed'
-type ExactSource = 'seed' | 'order' | 'beam' | 'finalist' | 'repair'
 
 function individualFromResult(
   result: NestingSuccess,
@@ -123,32 +113,6 @@ export function runAutomaticNest(
   ): void => {
     try {
       options.onEvaluation?.({ kind, elapsedMs, improved })
-    } catch {
-      // Diagnostics must never alter nesting.
-    }
-  }
-  const notifyExactReplay = (
-    source: ExactSource,
-    stage: ExactStage,
-    order: readonly string[],
-    improved: boolean,
-  ): void => {
-    try {
-      options.onExactReplay?.({ source, stage, order: order.slice(), improved })
-    } catch {
-      // Diagnostics must never alter nesting.
-    }
-  }
-  const notifyBeamLayer = (layer: number, stable: boolean): void => {
-    try {
-      options.onBeamLayer?.({ layer, stable })
-    } catch {
-      // Diagnostics must never alter nesting.
-    }
-  }
-  const notifyRepairReward = (operator: RepairOperator): void => {
-    try {
-      options.onRepairReward?.(operator)
     } catch {
       // Diagnostics must never alter nesting.
     }
@@ -266,7 +230,6 @@ export function runAutomaticNest(
   const evaluateExact = (
     individual: Individual,
     stage: ExactStage,
-    source: ExactSource,
     depth?: Extract<FreeAngleDepth, 'refine' | 'seed'>,
   ): ExactOutcome => {
     const key = `${stage}:${individualKey(individual, settingsKey)}`
@@ -303,7 +266,6 @@ export function runAutomaticNest(
     }
     if (replay.status !== 'ok') {
       exactCache.set(key, null)
-      notifyExactReplay(source, stage, individual.order, false)
       notifyEvaluation('exact', elapsedMs, false)
       return {
         result: null,
@@ -320,7 +282,6 @@ export function runAutomaticNest(
     )
     const improved = publish(candidate, individual)
     exactCache.set(key, candidate)
-    notifyExactReplay(source, stage, individual.order, improved)
     notifyEvaluation('exact', elapsedMs, improved)
     return {
       result: candidate,
@@ -331,7 +292,7 @@ export function runAutomaticNest(
     }
   }
 
-  const seedReplay = evaluateExact(seedGene, 'fixed', 'seed')
+  const seedReplay = evaluateExact(seedGene, 'fixed')
   if (seedReplay.cancelled) {
     if (seedReplay.partial) publish(seedReplay.partial, seedGene)
     return cancelled()
@@ -401,10 +362,9 @@ export function runAutomaticNest(
   const evaluateAndRefreshExact = (
     individual: Individual,
     stage: ExactStage,
-    source: ExactSource,
     depth?: Extract<FreeAngleDepth, 'refine' | 'seed'>,
   ): ExactOutcome => {
-    const outcome = evaluateExact(individual, stage, source, depth)
+    const outcome = evaluateExact(individual, stage, depth)
     if (!outcome.improved || !championGene) return outcome
     if (options.signal?.aborted) return { ...outcome, cancelled: true }
     if (shouldStop(convergence, now(), false)) return outcome
@@ -453,7 +413,6 @@ export function runAutomaticNest(
       const exact = evaluateAndRefreshExact(
         outcome.candidate.individual,
         'fixed',
-        'order',
       )
       if (exact.cancelled || options.signal?.aborted) return cancelled()
     }
@@ -499,7 +458,6 @@ export function runAutomaticNest(
           const exact = evaluateAndRefreshExact(
             outcome.candidate.individual,
             'fixed',
-            'beam',
           )
           if (exact.cancelled || options.signal?.aborted) return cancelled()
         }
@@ -513,14 +471,20 @@ export function runAutomaticNest(
     const stable =
       previousKeys.length === nextKeys.length &&
       previousKeys.every((key, index) => key === nextKeys[index])
-    notifyBeamLayer(layer, stable)
-    if (stable) break
+    if (stable) {
+      emit({
+        ratio: 0.65,
+        phase: 'optimize',
+        message: `Improving layout · layer ${layer} stable`,
+      })
+      break
+    }
   }
 
   type RefinementState = 'done' | 'halted' | 'cancelled'
   const refineFinalist = (
     individual: Individual,
-    source: Extract<ExactSource, 'finalist' | 'repair'>,
+    source: 'finalist' | 'repair',
   ): RefinementState => {
     if (halted()) {
       return options.signal?.aborted ? 'cancelled' : 'halted'
@@ -528,12 +492,13 @@ export function runAutomaticNest(
     emit({
       ratio: 0.65,
       phase: 'optimize',
-      message: 'Improving layout · refining finalist',
+      message: source === 'repair'
+        ? 'Improving layout · refining repair champion'
+        : 'Improving layout · refining finalist',
     })
     const refined = evaluateAndRefreshExact(
       individual,
       'refine',
-      source,
       'refine',
     )
     if (refined.cancelled || options.signal?.aborted) return 'cancelled'
@@ -544,12 +509,13 @@ export function runAutomaticNest(
     emit({
       ratio: 0.65,
       phase: 'optimize',
-      message: 'Improving layout · polishing finalist',
+      message: source === 'repair'
+        ? 'Improving layout · polishing repair champion'
+        : 'Improving layout · polishing finalist',
     })
     const polished = evaluateAndRefreshExact(
       refined.gene,
       'seed',
-      source,
       'seed',
     )
     return polished.cancelled || options.signal?.aborted ? 'cancelled' : 'done'
@@ -596,12 +562,10 @@ export function runAutomaticNest(
     const exact = evaluateAndRefreshExact(
       ranked.candidate.individual,
       'fixed',
-      'repair',
     )
     if (exact.cancelled || options.signal?.aborted) return cancelled()
     if (!exact.improved) continue
     rewardRepairOperator(repairState, proposal.operator)
-    notifyRepairReward(proposal.operator)
     const state = refineFinalist(championGene, 'repair')
     if (state === 'cancelled') return cancelled()
     if (state === 'halted') return finish()
