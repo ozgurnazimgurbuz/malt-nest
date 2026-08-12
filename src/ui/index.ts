@@ -14,13 +14,18 @@ export {
 } from './nestProgress'
 export type { NestUiPhase, NestUiProgress } from './nestProgress'
 export {
-  appendLiveAttempts,
-  applyLiveCommitted,
+  applyLiveCommit,
+  applyLiveSheet,
   ATTEMPT_FADE_MS,
-  pruneLiveAttempts,
+  createLiveNestPlayback,
   startLiveNestTrace,
 } from './liveNestTrace'
-export type { LiveNestTrace, TimedNestAttempt } from './liveNestTrace'
+export type {
+  LiveNestPlayback,
+  LiveNestPlaybackCallbacks,
+  LiveNestPlaybackSink,
+  LiveNestTrace,
+} from './liveNestTrace'
 export { SettingsPanel } from './SettingsPanel'
 export { Workspace } from './Workspace'
 export type { PreviewMode } from './Workspace'

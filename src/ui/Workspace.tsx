@@ -47,7 +47,7 @@ export function Workspace({
   const showNest = showLiveNest || (previewMode === 'nest' && nestResult != null)
   const displayedSheet = showLiveNest ? liveTrace.sheetIndex : nestSheetIndex
   const placements = showLiveNest
-    ? (liveTrace.committed?.placements ?? [])
+    ? liveTrace.placements
     : (nestResult?.placements ?? [])
   const showLiveCard =
     nestProgress?.visible &&
@@ -147,8 +147,7 @@ export function Workspace({
                 parts={svg?.parts ?? []}
                 placements={placements}
                 sheetIndex={displayedSheet}
-                attempts={showLiveNest ? liveTrace.trail : []}
-                current={showLiveNest ? liveTrace.current : null}
+                playback={showLiveNest ? liveTrace.playback : null}
                 debug={nestDebug}
               />
             </div>

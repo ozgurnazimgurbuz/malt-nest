@@ -27,11 +27,11 @@ import {
   nestUiError,
   nestUiPreparing,
   nestUiStopping,
-  appendLiveAttempts,
-  applyLiveCommitted,
-  ATTEMPT_FADE_MS,
-  pruneLiveAttempts,
+  applyLiveCommit,
+  applyLiveSheet,
+  createLiveNestPlayback,
   startLiveNestTrace,
+  type LiveNestPlayback,
   type LiveNestTrace,
   type NestUiProgress,
   SettingsPanel,
@@ -73,6 +73,7 @@ export default function App() {
   const [nestProgress, setNestProgress] = useState<NestUiProgress | null>(null)
   const [liveTrace, setLiveTrace] = useState<LiveNestTrace | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const playbackRef = useRef<LiveNestPlayback | null>(null)
   const activeJobIdRef = useRef<string | null>(null)
   const nestResultRef = useRef<NestingSuccess | null>(null)
   const bestResultRef = useRef<NestingSuccess | null>(null)
@@ -84,6 +85,7 @@ export default function App() {
       fileLoadIdRef.current += 1
       activeJobIdRef.current = null
       abortRef.current?.abort()
+      playbackRef.current?.cancel()
     },
     [],
   )
@@ -91,23 +93,12 @@ export default function App() {
   bestResultRef.current = bestResult
   nestProgressRef.current = nestProgress
 
-  const oldestAttemptAt = liveTrace?.trail[0]?.receivedAtMs
-  useEffect(() => {
-    if (oldestAttemptAt == null) return
-    const timeout = window.setTimeout(
-      () =>
-        setLiveTrace((current) =>
-          pruneLiveAttempts(current, performance.now()),
-        ),
-      Math.max(0, oldestAttemptAt + ATTEMPT_FADE_MS - performance.now()),
-    )
-    return () => window.clearTimeout(timeout)
-  }, [liveTrace?.jobId, oldestAttemptAt])
-
   function invalidateNestingState() {
     activeJobIdRef.current = null
     abortRef.current?.abort()
     abortRef.current = null
+    playbackRef.current?.cancel()
+    playbackRef.current = null
     setCalculating(false)
     setNestResult(null)
     nestResultRef.current = null
@@ -190,6 +181,8 @@ export default function App() {
   async function handleAutoNest() {
     if (!svg) return
     abortRef.current?.abort()
+    playbackRef.current?.cancel()
+    setLiveTrace(null)
 
     const nextIter = iterationRef.current + 1
     iterationRef.current = nextIter
@@ -201,6 +194,21 @@ export default function App() {
     activeJobIdRef.current = jobId
     const level = nestSettings.optimizationLevel
     const traceEnabled = nestDebug
+    const playback = traceEnabled
+      ? createLiveNestPlayback(jobId, {
+          onSheetIndex: (sheetIndex) => {
+            setLiveTrace((current) =>
+              applyLiveSheet(current, jobId, sheetIndex),
+            )
+          },
+          onCommit: (placements, sheetIndex) => {
+            setLiveTrace((current) =>
+              applyLiveCommit(current, jobId, placements, sheetIndex),
+            )
+          },
+        })
+      : null
+    playbackRef.current = playback
     const runSettings = {
       ...nestSettings,
       seed: nestSeedForIteration(
@@ -210,7 +218,7 @@ export default function App() {
       ),
     }
     setCalculating(true)
-    setLiveTrace(traceEnabled ? startLiveNestTrace(jobId) : null)
+    setLiveTrace(playback ? startLiveNestTrace(jobId, playback) : null)
     const preparing = nestUiPreparing(jobId, svg.partCount, level, nextIter)
     setNestProgress(preparing)
     setStatus({
@@ -232,22 +240,17 @@ export default function App() {
             ? {
                 onAttempts: (batch) => {
                   if (activeJobIdRef.current !== jobId) return
-                  setLiveTrace((current) =>
-                    appendLiveAttempts(current, batch, performance.now()),
-                  )
+                  playback!.enqueueAttempts(batch)
                 },
               }
             : {}),
           onProgress: (p) => {
             if (activeJobIdRef.current !== jobId) return
             if (
-              traceEnabled &&
               p.attemptPass === 'canonical-blf' &&
               p.bestSoFar
             ) {
-              setLiveTrace((current) =>
-                applyLiveCommitted(current, jobId, p.bestSoFar!),
-              )
+              playback?.enqueueCommit(jobId, p.bestSoFar)
             }
             setNestProgress((prev) => applyEngineProgress(prev, p, jobId))
             setStatus({
@@ -263,6 +266,8 @@ export default function App() {
       if (activeJobIdRef.current !== jobId) return
 
       if (result.status === 'ok') {
+        await playback?.seal()
+        if (activeJobIdRef.current !== jobId) return
         const { iteration, isBest } = recordIteration(result)
         setNestProgress(
           nestUiCompleted(jobId, isBest ? result : bestResultRef.current ?? result, {
@@ -274,6 +279,7 @@ export default function App() {
           }),
         )
       } else if (result.status === 'cancelled') {
+        playback?.cancel()
         if (result.bestSoFar) {
           const { iteration, isBest } = recordIteration(result.bestSoFar)
           setNestProgress(
@@ -305,10 +311,12 @@ export default function App() {
           setStatus({ kind: 'info', message: 'Nesting stopped' })
         }
       } else {
+        playback?.cancel()
         setNestProgress(nestUiError(jobId, result.message))
         setStatus({ kind: 'error', message: result.message })
       }
     } catch (err) {
+      playback?.cancel()
       if (activeJobIdRef.current !== jobId) return
       if (ac.signal.aborted && (bestResultRef.current || nestResultRef.current)) {
         setNestProgress(
@@ -332,11 +340,14 @@ export default function App() {
         abortRef.current = null
         activeJobIdRef.current = null
       }
+      if (playbackRef.current === playback) playbackRef.current = null
     }
   }
 
   function handleStopNest() {
     abortRef.current?.abort()
+    playbackRef.current?.cancel()
+    setLiveTrace(null)
     setNestProgress((prev) => nestUiStopping(prev))
     setStatus({
       kind: 'info',
@@ -413,7 +424,10 @@ export default function App() {
         onStopNest={handleStopNest}
         onNestDebug={(enabled) => {
           setNestDebug(enabled)
-          if (!enabled) setLiveTrace(null)
+          if (!enabled) {
+            playbackRef.current?.cancel()
+            setLiveTrace(null)
+          }
         }}
         onExportSvg={handleExportSvg}
         onExportAll={handleExportAll}

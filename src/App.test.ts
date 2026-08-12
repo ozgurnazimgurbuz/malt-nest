@@ -7,12 +7,14 @@ import type { GeometryPart } from './geometry'
 import { boundingBox } from './geometry'
 import type { NestAttempt, NestingResult, NestingSuccess } from './nesting'
 import type { SvgMeta } from './state'
+import type { LiveNestPlaybackSink } from './ui'
 
 const mocks = vi.hoisted(() => ({
   nestAsync: vi.fn(),
   readSvgFile: vi.fn(),
   settingsProps: null as Record<string, any> | null,
   workspaceProps: null as Record<string, any> | null,
+  workspaceRenderCount: 0,
 }))
 
 vi.mock('./nesting', async () => ({
@@ -33,6 +35,7 @@ vi.mock('./ui', async () => ({
   },
   Workspace: (props: Record<string, any>) => {
     mocks.workspaceProps = props
+    mocks.workspaceRenderCount += 1
     return null
   },
 }))
@@ -146,6 +149,34 @@ async function flush() {
   })
 }
 
+const frames: FrameRequestCallback[] = []
+
+function nextFrame(now: number) {
+  const callback = frames.shift()
+  expect(callback).toBeTypeOf('function')
+  act(() => callback!(now))
+}
+
+function attachLiveSink() {
+  const shown: number[] = []
+  const events: string[] = []
+  const sink: LiveNestPlaybackSink = {
+    renderAttempt(value) {
+      shown.push(value.sequence)
+      events.push(`attempt:${value.sequence}`)
+      return false
+    },
+    renderCommit(placements) {
+      events.push(`commit:${placements.length}`)
+      return false
+    },
+    renderIdle: () => false,
+    clear: vi.fn(),
+  }
+  mocks.workspaceProps!.liveTrace.playback.attach(sink)
+  return { events, shown, sink }
+}
+
 let root: Root
 let mounted = false
 
@@ -155,6 +186,13 @@ beforeEach(async () => {
   mocks.readSvgFile.mockReset()
   mocks.settingsProps = null
   mocks.workspaceProps = null
+  mocks.workspaceRenderCount = 0
+  frames.length = 0
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    frames.push(callback)
+    return frames.length
+  })
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
   const container = document.createElement('div')
   document.body.append(container)
   root = createRoot(container)
@@ -166,6 +204,7 @@ afterEach(async () => {
   if (mounted) await act(async () => root.unmount())
   mounted = false
   document.body.replaceChildren()
+  vi.unstubAllGlobals()
 })
 
 describe('App nesting run lifecycle', () => {
@@ -185,7 +224,7 @@ describe('App nesting run lifecycle', () => {
     expect(mocks.workspaceProps!.liveTrace).not.toBeNull()
   })
 
-  it('applies matching attempts and canonical committed snapshots only', async () => {
+  it('plays one attempt per frame and applies the following commit afterward', async () => {
     mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
     await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
     const pending = deferred<NestingResult>()
@@ -195,21 +234,12 @@ describe('App nesting run lifecycle', () => {
     const options = mocks.nestAsync.mock.calls[0]![1]
     const jobId = options.jobId as string
 
-    act(() =>
-      options.onAttempts({ jobId, attempts: [attempt(0, 1)] }),
-    )
-    expect(mocks.workspaceProps!.liveTrace.current.sequence).toBe(0)
-    expect(mocks.workspaceProps!.liveTrace.sheetIndex).toBe(1)
-
     const partial = result()
-    act(() =>
-      options.onProgress({
-        phase: 'seed',
-        ratio: 0.5,
-        bestSoFar: partial,
-      }),
-    )
-    expect(mocks.workspaceProps!.liveTrace.committed).toBeNull()
+    const { events, shown } = attachLiveSink()
+    options.onAttempts({
+      jobId,
+      attempts: [attempt(0), attempt(1, 1)],
+    })
     act(() =>
       options.onProgress({
         phase: 'seed',
@@ -218,63 +248,163 @@ describe('App nesting run lifecycle', () => {
         bestSoFar: partial,
       }),
     )
-    expect(mocks.workspaceProps!.liveTrace.committed).toBe(partial)
+
+    expect(shown).toEqual([])
+    nextFrame(16)
+    expect(shown).toEqual([0])
+    nextFrame(32)
+    expect(shown).toEqual([0, 1])
+    expect(mocks.workspaceProps!.liveTrace.sheetIndex).toBe(1)
+    expect(mocks.workspaceProps!.liveTrace.placements).toEqual([])
+    nextFrame(48)
+    expect(events).toEqual(['attempt:0', 'attempt:1', 'commit:1'])
+    expect(mocks.workspaceProps!.liveTrace.placements).toEqual(
+      partial.placements,
+    )
     expect(mocks.settingsProps!.nestResult).toBeNull()
   })
 
-  it('ignores stale attempt batches and clears the trace when debug turns off', async () => {
+  it('ignores stale attempts and noncanonical snapshots before playback', async () => {
     mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
     await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
     mocks.nestAsync.mockReturnValue(deferred<NestingResult>().promise)
     act(() => mocks.settingsProps!.onNestDebug(true))
     act(() => mocks.settingsProps!.onAutoNest())
     const options = mocks.nestAsync.mock.calls[0]![1]
+    const { events } = attachLiveSink()
 
+    options.onAttempts({ jobId: 'old-job', attempts: [attempt()] })
     act(() =>
-      options.onAttempts({ jobId: 'old-job', attempts: [attempt()] }),
+      options.onProgress({
+        phase: 'seed',
+        ratio: 0.5,
+        bestSoFar: result(),
+      }),
     )
-    expect(mocks.workspaceProps!.liveTrace.current).toBeNull()
-    act(() => mocks.settingsProps!.onNestDebug(false))
-    expect(mocks.workspaceProps!.liveTrace).toBeNull()
+    expect(frames).toHaveLength(0)
+    expect(events).toEqual([])
   })
 
-  it('clears live attempts on completion, cancellation, and error', async () => {
+  it('keeps calculating until the final attempted position has painted', async () => {
     mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
     await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
     act(() => mocks.settingsProps!.onNestDebug(true))
 
     const completed = deferred<NestingResult>()
-    mocks.nestAsync.mockReturnValueOnce(completed.promise)
+    mocks.nestAsync.mockReturnValue(completed.promise)
     act(() => mocks.settingsProps!.onAutoNest())
-    let options = mocks.nestAsync.mock.calls[0]![1]
-    act(() =>
-      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
-    )
+    const options = mocks.nestAsync.mock.calls[0]![1]
+    const { shown } = attachLiveSink()
+    options.onAttempts({ jobId: options.jobId, attempts: [attempt()] })
     completed.resolve(result())
     await flush()
+
+    expect(mocks.settingsProps!.nestResult).toBeNull()
+    expect(mocks.workspaceProps!.calculating).toBe(true)
+    nextFrame(16)
+    await flush()
+    expect(shown).toEqual([0])
+    expect(mocks.settingsProps!.nestResult).toBeNull()
+    nextFrame(32)
+    await flush()
+    expect(mocks.settingsProps!.nestResult).not.toBeNull()
     expect(mocks.workspaceProps!.liveTrace).toBeNull()
+    expect(mocks.workspaceProps!.calculating).toBe(false)
+  })
+
+  it('cancels queued playback immediately for non-ok results and errors', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    act(() => mocks.settingsProps!.onNestDebug(true))
 
     const cancelled = deferred<NestingResult>()
     mocks.nestAsync.mockReturnValueOnce(cancelled.promise)
-    act(() => mocks.settingsProps!.onNewIteration())
-    options = mocks.nestAsync.mock.calls[1]![1]
-    act(() =>
-      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
-    )
+    act(() => mocks.settingsProps!.onAutoNest())
+    let options = mocks.nestAsync.mock.calls[0]![1]
+    let attached = attachLiveSink()
+    options.onAttempts({ jobId: options.jobId, attempts: [attempt()] })
     cancelled.resolve({ status: 'cancelled', message: 'stopped' })
     await flush()
     expect(mocks.workspaceProps!.liveTrace).toBeNull()
+    expect(attached.sink.clear).toHaveBeenCalledOnce()
+    nextFrame(16)
+    expect(attached.shown).toEqual([])
 
     const failed = deferred<NestingResult>()
     mocks.nestAsync.mockReturnValueOnce(failed.promise)
     act(() => mocks.settingsProps!.onNewIteration())
-    options = mocks.nestAsync.mock.calls[2]![1]
-    act(() =>
-      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
-    )
+    options = mocks.nestAsync.mock.calls[1]![1]
+    attached = attachLiveSink()
+    options.onAttempts({ jobId: options.jobId, attempts: [attempt(1)] })
     failed.reject(new Error('failed'))
     await flush()
     expect(mocks.workspaceProps!.liveTrace).toBeNull()
+    expect(attached.sink.clear).toHaveBeenCalledOnce()
+    nextFrame(32)
+    expect(attached.shown).toEqual([])
+  })
+
+  it('cancels and clears playback on STOP without applying queued frames', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    mocks.nestAsync.mockReturnValue(deferred<NestingResult>().promise)
+    act(() => mocks.settingsProps!.onNestDebug(true))
+    act(() => mocks.settingsProps!.onAutoNest())
+    const options = mocks.nestAsync.mock.calls[0]![1]
+    const { shown, sink } = attachLiveSink()
+    options.onAttempts({
+      jobId: options.jobId,
+      attempts: [attempt(0), attempt(1)],
+    })
+
+    act(() => mocks.settingsProps!.onStopNest())
+
+    expect(options.signal.aborted).toBe(true)
+    expect(mocks.workspaceProps!.liveTrace).toBeNull()
+    expect(sink.clear).toHaveBeenCalledOnce()
+    expect(mocks.settingsProps!.nestProgress.title).toContain('Durdur')
+    nextFrame(16)
+    expect(shown).toEqual([])
+  })
+
+  it('cancels visualization when debug turns off without aborting nesting', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    mocks.nestAsync.mockReturnValue(deferred<NestingResult>().promise)
+    act(() => mocks.settingsProps!.onNestDebug(true))
+    act(() => mocks.settingsProps!.onAutoNest())
+    const options = mocks.nestAsync.mock.calls[0]![1]
+    const { shown, sink } = attachLiveSink()
+    options.onAttempts({ jobId: options.jobId, attempts: [attempt()] })
+
+    act(() => mocks.settingsProps!.onNestDebug(false))
+
+    expect(options.signal.aborted).toBe(false)
+    expect(mocks.workspaceProps!.liveTrace).toBeNull()
+    expect(sink.clear).toHaveBeenCalledOnce()
+    nextFrame(16)
+    expect(shown).toEqual([])
+  })
+
+  it('does not render App for same-sheet attempt frames', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    mocks.nestAsync.mockReturnValue(deferred<NestingResult>().promise)
+    act(() => mocks.settingsProps!.onNestDebug(true))
+    act(() => mocks.settingsProps!.onAutoNest())
+    const options = mocks.nestAsync.mock.calls[0]![1]
+    const { shown } = attachLiveSink()
+    const rendersBeforeAttempts = mocks.workspaceRenderCount
+
+    options.onAttempts({
+      jobId: options.jobId,
+      attempts: [attempt(0), attempt(1)],
+    })
+    nextFrame(16)
+    nextFrame(32)
+
+    expect(shown).toEqual([0, 1])
+    expect(mocks.workspaceRenderCount).toBe(rendersBeforeAttempts)
   })
 
   it('ignores an older file read that resolves after a newer selection', async () => {
@@ -307,11 +437,14 @@ describe('App nesting run lifecycle', () => {
     act(() => mocks.settingsProps!.onNestDebug(true))
     act(() => mocks.settingsProps!.onAutoNest())
     const options = mocks.nestAsync.mock.calls[0]![1]
-    act(() =>
-      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
-    )
+    const { shown, sink } = attachLiveSink()
+    options.onAttempts({ jobId: options.jobId, attempts: [attempt()] })
     expect(mocks.workspaceProps!.liveTrace).not.toBeNull()
     const signal = mocks.nestAsync.mock.calls[0]![1].signal as AbortSignal
+    pending.resolve(result())
+    await flush()
+    expect(mocks.settingsProps!.nestResult).toBeNull()
+    expect(mocks.settingsProps!.calculating).toBe(true)
     act(() =>
       mocks.settingsProps!.onNest({
         ...mocks.settingsProps!.nest,
@@ -324,8 +457,10 @@ describe('App nesting run lifecycle', () => {
     expect(mocks.settingsProps!.nestResult).toBeNull()
     expect(mocks.settingsProps!.nestProgress).toBeNull()
     expect(mocks.workspaceProps!.liveTrace).toBeNull()
+    expect(sink.clear).toHaveBeenCalledOnce()
+    nextFrame(16)
+    expect(shown).toEqual([])
 
-    pending.resolve(result())
     await flush()
     expect(mocks.settingsProps!.nestResult).toBeNull()
   })
@@ -341,9 +476,8 @@ describe('App nesting run lifecycle', () => {
     act(() => mocks.settingsProps!.onNestDebug(true))
     act(() => mocks.settingsProps!.onAutoNest())
     const options = mocks.nestAsync.mock.calls[0]![1]
-    act(() =>
-      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
-    )
+    const { shown, sink } = attachLiveSink()
+    options.onAttempts({ jobId: options.jobId, attempts: [attempt()] })
     const signal = mocks.nestAsync.mock.calls[0]![1].signal as AbortSignal
     act(() => {
       void mocks.settingsProps!.onFile(new File([], 'b.svg'))
@@ -354,10 +488,36 @@ describe('App nesting run lifecycle', () => {
     expect(mocks.settingsProps!.nestResult).toBeNull()
     expect(mocks.settingsProps!.svg).toBeNull()
     expect(mocks.workspaceProps!.liveTrace).toBeNull()
+    expect(sink.clear).toHaveBeenCalledOnce()
+    nextFrame(16)
+    expect(shown).toEqual([])
 
     pendingFile.resolve(meta('b.svg'))
     pendingNest.resolve(result())
     await flush()
+  })
+
+  it('cancels an older playback before starting its replacement run', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    mocks.nestAsync.mockReturnValue(deferred<NestingResult>().promise)
+    act(() => mocks.settingsProps!.onNestDebug(true))
+    act(() => mocks.settingsProps!.onAutoNest())
+    const oldOptions = mocks.nestAsync.mock.calls[0]![1]
+    const oldPlayback = mocks.workspaceProps!.liveTrace.playback
+    const { shown, sink } = attachLiveSink()
+    oldOptions.onAttempts({
+      jobId: oldOptions.jobId,
+      attempts: [attempt(0), attempt(1)],
+    })
+
+    act(() => mocks.settingsProps!.onNewIteration())
+
+    expect(oldOptions.signal.aborted).toBe(true)
+    expect(sink.clear).toHaveBeenCalledOnce()
+    expect(mocks.workspaceProps!.liveTrace.playback).not.toBe(oldPlayback)
+    nextFrame(16)
+    expect(shown).toEqual([])
   })
 
   it('clears a completed result and iteration history when the sheet changes', async () => {
@@ -449,12 +609,18 @@ describe('App nesting run lifecycle', () => {
     mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
     await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
     mocks.nestAsync.mockReturnValue(deferred<NestingSuccess>().promise)
+    act(() => mocks.settingsProps!.onNestDebug(true))
     act(() => mocks.settingsProps!.onAutoNest())
-    const signal = mocks.nestAsync.mock.calls[0]![1].signal as AbortSignal
+    const options = mocks.nestAsync.mock.calls[0]![1]
+    const { shown, sink } = attachLiveSink()
+    options.onAttempts({ jobId: options.jobId, attempts: [attempt()] })
 
     await act(async () => root.unmount())
     mounted = false
 
-    expect(signal.aborted).toBe(true)
+    expect(options.signal.aborted).toBe(true)
+    expect(sink.clear).toHaveBeenCalledOnce()
+    nextFrame(16)
+    expect(shown).toEqual([])
   })
 })
