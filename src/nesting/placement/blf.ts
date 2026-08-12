@@ -159,7 +159,57 @@ function ringPerimeter(points: ReadonlyArray<{ x: number; y: number }>): number 
   return total
 }
 
+function normalizedRingArea(points: ReadonlyArray<{ x: number; y: number }>): number {
+  if (points.length < 3) return 0
+  const origin = points[0]!
+  let total = 0
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]!
+    const b = points[(i + 1) % points.length]!
+    total +=
+      (a.x - origin.x) * (b.y - origin.y) -
+      (b.x - origin.x) * (a.y - origin.y)
+  }
+  return Math.abs(total) / 2
+}
+
+function hasStableMaterialArea(
+  reportedArea: number,
+  outer: ReadonlyArray<{ x: number; y: number }>,
+  holes: readonly ReadonlyArray<{ x: number; y: number }>[],
+): boolean {
+  const normalizedArea = Math.max(
+    0,
+    normalizedRingArea(outer) -
+      holes.reduce((sum, hole) => sum + normalizedRingArea(hole), 0),
+  )
+  return (
+    Math.abs(reportedArea - normalizedArea) <=
+    geometryMetadataTolerance(normalizedArea)
+  )
+}
+
 function hasMaterialCapacity(entry: SequenceEntry, sheet: SheetState): boolean {
+  if (
+    !hasStableMaterialArea(
+      entry.part.area,
+      entry.part.sourceOuter,
+      entry.part.sourceHoles,
+    )
+  ) {
+    return true
+  }
+  for (const placed of sheet.placed) {
+    if (
+      !hasStableMaterialArea(
+        placed.area,
+        placed.solid.outer.points,
+        placed.solid.holes.map((hole) => hole.points),
+      )
+    ) {
+      return true
+    }
+  }
   const areas = [...sheet.placed.map(({ area }) => area), entry.part.area]
   const lowerTotal = areas.reduce(
     (sum, area) => sum + Math.max(0, area - geometryMetadataTolerance(area)),

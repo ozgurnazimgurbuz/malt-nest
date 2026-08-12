@@ -3,6 +3,7 @@ import {
   boundingBox,
   centroid,
   configureGeometryTolerance,
+  geomEps,
   netArea,
   type GeometryPart,
   type Point,
@@ -171,6 +172,26 @@ describe('BLF material-area guard', () => {
     expect(sawCandidateBeside('second', 5)).toBe(true)
   })
 
+  it('fails open for validator-accepted area metadata at large coordinates', () => {
+    const offset = 4e8
+    const part = (id: string, index: number) =>
+      polygonPart(id, index, [
+        { x: offset, y: offset },
+        { x: offset + 5, y: offset },
+        { x: offset + 5, y: offset + 10 },
+        { x: offset, y: offset + 10 },
+      ])
+    const req = request([part('first', 0), part('second', 1)])
+
+    expect(() => validateNestingRequest(req)).not.toThrow()
+    const result = runBottomLeftNest(req)
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements).toHaveLength(2)
+    expect(result.sheets).toHaveLength(1)
+  })
+
   it('keeps maximum validator-accepted area metadata drift eligible', () => {
     const area = 50 + 0.999 * 1e-6 * 50
     const req = request([
@@ -188,6 +209,7 @@ describe('BLF material-area guard', () => {
   })
 
   it('converts geometry epsilon into a conservative material allowance', () => {
+    const previous = geomEps()
     configureGeometryTolerance({ epsilonMm: 1e-5 })
     try {
       resetCandidateCalls()
@@ -204,11 +226,12 @@ describe('BLF material-area guard', () => {
       ]))
       expect(sawCandidateBeside('outside', 6)).toBe(false)
     } finally {
-      configureGeometryTolerance({ epsilonMm: 1e-7 })
+      configureGeometryTolerance({ epsilonMm: previous })
     }
   })
 
   it('keeps a containment-tolerated part-in-hole fit eligible', () => {
+    const previous = geomEps()
     configureGeometryTolerance({ epsilonMm: 1e-3 })
     try {
       const host = polygonPart(
@@ -239,7 +262,7 @@ describe('BLF material-area guard', () => {
       if (result.status !== 'ok') return
       expect(result.placements).toHaveLength(2)
     } finally {
-      configureGeometryTolerance({ epsilonMm: 1e-7 })
+      configureGeometryTolerance({ epsilonMm: previous })
     }
   })
 
