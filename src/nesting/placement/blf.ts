@@ -1102,24 +1102,26 @@ function placeSequence(
         kind: 'existing',
         value,
       }))
-      for (let stockIndex = 0; stockIndex < sheetStock.length; stockIndex++) {
-        const stock = sheetStock[stockIndex]!
-        if (
-          stock.remaining <= 0 ||
-          !stockCompatibility[i]![stockIndex]
-        ) {
-          continue
-        }
-        const trial: SheetState = {
-          index: sheets.length,
-          widthMm: stock.widthMm,
-          heightMm: stock.heightMm,
-          marginMm: stock.marginMm,
-          placed: [],
-        }
-        const best = tryOn(trial)
-        if (best) {
-          choices.push({ kind: 'opening', stockIndex, stock, trial, best })
+      if (sheetStock.length > 1) {
+        for (let stockIndex = 0; stockIndex < sheetStock.length; stockIndex++) {
+          const stock = sheetStock[stockIndex]!
+          if (
+            stock.remaining <= 0 ||
+            !stockCompatibility[i]![stockIndex]
+          ) {
+            continue
+          }
+          const trial: SheetState = {
+            index: sheets.length,
+            widthMm: stock.widthMm,
+            heightMm: stock.heightMm,
+            marginMm: stock.marginMm,
+            placed: [],
+          }
+          const best = tryOn(trial)
+          if (best) {
+            choices.push({ kind: 'opening', stockIndex, stock, trial, best })
+          }
         }
       }
 

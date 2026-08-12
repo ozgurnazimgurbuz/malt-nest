@@ -11,6 +11,11 @@ import {
   solidsOverlap,
 } from '../../geometry'
 import {
+  beginBlfProfiling,
+  endBlfProfiling,
+  getBlfProfileSnapshot,
+} from '../../geometry/debug/blfProfiler'
+import {
   placeWithOrder,
   placeWithOrderUnchecked,
   placeWithPlan,
@@ -853,6 +858,46 @@ describe('runBottomLeftNest', () => {
     if (result.status !== 'ok') return
     expect(result.statistics.placedCount).toBe(60)
     expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
+  it('uses a valid existing homogeneous sheet without simulating an identical opening', () => {
+    const parts = Array.from({ length: 4 }, (_, index) =>
+      rectPart(`part-${index}`, index, 0, 0, 10, 10),
+    )
+    const singleSheetRequest = request(parts, {
+      sheet: { widthMm: 40, heightMm: 10, marginMm: 0, quantity: 1 },
+    })
+    const spareSheetRequest = request(parts, {
+      sheet: { widthMm: 40, heightMm: 10, marginMm: 0, quantity: 2 },
+    })
+    const expected = placeWithOrder(
+      singleSheetRequest,
+      parts.map(({ id }) => id),
+    )
+
+    beginBlfProfiling()
+    let actual: ReturnType<typeof placeWithOrder>
+    let profile: ReturnType<typeof getBlfProfileSnapshot>
+    try {
+      actual = placeWithOrder(
+        spareSheetRequest,
+        parts.map(({ id }) => id),
+      )
+      profile = getBlfProfileSnapshot()
+    } finally {
+      endBlfProfiling()
+    }
+
+    expect(expected.status).toBe('ok')
+    expect(actual.status).toBe('ok')
+    if (expected.status !== 'ok' || actual.status !== 'ok') return
+    expect(actual.statistics.sheetCountUsed).toBe(1)
+    expect(actual.placements).toEqual(expected.placements)
+    expect(profile.parts.map(({ partId }) => partId)).toEqual(
+      parts.map(({ id }) => id),
+    )
+    expect(profile.parts.slice(1).every(({ sheetsTried }) => sheetsTried === 1))
+      .toBe(true)
   })
 
   it('16i. opens alternate stock instead of blocking a restricted future part', () => {
