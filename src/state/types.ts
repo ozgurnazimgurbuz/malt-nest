@@ -6,13 +6,10 @@ export type SheetSettings = {
   heightMm: number
 }
 
-export type UiOptimizationLevel = 'fast' | 'balanced' | 'deep'
-
 /** User-facing production parameters only (rotation/dayama are engine-owned). */
 export type NestSettings = {
   gapMm: number
   marginMm: number
-  optimizationLevel: UiOptimizationLevel
   allowPartInPart: boolean
   /** Developer/debug seed (deterministic). */
   seed: number

@@ -199,7 +199,6 @@ export default function App() {
     const ac = new AbortController()
     abortRef.current = ac
     activeJobIdRef.current = jobId
-    const level = nestSettings.optimizationLevel
     const traceEnabled = nestDebug
     const runSettings = {
       ...nestSettings,
@@ -211,7 +210,7 @@ export default function App() {
     }
     setCalculating(true)
     setLiveTrace(traceEnabled ? startLiveNestTrace(jobId) : null)
-    const preparing = nestUiPreparing(jobId, svg.partCount, level, nextIter)
+    const preparing = nestUiPreparing(jobId, svg.partCount, 'fast', nextIter)
     setNestProgress(preparing)
     setStatus({
       kind: 'info',

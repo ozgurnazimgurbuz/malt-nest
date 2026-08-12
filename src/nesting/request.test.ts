@@ -49,12 +49,11 @@ describe('toNestingRequest free-angle rotation', () => {
     expect(req.settings.dayamaY).toBe(true)
   })
 
-  it('still maps production params from UI', () => {
+  it('maps production params while keeping the legacy optimizer settings internal', () => {
     const req = toNestingRequest([part], { widthMm: 1600, heightMm: 1000 }, {
       ...DEFAULT_NEST,
       gapMm: 3,
       marginMm: 8,
-      optimizationLevel: 'fast',
     })
     expect(req.sheets[0]).toMatchObject({
       widthMm: 1600,
@@ -63,6 +62,7 @@ describe('toNestingRequest free-angle rotation', () => {
     })
     expect(req.settings.spacingMm).toBe(3)
     expect(req.settings.optimizationLevel).toBe('fast')
+    expect(req.settings.timeLimitMs).toBe(5_000)
   })
 
   it('derives identical-sheet inventory from the number of parts', () => {
