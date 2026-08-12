@@ -44,5 +44,11 @@ Open the printed local URL (usually `http://localhost:5173`).
 - Internal units: **millimeters**
 - Winding: outer contours **CCW**, holes **CW**
 - Curve tolerance: `curveToleranceMm` (default `0.25`)
-- AUTO NEST: BLF baseline → evolutionary optimizer (never worse than BLF)
-- Optimization presets: Fast / Balanced / Deep (+ STOP for best-so-far)
+- AUTO NEST immediately publishes an exact-validated initial layout, then
+  automatically searches for improvements.
+- A candidate replaces the current layout only when exact replay confirms it is
+  strictly better.
+- Search stops on convergence, its safety limit, or STOP. Stopping preserves the
+  best exact-validated layout found so far.
+- Orthogonal rotations are explored first; when arbitrary rotation is enabled,
+  additional angles are refined progressively.
