@@ -55,7 +55,9 @@ asynchronous engine rewrite.
    to only placements whose part IDs have not appeared in earlier canonical
    snapshots. The resulting compact commit delta enters the stream after the
    attempt batches that precede it and becomes visible only when playback reaches
-   that marker.
+   that marker. A commit-marker frame clears the preceding current ghost, applies
+   the delta, and follows the last newly committed placement's sheet. An empty
+   delta clears the ghost and retains the current sheet.
 6. The active sheet follows the attempt currently displayed, not the newest
    attempt already received from the worker.
 7. Normal completion seals the stream. Drain resolves only on a later animation
@@ -108,7 +110,8 @@ Tests will prove:
 3. Trail lifetime starts at `displayedAtMs`, so queued attempts cannot expire
    before their frame.
 4. A compact committed-placement delta is applied on a later frame after all
-   preceding attempts display.
+   preceding attempts display; that frame clears the old ghost and follows the
+   committed placement's sheet.
 5. The final result is withheld until a frame after the final stream event.
 6. STOP and all invalidation paths cancel playback immediately without stale
    frames or unresolved promises.
