@@ -598,10 +598,17 @@ export function runAutomaticNest(
   let simplifiedLeader: NestingSuccess = cheapThreshold
   let randomRestart = false
   const mixedRng = createRng(seed)
+  const mixedEvaluationLimit = Math.min(
+    64,
+    Math.max(8, preparedParts.length * 2),
+  )
+  let mixedEvaluations = 0
   while (
     (preparedParts.length >= 2 || allowedRotations.length >= 2) &&
+    mixedEvaluations < mixedEvaluationLimit &&
     !halted()
   ) {
+    mixedEvaluations++
     let individual: Individual
     if (randomRestart) {
       const order = mixedRng.shuffle(preparedIds)

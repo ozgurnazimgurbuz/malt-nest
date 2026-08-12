@@ -1294,6 +1294,27 @@ describe('runAutomaticNest', () => {
     if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
   })
 
+  it('reserves convergence budget for beam and finalist refinement', () => {
+    const messages: string[] = []
+    const result = runAutomaticNest(request([
+      rect('wide', 0, 45, 12),
+      rect('tall', 1, 14, 38),
+    ]), {
+      deterministic: true,
+      now: () => 0,
+      onProgress: ({ message }) => {
+        if (message) messages.push(message)
+      },
+    })
+
+    expect(result.status).toBe('ok')
+    expect(messages.some((message) =>
+      message.startsWith('Improving layout · layer '),
+    )).toBe(true)
+    expect(messages).toContain('Improving layout · coarse finalist')
+    expect(messages).toContain('Improving layout · refining finalist')
+  })
+
   it('exact-gates the large-part area-tallest seed before mixed evaluations', async () => {
     const { events, result } = await largeExtremeSeedScenario()
 
@@ -1343,13 +1364,14 @@ describe('runAutomaticNest', () => {
     expect(publishedChampions).toBe(1)
   })
 
-  it('uses the mixed phase before the legacy beam for mutable requests', async () => {
+  it('hands off from bounded mixed search to beam exploration', async () => {
     const { beamLayers, stableBeamLayers } = await fidelityPromotionScenario(75, {
       stopAtFirstLayer: false,
       childWaste: 1,
     })
 
-    expect(beamLayers).toEqual([])
+    expect(beamLayers[0]).toBe(1)
+    expect(beamLayers.length).toBeGreaterThan(1)
     expect(stableBeamLayers).toEqual([])
   })
 
@@ -1407,7 +1429,7 @@ describe('runAutomaticNest', () => {
     if (replay.status === 'ok') {
       expect(compareNestingResults(replay, result)).toBe(0)
     }
-    expect(messages).not.toContain('Improving layout · coarse finalist')
+    expect(messages).toContain('Improving layout · coarse finalist')
     expect(evaluations.some(({ stage, kind, improved }) =>
       (stage === 'search' || stage === 'coarse') && kind === 'exact' && improved,
     )).toBe(true)
