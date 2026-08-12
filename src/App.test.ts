@@ -5,7 +5,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GeometryPart } from './geometry'
 import { boundingBox } from './geometry'
-import type { NestingSuccess } from './nesting'
+import type { NestAttempt, NestingResult, NestingSuccess } from './nesting'
 import type { SvgMeta } from './state'
 
 const mocks = vi.hoisted(() => ({
@@ -117,12 +117,26 @@ function result({
   }
 }
 
+function attempt(sequence = 0, sheetIndex = 0): NestAttempt {
+  return {
+    sequence,
+    partId: part.id,
+    sheetIndex,
+    x: sequence,
+    y: sequence,
+    rotation: 0,
+    verdict: 'rejected',
+  }
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((done, fail) => {
     resolve = done
+    reject = fail
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }
 
 async function flush() {
@@ -155,6 +169,114 @@ afterEach(async () => {
 })
 
 describe('App nesting run lifecycle', () => {
+  it('enables attempt telemetry only when nest debug is on', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    mocks.nestAsync.mockReturnValue(deferred<NestingResult>().promise)
+
+    act(() => mocks.settingsProps!.onAutoNest())
+    expect(mocks.nestAsync.mock.calls[0]![1].onAttempts).toBeUndefined()
+
+    act(() => mocks.settingsProps!.onNestDebug(true))
+    act(() => mocks.settingsProps!.onNewIteration())
+    expect(mocks.nestAsync.mock.calls[1]![1].onAttempts).toEqual(
+      expect.any(Function),
+    )
+    expect(mocks.workspaceProps!.liveTrace).not.toBeNull()
+  })
+
+  it('applies matching attempts and canonical committed snapshots only', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    const pending = deferred<NestingResult>()
+    mocks.nestAsync.mockReturnValue(pending.promise)
+    act(() => mocks.settingsProps!.onNestDebug(true))
+    act(() => mocks.settingsProps!.onAutoNest())
+    const options = mocks.nestAsync.mock.calls[0]![1]
+    const jobId = options.jobId as string
+
+    act(() =>
+      options.onAttempts({ jobId, attempts: [attempt(0, 1)] }),
+    )
+    expect(mocks.workspaceProps!.liveTrace.current.sequence).toBe(0)
+    expect(mocks.workspaceProps!.liveTrace.sheetIndex).toBe(1)
+
+    const partial = result()
+    act(() =>
+      options.onProgress({
+        phase: 'seed',
+        ratio: 0.5,
+        bestSoFar: partial,
+      }),
+    )
+    expect(mocks.workspaceProps!.liveTrace.committed).toBeNull()
+    act(() =>
+      options.onProgress({
+        phase: 'seed',
+        ratio: 0.5,
+        attemptPass: 'canonical-blf',
+        bestSoFar: partial,
+      }),
+    )
+    expect(mocks.workspaceProps!.liveTrace.committed).toBe(partial)
+    expect(mocks.settingsProps!.nestResult).toBeNull()
+  })
+
+  it('ignores stale attempt batches and clears the trace when debug turns off', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    mocks.nestAsync.mockReturnValue(deferred<NestingResult>().promise)
+    act(() => mocks.settingsProps!.onNestDebug(true))
+    act(() => mocks.settingsProps!.onAutoNest())
+    const options = mocks.nestAsync.mock.calls[0]![1]
+
+    act(() =>
+      options.onAttempts({ jobId: 'old-job', attempts: [attempt()] }),
+    )
+    expect(mocks.workspaceProps!.liveTrace.current).toBeNull()
+    act(() => mocks.settingsProps!.onNestDebug(false))
+    expect(mocks.workspaceProps!.liveTrace).toBeNull()
+  })
+
+  it('clears live attempts on completion, cancellation, and error', async () => {
+    mocks.readSvgFile.mockResolvedValue(meta('a.svg'))
+    await act(async () => mocks.settingsProps!.onFile(new File([], 'a.svg')))
+    act(() => mocks.settingsProps!.onNestDebug(true))
+
+    const completed = deferred<NestingResult>()
+    mocks.nestAsync.mockReturnValueOnce(completed.promise)
+    act(() => mocks.settingsProps!.onAutoNest())
+    let options = mocks.nestAsync.mock.calls[0]![1]
+    act(() =>
+      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
+    )
+    completed.resolve(result())
+    await flush()
+    expect(mocks.workspaceProps!.liveTrace).toBeNull()
+
+    const cancelled = deferred<NestingResult>()
+    mocks.nestAsync.mockReturnValueOnce(cancelled.promise)
+    act(() => mocks.settingsProps!.onNewIteration())
+    options = mocks.nestAsync.mock.calls[1]![1]
+    act(() =>
+      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
+    )
+    cancelled.resolve({ status: 'cancelled', message: 'stopped' })
+    await flush()
+    expect(mocks.workspaceProps!.liveTrace).toBeNull()
+
+    const failed = deferred<NestingResult>()
+    mocks.nestAsync.mockReturnValueOnce(failed.promise)
+    act(() => mocks.settingsProps!.onNewIteration())
+    options = mocks.nestAsync.mock.calls[2]![1]
+    act(() =>
+      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
+    )
+    failed.reject(new Error('failed'))
+    await flush()
+    expect(mocks.workspaceProps!.liveTrace).toBeNull()
+  })
+
   it('ignores an older file read that resolves after a newer selection', async () => {
     const oldRead = deferred<SvgMeta>()
     const newRead = deferred<SvgMeta>()
@@ -182,7 +304,13 @@ describe('App nesting run lifecycle', () => {
     const pending = deferred<NestingSuccess>()
     mocks.nestAsync.mockReturnValue(pending.promise)
 
+    act(() => mocks.settingsProps!.onNestDebug(true))
     act(() => mocks.settingsProps!.onAutoNest())
+    const options = mocks.nestAsync.mock.calls[0]![1]
+    act(() =>
+      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
+    )
+    expect(mocks.workspaceProps!.liveTrace).not.toBeNull()
     const signal = mocks.nestAsync.mock.calls[0]![1].signal as AbortSignal
     act(() =>
       mocks.settingsProps!.onNest({
@@ -195,6 +323,7 @@ describe('App nesting run lifecycle', () => {
     expect(mocks.settingsProps!.calculating).toBe(false)
     expect(mocks.settingsProps!.nestResult).toBeNull()
     expect(mocks.settingsProps!.nestProgress).toBeNull()
+    expect(mocks.workspaceProps!.liveTrace).toBeNull()
 
     pending.resolve(result())
     await flush()
@@ -209,7 +338,12 @@ describe('App nesting run lifecycle', () => {
     mocks.nestAsync.mockReturnValue(pendingNest.promise)
     mocks.readSvgFile.mockReturnValue(pendingFile.promise)
 
+    act(() => mocks.settingsProps!.onNestDebug(true))
     act(() => mocks.settingsProps!.onAutoNest())
+    const options = mocks.nestAsync.mock.calls[0]![1]
+    act(() =>
+      options.onAttempts({ jobId: options.jobId, attempts: [attempt()] }),
+    )
     const signal = mocks.nestAsync.mock.calls[0]![1].signal as AbortSignal
     act(() => {
       void mocks.settingsProps!.onFile(new File([], 'b.svg'))
@@ -219,6 +353,7 @@ describe('App nesting run lifecycle', () => {
     expect(mocks.settingsProps!.calculating).toBe(false)
     expect(mocks.settingsProps!.nestResult).toBeNull()
     expect(mocks.settingsProps!.svg).toBeNull()
+    expect(mocks.workspaceProps!.liveTrace).toBeNull()
 
     pendingFile.resolve(meta('b.svg'))
     pendingNest.resolve(result())

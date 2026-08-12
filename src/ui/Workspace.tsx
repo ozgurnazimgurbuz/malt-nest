@@ -8,6 +8,7 @@ import type { NestingSuccess } from '../nesting'
 import type { AppStatus, NestSettings, SheetSettings, SvgMeta } from '../state'
 import { NestProgressCard } from './NestProgressCard'
 import type { NestUiProgress } from './nestProgress'
+import type { LiveNestTrace } from './liveNestTrace'
 
 export type PreviewMode = 'svg' | 'geometry' | 'nest'
 
@@ -24,6 +25,7 @@ type Props = {
   nestDebug?: boolean
   calculating?: boolean
   nestProgress?: NestUiProgress | null
+  liveTrace?: LiveNestTrace | null
 }
 
 export function Workspace({
