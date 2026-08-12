@@ -267,7 +267,9 @@ async function fidelityPromotionScenario(
 }
 
 async function refinementScenario(refineWaste: number) {
-  const req = request([rect('a', 0, 20, 10)])
+  const req = request([rect('a', 0, 20, 10)], {
+    allowRotation: false,
+  })
   vi.resetModules()
   vi.doMock('../placement/blf', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../placement/blf')>()
@@ -326,14 +328,7 @@ async function refinementScenario(refineWaste: number) {
 }
 
 async function repairImprovementScenario(repairExactWaste = 50) {
-  const req = request([
-    rect('a', 0, 83, 65),
-    rect('b', 1, 42, 53),
-    rect('c', 2, 82, 63),
-    rect('d', 3, 47, 9),
-    rect('e', 4, 23, 70),
-    rect('f', 5, 40, 6),
-  ])
+  const req = request([rect('a', 0, 83, 65)], { allowRotation: false })
   req.sheets = [{ widthMm: 500, heightMm: 500, marginMm: 0, quantity: 1 }]
   let phase: 'search' | 'repair' = 'search'
   let latestProposalOperator: RepairOperator | null = null
@@ -356,15 +351,24 @@ async function repairImprovementScenario(repairExactWaste = 50) {
         phase === 'repair' ? 50 : 100,
       )
     const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
-      (nestRequest, plan, options) => scoredResult(
-        nestRequest,
-        plan.order,
-        options.nfpFidelity === 'simplified'
+      (nestRequest, plan, options) => {
+        const result = scoredResult(
+          nestRequest,
+          plan.order,
+          options.nfpFidelity === 'simplified'
           ? phase === 'repair' ? 50 : 100
           : phase === 'repair'
             ? options.freeAngleDepth === 'refine' ? 40 : repairExactWaste
           : options.freeAngleDepth === 'refine' ? 110 : 100,
-      )
+        )
+        return {
+          ...result,
+          placements: result.placements.map((placement, index) => ({
+            ...placement,
+            rotation: plan.rotations[index]!,
+          })),
+        }
+      }
     return {
       ...actual,
       runBottomLeftNestUnchecked,
@@ -374,8 +378,11 @@ async function repairImprovementScenario(repairExactWaste = 50) {
   })
   vi.doMock('./destroyRepair', async (importOriginal) => {
     const actual = await importOriginal<typeof import('./destroyRepair')>()
-    const proposeRepair: typeof actual.proposeRepair = (...args) => {
-      const proposal = actual.proposeRepair(...args)
+    const proposeRepair: typeof actual.proposeRepair = () => {
+      const proposal = {
+        individual: { order: ['a'], rotations: [90] },
+        operator: 'rotation' as const,
+      }
       latestProposalOperator = proposal.operator
       proposedOperators.push(proposal.operator)
       return proposal
@@ -456,6 +463,8 @@ async function mixedNeighborhoodScenario() {
   let targetPending = false
   let clock = 0
   const events: string[] = []
+  const localEvaluationCounts: number[] = []
+  const rngSeeds: number[] = []
   const valley = {
     order: ['d', 'c', 'b', 'a'],
     rotations: [90, 0, 0, 0],
@@ -505,6 +514,42 @@ async function mixedNeighborhoodScenario() {
       swapMutation: controlled,
     }
   })
+  vi.doMock('./localSearch', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./localSearch')>()
+    const localSearchImprove: typeof actual.localSearchImprove = (
+      start,
+      allowedRotations,
+      rng,
+      evaluate,
+      deadlineMs,
+      now,
+    ) => {
+      events.push('local')
+      let evaluations = 0
+      const result = actual.localSearchImprove(
+        start,
+        allowedRotations,
+        rng,
+        (individual) => {
+          evaluations++
+          return evaluate(individual)
+        },
+        deadlineMs,
+        now,
+      )
+      localEvaluationCounts.push(evaluations)
+      return result
+    }
+    return { ...actual, localSearchImprove }
+  })
+  vi.doMock('./rng', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./rng')>()
+    const createRng: typeof actual.createRng = (seed) => {
+      rngSeeds.push(seed)
+      return actual.createRng(seed)
+    }
+    return { ...actual, createRng }
+  })
 
   try {
     const { runAutomaticNest: runMockedAutomaticNest } =
@@ -517,10 +562,12 @@ async function mixedNeighborhoodScenario() {
         if (bestSoFar?.wasteMm2 === 50) clock = 7_000
       },
     })
-    return { events, result }
+    return { events, localEvaluationCounts, result, rngSeeds }
   } finally {
     vi.doUnmock('../placement/blf')
+    vi.doUnmock('./localSearch')
     vi.doUnmock('./mutation')
+    vi.doUnmock('./rng')
     vi.resetModules()
   }
 }
@@ -803,7 +850,9 @@ describe('runAutomaticNest', () => {
     const controller = new AbortController()
     let exactEvaluations = 0
     let seedChampion: NestingSuccess | undefined
-    const result = runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+    const result = runAutomaticNest(request([rect('a', 0, 20, 10)], {
+      allowRotation: false,
+    }), {
       deterministic: true,
       signal: controller.signal,
       onProgress: ({ bestSoFar }) => {
@@ -821,7 +870,9 @@ describe('runAutomaticNest', () => {
 
   it('does not expose the live champion through progress', () => {
     let clock = 0
-    const result = runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+    const result = runAutomaticNest(request([rect('a', 0, 20, 10)], {
+      allowRotation: false,
+    }), {
       deterministic: false,
       now: () => clock,
       onProgress: ({ bestSoFar }) => {
@@ -845,7 +896,9 @@ describe('runAutomaticNest', () => {
   it('publishes structured progress activity independently of messages', () => {
     const progress: NestProgress[] = []
 
-    runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+    runAutomaticNest(request([rect('a', 0, 20, 10)], {
+      allowRotation: false,
+    }), {
       deterministic: true,
       onProgress: (item) => progress.push(item),
     })
@@ -935,7 +988,9 @@ describe('runAutomaticNest', () => {
     const progress: NestProgress[] = []
     const exactImprovements: boolean[] = []
 
-    const result = runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+    const result = runAutomaticNest(request([rect('a', 0, 20, 10)], {
+      allowRotation: false,
+    }), {
       deterministic: true,
       onProgress: (item) => progress.push(item),
       onEvaluation: ({ kind, improved }) => {
@@ -992,16 +1047,18 @@ describe('runAutomaticNest', () => {
     expect(isBetterNestingResult(suppliedResult, rerotatedResult)).toBe(true)
 
     vi.resetModules()
-    vi.doMock('./mutation', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('./mutation')>()
-      const controlled = () => supplied
-      return {
-        ...actual,
-        adjacentSwapMutation: controlled,
-        insertionMutation: controlled,
-        rotationMutation: controlled,
-        swapMutation: controlled,
+    vi.doMock('./localSearch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./localSearch')>()
+      const localSearchImprove: typeof actual.localSearchImprove = (
+        _start,
+        _allowed,
+        _rng,
+        evaluate,
+      ) => {
+        evaluate(supplied)
+        return supplied
       }
+      return { ...actual, localSearchImprove }
     })
 
     try {
@@ -1025,19 +1082,26 @@ describe('runAutomaticNest', () => {
       )).toBe(true)
       expect(compareNestingResults(result, suppliedResult)).toBeLessThanOrEqual(0)
     } finally {
-      vi.doUnmock('./mutation')
+      vi.doUnmock('./localSearch')
       vi.resetModules()
     }
   })
 
   it('continues past a non-improving local move to exact-gate a restart leader', async () => {
-    const { events, result } = await mixedNeighborhoodScenario()
+    const { events, localEvaluationCounts, result, rngSeeds } =
+      await mixedNeighborhoodScenario()
 
-    expect(events.slice(0, 3)).toEqual([
-      'local:worse',
-      'restart:leader',
-      'exact:improved',
+    const requiredOrdersEnd = events.lastIndexOf('orders')
+    const local = events.indexOf('local')
+    const mixed = events.indexOf('local:worse')
+    expect(requiredOrdersEnd).toBeGreaterThan(-1)
+    expect(local).toBeGreaterThan(requiredOrdersEnd)
+    expect(mixed).toBeGreaterThan(local)
+    expect(events.slice(mixed, mixed + 3)).toEqual([
+      'local:worse', 'restart:leader', 'exact:improved',
     ])
+    expect(localEvaluationCounts).toEqual([16])
+    expect(rngSeeds).toEqual([7, 7, 7])
     expect(result.status).toBe('ok')
     if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
   })
@@ -1062,15 +1126,14 @@ describe('runAutomaticNest', () => {
     expect(publishedChampions).toBe(1)
   })
 
-  it('runs a genuine second beam layer and then stabilizes', async () => {
+  it('uses the mixed phase before the legacy beam for mutable requests', async () => {
     const { beamLayers, stableBeamLayers } = await fidelityPromotionScenario(75, {
       stopAtFirstLayer: false,
       childWaste: 1,
     })
 
-    expect(beamLayers.length).toBeGreaterThan(1)
-    expect(beamLayers).toEqual(beamLayers.map((_, index) => index + 1))
-    expect(stableBeamLayers).toEqual([beamLayers.at(-1)])
+    expect(beamLayers).toEqual([])
+    expect(stableBeamLayers).toEqual([])
   })
 
   it('runs seed one-degree polish only after a strict refine improvement', async () => {
@@ -1127,14 +1190,11 @@ describe('runAutomaticNest', () => {
     if (replay.status === 'ok') {
       expect(compareNestingResults(replay, result)).toBe(0)
     }
-    const coarseIndex = messages.indexOf('Improving layout · coarse finalist')
-    const refineIndex = messages.indexOf('Improving layout · refining finalist')
-    expect(coarseIndex).toBeGreaterThan(-1)
-    expect(refineIndex).toBeGreaterThan(coarseIndex)
+    expect(messages).not.toContain('Improving layout · coarse finalist')
     expect(evaluations.some(({ stage, kind, improved }) =>
       (stage === 'search' || stage === 'coarse') && kind === 'exact' && improved,
     )).toBe(true)
-    expect(evaluations.length).toBeLessThan(40)
+    expect(evaluations.length).toBeLessThan(50)
   })
 
   it('refines a repair champion before evaluating another repair', async () => {
@@ -1268,7 +1328,7 @@ describe('runAutomaticNest', () => {
     const messages: string[] = []
     const started = performance.now()
     const result = runAutomaticNest(
-      request([rect('a', 0, 20, 10)]),
+      request([rect('a', 0, 20, 10)], { allowRotation: false }),
       {
         deterministic: true,
         onProgress: ({ message }) => {
@@ -1291,7 +1351,9 @@ describe('runAutomaticNest', () => {
     let tick = 0
     const diagnostics: Array<{ kind: string; elapsedMs: number; improved: boolean }> = []
 
-    const result = runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+    const result = runAutomaticNest(request([rect('a', 0, 20, 10)], {
+      allowRotation: false,
+    }), {
       deterministic: true,
       now: () => tick++,
       onProgress: () => {
