@@ -89,6 +89,19 @@ describe('convergence policy', () => {
     expect(shouldStop(state, 140, false)).toBe(true)
   })
 
+  it('applies non-deterministic stagnation after required orders complete', () => {
+    const state = createConvergenceState({
+      partCount: 10,
+      deterministic: false,
+      startedAtMs: 0,
+    })
+    recordFirstChampion(state, 40)
+    markRequiredOrdersComplete(state)
+
+    expect(shouldStop(state, 139, false)).toBe(false)
+    expect(shouldStop(state, 140, false)).toBe(true)
+  })
+
   it('uses twice the seed duration when it exceeds the floor', () => {
     const state = createConvergenceState({
       partCount: 10,
@@ -144,6 +157,34 @@ describe('convergence policy', () => {
     expect(shouldStop(state, 5_100, false)).toBe(true)
   })
 
+  it('applies the safety ceiling after required orders complete', () => {
+    const state = createConvergenceState({
+      partCount: 10,
+      deterministic: false,
+      startedAtMs: 100,
+    })
+    markRequiredOrdersComplete(state)
+
+    expect(shouldStop(state, 5_099, false)).toBe(false)
+    expect(shouldStop(state, 5_100, false)).toBe(true)
+  })
+
+  it('stops non-deterministically at the post-order count limit boundary', () => {
+    const state = createConvergenceState({
+      partCount: 10,
+      deterministic: false,
+      startedAtMs: 0,
+    })
+    recordFirstChampion(state, 0)
+    markRequiredOrdersComplete(state)
+    for (let i = 0; i < state.evaluationLimit - 1; i++) recordEvaluation(state)
+
+    expect(shouldStop(state, 0, false)).toBe(false)
+
+    recordEvaluation(state)
+    expect(shouldStop(state, 0, false)).toBe(true)
+  })
+
   it('does not time-stop without a champion except at the safety ceiling', () => {
     const state = createConvergenceState({
       partCount: 10,
@@ -153,5 +194,17 @@ describe('convergence policy', () => {
 
     expect(shouldStop(state, 4_999, false)).toBe(false)
     expect(shouldStop(state, 5_000, false)).toBe(true)
+  })
+
+  it('does not stop on the count limit without a champion', () => {
+    const state = createConvergenceState({
+      partCount: 10,
+      deterministic: false,
+      startedAtMs: 0,
+    })
+    markRequiredOrdersComplete(state)
+    for (let i = 0; i < state.evaluationLimit; i++) recordEvaluation(state)
+
+    expect(shouldStop(state, 0, false)).toBe(false)
   })
 })

@@ -71,11 +71,13 @@ export function shouldStop(
 
   if (nowMs - state.startedAtMs >= 5_000) return true
 
+  if (state.firstChampionMs === null || state.lastImprovementMs === null) {
+    return false
+  }
+
   if (
-    state.firstChampionMs !== null &&
-    state.lastImprovementMs !== null &&
     nowMs - state.lastImprovementMs >=
-      Math.max(100, 2 * (state.firstChampionMs - state.startedAtMs))
+    Math.max(100, 2 * (state.firstChampionMs - state.startedAtMs))
   ) {
     return true
   }
