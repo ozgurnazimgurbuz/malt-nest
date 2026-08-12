@@ -45,17 +45,22 @@ asynchronous engine rewrite.
 
 1. The canonical BLF pass emits ordered attempt records as it does today.
 2. The worker transports compact records in ordered batches.
-3. The browser appends each batch to a playback queue without flattening or
-   copying the full backlog.
-4. One animation frame consumes one attempt, makes it the visible current part,
-   and adds its accepted/rejected anchor to the fading canvas trail.
-5. Canonical committed-layout snapshots enter the same ordered stream after the
-   attempt batches that precede them. They become visible only when playback
-   reaches their marker.
+3. One job-scoped imperative stream synchronously receives attempt batches and
+   canonical progress markers from the worker callbacks. React effects are not
+   used as stream ingress, so browser render scheduling cannot reorder events.
+4. One animation frame consumes one stream event. For an attempt event, playback
+   assigns `displayedAtMs` at consumption time, makes it the visible current
+   part, and adds its accepted/rejected anchor to the fading canvas trail.
+5. Canonical BLF snapshots are append-only. At ingress, each snapshot is reduced
+   to only placements whose part IDs have not appeared in earlier canonical
+   snapshots. The resulting compact commit delta enters the stream after the
+   attempt batches that precede it and becomes visible only when playback reaches
+   that marker.
 6. The active sheet follows the attempt currently displayed, not the newest
    attempt already received from the worker.
-7. Normal completion waits for the playback queue to drain before replacing the
-   live view with the final result.
+7. Normal completion seals the stream. Drain resolves only on a later animation
+   frame after the final event was processed, guaranteeing that the last attempt
+   survives a browser paint before the final result replaces it.
 
 ## Rendering and Performance
 
@@ -67,9 +72,11 @@ transforms, sheet indices, sequence numbers, and verdicts.
 
 The queue stores worker batches with read offsets rather than repeatedly calling
 `shift`, flattening arrays, or copying consumed records. Fully consumed batches
-are removed. There is one RAF loop and one resize observer while playback is
-active. Debug-disabled runs create no observer, queue, worker telemetry, or
-canvas animation work.
+are removed. Commit markers contain only newly committed placements, so a long
+backlog retains O(attempts + parts) compact stream data rather than repeated
+growing `NestingSuccess` snapshots. There is one RAF loop and one resize observer
+while playback is active. Debug-disabled runs create no observer, queue, worker
+telemetry, or canvas animation work.
 
 Showing every attempt while the worker runs at full speed necessarily permits a
 temporary backlog. The backlog contains only compact attempt records and is
@@ -80,14 +87,15 @@ the requirement to display every move.
 
 - A playback stream belongs to one job ID; stale batches and snapshots are
   ignored.
-- Successful completion waits for the matching stream to drain.
+- Successful completion seals the matching stream and waits for its paint-safe
+  drain. An empty-but-unsealed stream remains open for later worker messages.
 - STOP, cancellation, error, file replacement, settings changes, debug disable,
   and component unmount cancel RAF, discard queued transient records, and resolve
   any drain waiter without applying stale UI state.
 - A hidden browser tab naturally pauses RAF playback and resumes without losing
   attempts.
-- Canvas or telemetry failures remain observation-only: they must release the
-  playback wait and must never change, fail, or deadlock nesting.
+- Canvas or telemetry failures remain observation-only: they cancel and release
+  the playback wait and must never change, fail, or deadlock nesting.
 - Existing best-result retention and export paths remain unchanged.
 
 ## Verification
@@ -97,16 +105,19 @@ Tests will prove:
 1. Several records received in one transport batch are displayed on distinct
    animation frames in exact sequence order.
 2. No attempt is duplicated or skipped across multiple batches.
-3. A committed snapshot is applied only after all preceding attempts display.
-4. The final result is withheld until normal playback drains.
-5. STOP and all invalidation paths cancel playback immediately without stale
+3. Trail lifetime starts at `displayedAtMs`, so queued attempts cannot expire
+   before their frame.
+4. A compact committed-placement delta is applied on a later frame after all
+   preceding attempts display.
+5. The final result is withheld until a frame after the final stream event.
+6. STOP and all invalidation paths cancel playback immediately without stale
    frames or unresolved promises.
-6. Active-sheet changes follow displayed attempts.
-7. Debug-off runs retain the existing zero-telemetry path.
-8. Traced and untraced nesting results remain semantically identical.
-9. Rendering uses one RAF loop and does not cause per-attempt App-level React
+7. Active-sheet changes follow displayed attempts.
+8. Debug-off runs retain the existing zero-telemetry path.
+9. Traced and untraced nesting results remain semantically identical.
+10. Rendering uses one RAF loop and does not cause per-attempt App-level React
    updates.
-10. Focused tests, the full suite, lint, type checking/build, and local browser
+11. Focused tests, the full suite, lint, type checking/build, and local browser
     verification pass.
 
 ## Acceptance Criteria
