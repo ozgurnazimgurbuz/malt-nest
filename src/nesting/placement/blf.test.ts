@@ -11,11 +11,6 @@ import {
   solidsOverlap,
 } from '../../geometry'
 import {
-  beginBlfProfiling,
-  endBlfProfiling,
-  getBlfProfileSnapshot,
-} from '../../geometry/debug/blfProfiler'
-import {
   placeWithOrder,
   placeWithOrderUnchecked,
   placeWithPlan,
@@ -860,44 +855,30 @@ describe('runBottomLeftNest', () => {
     expect(performance.now() - started).toBeLessThan(2_000)
   })
 
-  it('uses a valid existing homogeneous sheet without simulating an identical opening', () => {
-    const parts = Array.from({ length: 4 }, (_, index) =>
-      rectPart(`part-${index}`, index, 0, 0, 10, 10),
+  it('opens identical stock when it preserves capacity for the fixed suffix', () => {
+    const dimensions = [
+      [7, 3],
+      [8, 5],
+      [5, 3],
+      [9, 6],
+      [4, 9],
+      [6, 4],
+      [5, 5],
+    ] as const
+    const parts = dimensions.map(([width, height], index) =>
+      rectPart(`counterexample-${index}`, index, 0, 0, width, height),
     )
-    const singleSheetRequest = request(parts, {
-      sheet: { widthMm: 40, heightMm: 10, marginMm: 0, quantity: 1 },
+    const req = request(parts, {
+      sheet: { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 2 },
     })
-    const spareSheetRequest = request(parts, {
-      sheet: { widthMm: 40, heightMm: 10, marginMm: 0, quantity: 2 },
+
+    const result = placeWithOrder(req, parts.map(({ id }) => id), {
+      nfpFidelity: 'exact',
     })
-    const expected = placeWithOrder(
-      singleSheetRequest,
-      parts.map(({ id }) => id),
-    )
 
-    beginBlfProfiling()
-    let actual: ReturnType<typeof placeWithOrder>
-    let profile: ReturnType<typeof getBlfProfileSnapshot>
-    try {
-      actual = placeWithOrder(
-        spareSheetRequest,
-        parts.map(({ id }) => id),
-      )
-      profile = getBlfProfileSnapshot()
-    } finally {
-      endBlfProfiling()
-    }
-
-    expect(expected.status).toBe('ok')
-    expect(actual.status).toBe('ok')
-    if (expected.status !== 'ok' || actual.status !== 'ok') return
-    expect(actual.statistics.sheetCountUsed).toBe(1)
-    expect(actual.placements).toEqual(expected.placements)
-    expect(profile.parts.map(({ partId }) => partId)).toEqual(
-      parts.map(({ id }) => id),
-    )
-    expect(profile.parts.slice(1).every(({ sheetsTried }) => sheetsTried === 1))
-      .toBe(true)
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBeGreaterThanOrEqual(5)
   })
 
   it('16i. opens alternate stock instead of blocking a restricted future part', () => {
