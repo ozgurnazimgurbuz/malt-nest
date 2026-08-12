@@ -975,6 +975,52 @@ describe('runBottomLeftNest', () => {
     expect(prepared[0]!.rotations).toBe(prepared[1]!.rotations)
   })
 
+  it('orthogonal depth evaluates exactly the four orthogonal angles', () => {
+    const rotations = new Set<number>()
+    const result = placeWithOrder(
+      request([rectPart('free', 0, 0, 0, 20, 10)], {
+        settings: {
+          rotationMode: 'free',
+          allowRotation: true,
+          allowArbitraryRotation: true,
+        },
+      }),
+      ['free'],
+      {
+        freeAngleDepth: 'orthogonal',
+        nfpFidelity: 'exact',
+        onAttempt: ({ rotation }) => rotations.add(rotation),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect([...rotations].sort((a, b) => a - b)).toEqual([0, 90, 180, 270])
+  })
+
+  it('refine depth evaluates only the five-degree window around a plan rotation', () => {
+    const rotations = new Set<number>()
+    const result = placeWithPlan(
+      request([rectPart('free', 0, 0, 0, 20, 10)], {
+        settings: {
+          rotationMode: 'free',
+          allowRotation: true,
+          allowArbitraryRotation: true,
+        },
+      }),
+      { order: ['free'], rotations: [37] },
+      {
+        freeAngleDepth: 'refine',
+        nfpFidelity: 'exact',
+        onAttempt: ({ rotation }) => rotations.add(rotation),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect([...rotations].sort((a, b) => a - b)).toEqual([
+      22, 27, 32, 37, 42, 47, 52,
+    ])
+  })
+
   it('reuses supplied prepared parts without mutating their order', () => {
     const req = request([
       rectPart('first', 0, 0, 0, 2, 2),

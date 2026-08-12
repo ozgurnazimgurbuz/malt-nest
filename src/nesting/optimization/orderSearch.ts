@@ -56,6 +56,11 @@ export type OrderCandidate = {
   order: string[]
 }
 
+export type OrderCandidateOptions = {
+  limit?: number
+  includeRandom?: boolean
+}
+
 /**
  * Build every distinct deterministic placement order used by multi-start search.
  * An explicit limit remains available for profiling/diagnostic callers.
@@ -63,9 +68,14 @@ export type OrderCandidate = {
 export function buildOrderCandidates(
   parts: PreparedPart[],
   rng: Rng,
-  limit?: number,
+  limitOrOptions?: number | OrderCandidateOptions,
 ): OrderCandidate[] {
   if (parts.length === 0) return []
+  const options =
+    typeof limitOrOptions === 'number'
+      ? { limit: limitOrOptions }
+      : (limitOrOptions ?? {})
+  const { limit } = options
   const out: OrderCandidate[] = []
   const seen = new Set<string>()
 
@@ -88,10 +98,12 @@ export function buildOrderCandidates(
   push('compact_fill_desc', orderBy(parts, (p) => p.area / Math.max(1e-9, metricBBoxArea(p))))
   push('hole_aware', holeAwareOrder(parts))
 
-  // Deterministic shuffles from area order (reproducible via rng seed).
-  const base = orderBy(parts, (p) => p.area)
-  for (let i = 0; i < 5 && (limit == null || out.length < limit); i++) {
-    push(`shuffle_${i}`, rng.shuffle(base))
+  if (options.includeRandom !== false) {
+    // Seeded shuffles remain available to legacy stochastic search.
+    const base = orderBy(parts, (p) => p.area)
+    for (let i = 0; i < 5 && (limit == null || out.length < limit); i++) {
+      push(`shuffle_${i}`, rng.shuffle(base))
+    }
   }
 
   return limit == null ? out : out.slice(0, limit)

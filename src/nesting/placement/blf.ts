@@ -22,6 +22,7 @@ import {
 } from '../core/prepare'
 import {
   BALANCED_ANGLES,
+  ORTHOGONAL_ANGLES,
   coarseFreeAngles,
   freeAngleCascadeStages,
   usesFreeAngleCascade,
@@ -53,7 +54,14 @@ import {
   type PackBias,
 } from './packBias'
 
-export type FreeAngleDepth = 'quick' | 'coarse' | 'medium' | 'full' | 'seed'
+export type FreeAngleDepth =
+  | 'orthogonal'
+  | 'quick'
+  | 'coarse'
+  | 'medium'
+  | 'full'
+  | 'refine'
+  | 'seed'
 
 export type BlfOptions = {
   onProgress?: (p: NestProgress) => void
@@ -66,10 +74,12 @@ export type BlfOptions = {
   profile?: boolean
   /**
    * Free-angle search depth when rotationMode=free:
+   * - orthogonal: 90° grid (initial automatic seed)
    * - quick: 45° grid (order ranking)
    * - coarse: 15° grid
    * - medium: coarse → top-3 refine @5° (no 1° final; profiling / cheap proxy)
    * - full: exhaustive 0°..359° at 1°, with exact NFP geometry
+   * - refine: 5° window around a plan angle (no 1° final)
    * - seed: refine around a gene angle (final polish)
    * Default for free mode: coarse (avoid 1° on every eval).
    * Production Stage 1 uses 'full'; Stage 2 uses 'coarse'/'seed'. 'medium' is opt-in.
@@ -538,7 +548,19 @@ function pickBestVariant(
   const topK = 3
 
   let ok: PlaceCand[]
-  if (opts.depth === 'seed' && opts.seedRotation != null) {
+  if (opts.depth === 'refine' && opts.seedRotation != null) {
+    ok = evaluateAngles(
+      part,
+      stages.refine([opts.seedRotation]),
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      bias,
+      exactNfp,
+      opts.onAttempt,
+    )
+  } else if (opts.depth === 'seed' && opts.seedRotation != null) {
     ok = evaluateAngles(
       part,
       stages.refine([opts.seedRotation]),
@@ -580,7 +602,11 @@ function pickBestVariant(
     }
   } else {
     const grid =
-      opts.depth === 'quick' ? [...BALANCED_ANGLES] : stages.coarse
+      opts.depth === 'orthogonal'
+        ? [...ORTHOGONAL_ANGLES]
+        : opts.depth === 'quick'
+          ? [...BALANCED_ANGLES]
+          : stages.coarse
     ok = evaluateAngles(
       part,
       grid,
@@ -617,8 +643,10 @@ function pickBestVariant(
   // medium stops after 5° refine — experiment proxy for full without 1° cost.
   if (
     opts.depth === 'coarse' ||
+    opts.depth === 'orthogonal' ||
     opts.depth === 'quick' ||
-    opts.depth === 'medium'
+    opts.depth === 'medium' ||
+    opts.depth === 'refine'
   ) {
     return ok[0]!
   }
@@ -762,7 +790,10 @@ function placeSequence(
     const { part, variant } = entry
     const find = (useExactNfp: boolean): PlaceCand | null => {
       if (variant === 'best') {
-        const depthForBest = freeDepth === 'seed' ? 'coarse' : freeDepth
+        const depthForBest =
+          freeDepth === 'seed' || freeDepth === 'refine'
+            ? 'coarse'
+            : freeDepth
         return pickBestVariant(
           part,
           sheet,
@@ -778,7 +809,10 @@ function placeSequence(
           },
         )
       }
-      if (freeCascade && freeDepth === 'seed') {
+      if (
+        freeCascade &&
+        (freeDepth === 'seed' || freeDepth === 'refine')
+      ) {
         return pickBestVariant(
           part,
           sheet,
@@ -788,7 +822,7 @@ function placeSequence(
           packBias,
           {
             freeCascade: true,
-            depth: 'seed',
+            depth: freeDepth,
             seedRotation: variant.rotation,
             exactNfp: useExactNfp,
             onAttempt,
@@ -1219,6 +1253,15 @@ export function runBottomLeftNest(
 ): NestingResult {
   const t0 = performance.now()
   validateNestingRequest(request)
+  return runBottomLeftNestUnchecked(request, options, t0)
+}
+
+/** Internal optimizer path; request must already have passed validation. */
+export function runBottomLeftNestUnchecked(
+  request: NestingRequest,
+  options: BlfOptions = {},
+  t0 = performance.now(),
+): NestingResult {
   const shouldProfile =
     options.profile === true || request.settings.profileBlf === true
   if (shouldProfile) beginBlfProfiling()

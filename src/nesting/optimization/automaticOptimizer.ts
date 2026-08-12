@@ -1,0 +1,510 @@
+import { prepareParts, resolveRotations, type PreparedPart } from '../core/prepare'
+import { validateNestingRequest } from '../core/validate'
+import {
+  placeWithOrderUnchecked,
+  placeWithPlanUnchecked,
+  runBottomLeftNestUnchecked,
+  type FreeAngleDepth,
+} from '../placement/blf'
+import {
+  isBetterNestingResult,
+  scoreNestingResult,
+} from '../scoring/fitness'
+import type {
+  NestAttempt,
+  NestProgress,
+  NestingRequest,
+  NestingResult,
+  NestingSuccess,
+} from '../types'
+import { expandOrder, selectBeam, type RankedCandidate } from './beamSearch'
+import {
+  createConvergenceState,
+  markRequiredOrdersComplete,
+  recordChampion,
+  recordEvaluation,
+  recordFirstChampion,
+  shouldStop,
+} from './convergence'
+import {
+  createRepairState,
+  proposeRepair,
+  rewardRepairOperator,
+} from './destroyRepair'
+import {
+  individualKey,
+  settingsCacheKey,
+  type Individual,
+} from './individual'
+import { buildOrderCandidates } from './orderSearch'
+import { BALANCED_ANGLES } from './rotations'
+import { createRng } from './rng'
+
+export type AutomaticOptions = {
+  onProgress?: (progress: NestProgress) => void
+  onAttempt?: (attempt: NestAttempt) => void
+  onAttemptFlush?: () => void
+  signal?: AbortSignal
+  seed?: number
+  deterministic?: boolean
+  now?: () => number
+  onEvaluation?: (info: {
+    kind: 'rank' | 'exact'
+    elapsedMs: number
+    improved: boolean
+  }) => void
+}
+
+type ExactStage = 'fixed' | 'refine' | 'seed'
+
+function individualFromResult(
+  result: NestingSuccess,
+  fallbackOrder: readonly string[],
+): Individual {
+  const rotations = new Map(
+    result.placements.map(({ partId, rotation }) => [partId, rotation]),
+  )
+  const placed = result.placements.map(({ partId }) => partId)
+  const seen = new Set(placed)
+  const order = [...placed, ...fallbackOrder.filter((id) => !seen.has(id))]
+  return {
+    order,
+    rotations: order.map((id) => rotations.get(id) ?? 0),
+  }
+}
+
+export function runAutomaticNest(
+  request: NestingRequest,
+  options: AutomaticOptions = {},
+): NestingResult {
+  const now = options.now ?? (() => performance.now())
+  const t0 = now()
+  validateNestingRequest(request)
+  const seed = options.seed ?? request.settings.seed ?? 1
+  if (!Number.isFinite(seed)) throw new RangeError('seed must be finite')
+
+  const deterministic =
+    options.deterministic ?? request.settings.deterministic ?? false
+  const rng = createRng(seed)
+  const convergence = createConvergenceState({
+    partCount: request.parts.length,
+    deterministic,
+    startedAtMs: t0,
+  })
+  let lastProgressRatio = 0
+  const emit = (progress: NestProgress): void => {
+    const ratio = Math.max(lastProgressRatio, progress.ratio)
+    lastProgressRatio = ratio
+    try {
+      options.onProgress?.({ ...progress, ratio })
+    } catch {
+      // Observers must never alter nesting.
+    }
+  }
+  const notifyEvaluation = (
+    kind: 'rank' | 'exact',
+    elapsedMs: number,
+    improved: boolean,
+  ): void => {
+    try {
+      options.onEvaluation?.({ kind, elapsedMs, improved })
+    } catch {
+      // Diagnostics must never alter nesting.
+    }
+  }
+  const timed = (result: NestingSuccess, engineId = result.engineId): NestingSuccess => ({
+    ...result,
+    calculationTimeMs: Math.max(0, now() - t0),
+    engineId,
+  })
+
+  emit({ ratio: 0.02, phase: 'prepare', message: 'Preparing parts' })
+  const preparedParts: readonly PreparedPart[] = prepareParts(
+    request.parts,
+    request.settings,
+    { sortByArea: true },
+  )
+  const preparedIds = preparedParts.map(({ partId }) => partId)
+  const preparedById = new Map(preparedParts.map((part) => [part.partId, part]))
+  const allowedRotations = resolveRotations(request.settings, request.parts)
+  const firstSheet = request.sheets[0]
+  const settingsKey = `${settingsCacheKey({
+    spacingMm: request.settings.spacingMm,
+    marginMm: firstSheet?.marginMm ?? 0,
+    sheetW: firstSheet?.widthMm ?? 0,
+    sheetH: firstSheet?.heightMm ?? 0,
+    quantity: firstSheet?.quantity ?? 0,
+    allowedRotations,
+  })};${JSON.stringify(request.sheets)}`
+
+  let champion: NestingSuccess | null = null
+  let championGene: Individual | null = null
+  let cheapThreshold: NestingSuccess | null = null
+
+  const publish = (
+    result: NestingSuccess,
+    source: Individual,
+  ): boolean => {
+    if (champion && !isBetterNestingResult(result, champion)) return false
+    const first = champion === null
+    const next = timed(
+      result,
+      first ? 'automatic-blf-v1' : 'automatic-anytime-v1',
+    )
+    champion = next
+    championGene = individualFromResult(next, source.order)
+    if (first) recordFirstChampion(convergence, now())
+    else recordChampion(convergence, now())
+    emit({
+      ratio: first ? 0.1 : 0.65,
+      phase: first ? 'seed' : 'optimize',
+      message: first ? 'Initial layout' : 'Improving layout',
+      attemptPass: first ? 'canonical-blf' : undefined,
+      bestSoFar: next,
+      bestScore: scoreNestingResult(next).total,
+      bestUtilization: next.utilization,
+      placedCount: next.statistics.placedCount,
+      partCount: request.parts.length,
+      unplacedCount: next.statistics.unplacedCount,
+      sheetCount: next.statistics.sheetCountUsed,
+      elapsedMs: next.calculationTimeMs,
+    })
+    return true
+  }
+
+  const cancelled = (): NestingResult => ({
+    status: 'cancelled',
+    message: 'Stopped — returning best so far',
+    bestSoFar: champion ? timed(champion) : null,
+  })
+  const finish = (): NestingResult => {
+    if (!champion) return cancelled()
+    emit({ ratio: 0.9, phase: 'finalize', message: 'Verifying result' })
+    emit({ ratio: 1, phase: 'finalize', message: 'Verifying result' })
+    return timed(champion)
+  }
+  const halted = (): boolean =>
+    !!options.signal?.aborted || shouldStop(convergence, now(), false)
+  const haltResult = (): NestingResult =>
+    options.signal?.aborted ? cancelled() : finish()
+
+  emit({
+    ratio: 0.1,
+    phase: 'seed',
+    message: 'Initial layout',
+    attemptPass: 'canonical-blf',
+  })
+  const seedResult = runBottomLeftNestUnchecked(request, {
+    signal: options.signal,
+    onAttempt: options.onAttempt,
+    onAttemptFlush: options.onAttemptFlush,
+    freeAngleDepth: 'orthogonal',
+    nfpFidelity: 'simplified',
+    exactFallback: true,
+    preparedParts,
+    engineId: 'automatic-blf-v1',
+  })
+  if (seedResult.status !== 'ok') {
+    return seedResult.status === 'cancelled' ? cancelled() : seedResult
+  }
+
+  const seedGene = individualFromResult(seedResult, preparedIds)
+  if (preparedParts.length === 0) {
+    publish(seedResult, seedGene)
+    return options.signal?.aborted ? cancelled() : finish()
+  }
+
+  const exactCache = new Map<string, NestingSuccess | null>()
+  type ExactOutcome = {
+    result: NestingSuccess | null
+    gene: Individual | null
+    improved: boolean
+    cancelled: boolean
+    partial: NestingSuccess | null
+  }
+  const evaluateExact = (
+    individual: Individual,
+    stage: ExactStage,
+    depth?: Extract<FreeAngleDepth, 'refine' | 'seed'>,
+  ): ExactOutcome => {
+    const key = `${stage}:${individualKey(individual, settingsKey)}`
+    if (exactCache.has(key)) {
+      const result = exactCache.get(key) ?? null
+      return {
+        result,
+        gene: result ? individualFromResult(result, individual.order) : null,
+        improved: false,
+        cancelled: false,
+        partial: null,
+      }
+    }
+
+    const started = now()
+    const replay = placeWithPlanUnchecked(request, individual, {
+      signal: options.signal,
+      nfpFidelity: 'exact',
+      preparedParts,
+      engineId: champion ? 'automatic-anytime-v1' : 'automatic-blf-v1',
+      ...(depth ? { freeAngleDepth: depth } : {}),
+    })
+    const elapsedMs = Math.max(0, now() - started)
+    if (replay.status === 'cancelled') {
+      return {
+        result: null,
+        gene: null,
+        improved: false,
+        cancelled: true,
+        partial: replay.bestSoFar ?? null,
+      }
+    }
+    if (replay.status !== 'ok') {
+      exactCache.set(key, null)
+      notifyEvaluation('exact', elapsedMs, false)
+      return {
+        result: null,
+        gene: null,
+        improved: false,
+        cancelled: false,
+        partial: null,
+      }
+    }
+
+    const candidate = timed(
+      replay,
+      champion ? 'automatic-anytime-v1' : 'automatic-blf-v1',
+    )
+    const improved = publish(candidate, individual)
+    exactCache.set(key, candidate)
+    notifyEvaluation('exact', elapsedMs, improved)
+    return {
+      result: candidate,
+      gene: individualFromResult(candidate, individual.order),
+      improved,
+      cancelled: false,
+      partial: null,
+    }
+  }
+
+  const seedReplay = evaluateExact(seedGene, 'fixed')
+  if (seedReplay.cancelled) {
+    if (seedReplay.partial) publish(seedReplay.partial, seedGene)
+    return cancelled()
+  }
+  if (!champion || !championGene) return cancelled()
+  cheapThreshold = champion
+  if (options.signal?.aborted) return cancelled()
+
+  const cheapCache = new Map<string, RankedCandidate | null>()
+  const cheapEvaluatedKeys = new Set<string>()
+  type RankOutcome = {
+    candidate: RankedCandidate | null
+    cancelled: boolean
+  }
+  const rank = (individual: Individual): RankOutcome => {
+    const key = individualKey(individual, settingsKey)
+    if (cheapCache.has(key)) {
+      return {
+        candidate: cheapCache.get(key) ?? null,
+        cancelled: false,
+      }
+    }
+
+    const started = now()
+    const placed = placeWithOrderUnchecked(request, individual.order, {
+      signal: options.signal,
+      freeAngleDepth: 'quick',
+      nfpFidelity: 'simplified',
+      preparedParts,
+      engineId: 'automatic-anytime-v1',
+    })
+    const elapsedMs = Math.max(0, now() - started)
+    if (placed.status === 'cancelled') {
+      return { candidate: null, cancelled: true }
+    }
+
+    recordEvaluation(convergence)
+    cheapEvaluatedKeys.add(key)
+    if (placed.status !== 'ok') {
+      cheapCache.set(key, null)
+      notifyEvaluation('rank', elapsedMs, false)
+      return { candidate: null, cancelled: false }
+    }
+
+    const result = timed(placed, 'automatic-anytime-v1')
+    const actual = individualFromResult(result, individual.order)
+    const candidate = { individual: actual, result }
+    const actualKey = individualKey(actual, settingsKey)
+    cheapCache.set(key, candidate)
+    cheapCache.set(actualKey, candidate)
+    cheapEvaluatedKeys.add(actualKey)
+    // Rank diagnostics report a new canonical cheap-search threshold.
+    const improved = !cheapThreshold || isBetterNestingResult(result, cheapThreshold)
+    if (improved) cheapThreshold = result
+    notifyEvaluation('rank', elapsedMs, improved)
+    return { candidate, cancelled: false }
+  }
+
+  emit({ ratio: 0.25, phase: 'optimize', message: 'Trying orders' })
+  const rankedCandidates: RankedCandidate[] = []
+  let beam: RankedCandidate[] = []
+  const requiredOrders = buildOrderCandidates(preparedParts.slice(), rng, {
+    includeRandom: false,
+  })
+  for (const orderCandidate of requiredOrders) {
+    if (halted()) return haltResult()
+    const outcome = rank({
+      order: orderCandidate.order,
+      rotations: orderCandidate.order.map(() => BALANCED_ANGLES[0] ?? 0),
+    })
+    if (outcome.cancelled) return cancelled()
+    emit({
+      ratio: 0.25,
+      phase: 'optimize',
+      message: `Trying orders · ${orderCandidate.name}`,
+    })
+    if (!outcome.candidate) continue
+    rankedCandidates.push(outcome.candidate)
+    const nextBeam = selectBeam(rankedCandidates, 4, settingsKey)
+    const candidateKey = individualKey(outcome.candidate.individual, settingsKey)
+    const enteredBeam = nextBeam.some(
+      ({ individual }) => individualKey(individual, settingsKey) === candidateKey,
+    )
+    beam = nextBeam
+    if (halted()) return haltResult()
+    if (
+      enteredBeam ||
+      isBetterNestingResult(outcome.candidate.result, champion)
+    ) {
+      const exact = evaluateExact(outcome.candidate.individual, 'fixed')
+      if (exact.cancelled || options.signal?.aborted) return cancelled()
+    }
+  }
+  markRequiredOrdersComplete(convergence)
+
+  if (beam.length === 0) {
+    beam = [{ individual: championGene, result: champion }]
+  }
+  let layer = 0
+  for (;;) {
+    layer++
+    emit({
+      ratio: 0.65,
+      phase: 'optimize',
+      message: `Improving layout · layer ${layer}`,
+    })
+    const previousKeys = beam.map(({ individual }) =>
+      individualKey(individual, settingsKey),
+    )
+    const children: RankedCandidate[] = []
+    for (const member of beam) {
+      for (const child of expandOrder(member.individual, rng)) {
+        if (halted()) return haltResult()
+        const childKey = individualKey(child, settingsKey)
+        if (cheapEvaluatedKeys.has(childKey)) continue
+        const outcome = rank(child)
+        if (outcome.cancelled) return cancelled()
+        if (!outcome.candidate) continue
+        children.push(outcome.candidate)
+        if (halted()) return haltResult()
+        const tentative = selectBeam([...beam, ...children], 4, settingsKey)
+        const rankedKey = individualKey(
+          outcome.candidate.individual,
+          settingsKey,
+        )
+        const entersBeam = tentative.some(
+          ({ individual }) => individualKey(individual, settingsKey) === rankedKey,
+        )
+        if (
+          entersBeam ||
+          isBetterNestingResult(outcome.candidate.result, champion)
+        ) {
+          const exact = evaluateExact(outcome.candidate.individual, 'fixed')
+          if (exact.cancelled || options.signal?.aborted) return cancelled()
+        }
+      }
+    }
+    const next = selectBeam([...beam, ...children], 4, settingsKey)
+    const nextKeys = next.map(({ individual }) =>
+      individualKey(individual, settingsKey),
+    )
+    beam = next
+    if (
+      previousKeys.length === nextKeys.length &&
+      previousKeys.every((key, index) => key === nextKeys[index])
+    ) {
+      break
+    }
+  }
+
+  type RefinementState = 'done' | 'halted' | 'cancelled'
+  const refineFinalist = (individual: Individual): RefinementState => {
+    if (halted()) {
+      return options.signal?.aborted ? 'cancelled' : 'halted'
+    }
+    emit({
+      ratio: 0.65,
+      phase: 'optimize',
+      message: 'Improving layout · refining finalist',
+    })
+    const refined = evaluateExact(individual, 'refine', 'refine')
+    if (refined.cancelled || options.signal?.aborted) return 'cancelled'
+    if (!refined.improved || !refined.gene) return 'done'
+    if (halted()) {
+      return options.signal?.aborted ? 'cancelled' : 'halted'
+    }
+    emit({
+      ratio: 0.65,
+      phase: 'optimize',
+      message: 'Improving layout · polishing finalist',
+    })
+    const polished = evaluateExact(refined.gene, 'seed', 'seed')
+    return polished.cancelled || options.signal?.aborted ? 'cancelled' : 'done'
+  }
+
+  const finalistKeys = new Set<string>()
+  const finalists = [championGene, ...beam.map(({ individual }) => individual)]
+    .filter((individual) => {
+      const key = individualKey(individual, settingsKey)
+      if (finalistKeys.has(key)) return false
+      finalistKeys.add(key)
+      return true
+    })
+  for (const finalist of finalists) {
+    const state = refineFinalist(finalist)
+    if (state === 'cancelled') return cancelled()
+    if (state === 'halted') return finish()
+  }
+
+  emit({ ratio: 0.65, phase: 'optimize', message: 'Improving layout' })
+  const repairState = createRepairState()
+  for (;;) {
+    if (halted()) return haltResult()
+    const proposal = proposeRepair(
+      championGene,
+      allowedRotations,
+      champion,
+      preparedById,
+      rng,
+      repairState,
+    )
+    const proposalKey = individualKey(proposal.individual, settingsKey)
+    if (cheapEvaluatedKeys.has(proposalKey)) {
+      // ponytail: duplicates count toward convergence; no alternate search needed.
+      recordEvaluation(convergence)
+      continue
+    }
+
+    const ranked = rank(proposal.individual)
+    if (ranked.cancelled) return cancelled()
+    if (!ranked.candidate) continue
+    if (halted()) return haltResult()
+    if (!isBetterNestingResult(ranked.candidate.result, champion)) continue
+    const exact = evaluateExact(ranked.candidate.individual, 'fixed')
+    if (exact.cancelled || options.signal?.aborted) return cancelled()
+    if (!exact.improved) continue
+    rewardRepairOperator(repairState, proposal.operator)
+    const state = refineFinalist(championGene)
+    if (state === 'cancelled') return cancelled()
+    if (state === 'halted') return finish()
+  }
+}
