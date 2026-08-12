@@ -47,8 +47,6 @@ describe('free-angle cascade helpers', () => {
       allowArbitraryRotation: true,
       rotationMode: 'free',
       allowRotation: true,
-      optimizationLevel: 'fast',
-      timeLimitMs: 500,
     }
     expect(resolveAllowedAngles(settings, [])).toEqual(coarseFreeAngles())
     expect(usesFreeAngleCascade(settings)).toBe(true)
@@ -63,8 +61,6 @@ describe('free-angle cascade helpers', () => {
       allowArbitraryRotation: true,
       rotationMode: 'free',
       allowRotation: true,
-      optimizationLevel: 'fast',
-      timeLimitMs: 500,
     }
 
     expect(resolveAllowedAngles(settings, [])).toEqual([0.0004, 0.0005])

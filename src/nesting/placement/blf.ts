@@ -7,7 +7,7 @@ import {
   type Solid,
 } from '../../geometry'
 
-/** Call once per nesting request (BLF or evolutionary) — not per gene. */
+/** Call once per nesting request (BLF or automatic) — not per candidate. */
 export function beginPlacementSession(): void {
   beginNestingGeometrySession()
 }
@@ -23,8 +23,10 @@ import {
 } from '../core/prepare'
 import {
   BALANCED_ANGLES,
+  ORTHOGONAL_ANGLES,
   coarseFreeAngles,
   freeAngleCascadeStages,
+  normDeg,
   usesFreeAngleCascade,
 } from '../optimization/rotations'
 import {
@@ -57,7 +59,14 @@ import {
   type PackBias,
 } from './packBias'
 
-export type FreeAngleDepth = 'quick' | 'coarse' | 'medium' | 'full' | 'seed'
+export type FreeAngleDepth =
+  | 'orthogonal'
+  | 'quick'
+  | 'coarse'
+  | 'medium'
+  | 'full'
+  | 'refine'
+  | 'seed'
 
 export type BlfOptions = {
   onProgress?: (p: NestProgress) => void
@@ -70,22 +79,29 @@ export type BlfOptions = {
   profile?: boolean
   /**
    * Free-angle search depth when rotationMode=free:
+   * - orthogonal: 90° grid (initial automatic seed)
    * - quick: 45° grid (order ranking)
    * - coarse: 15° grid
    * - medium: coarse → top-3 refine @5° (no 1° final; profiling / cheap proxy)
    * - full: exhaustive 0°..359° at 1°, with exact NFP geometry
+   * - refine: 5° window around a plan angle (no 1° final)
    * - seed: refine around a gene angle (final polish)
    * Default for free mode: coarse (avoid 1° on every eval).
-   * Production Stage 1 uses 'full'; Stage 2 uses 'coarse'/'seed'. 'medium' is opt-in.
+   * Automatic search selects orthogonal, quick, coarse, refine, and seed depths;
+   * 'medium' and 'full' remain opt-in diagnostic modes.
    */
   freeAngleDepth?: FreeAngleDepth
   /**
    * Alias for freeAngleDepth='seed' on plan placements.
-   * Off during GA evaluations; enable for final polish of top candidates.
    */
   polishFreeAngles?: boolean
   /** Exact for canonical discrete/full placement; simplified only for cheap ranking. */
   nfpFidelity?: 'simplified' | 'exact'
+  exactFallback?: boolean
+  /** Diagnostic observer used by tests/profiling. */
+  onExactFallback?: (partId: string) => void
+  /** Internal optimizer reuse; must correspond to this request. */
+  preparedParts?: readonly PreparedPart[]
 }
 
 /** Gene plan: placement order + per-part rotation (aligned with order). */
@@ -570,6 +586,83 @@ function evaluateAngles(
   return ok
 }
 
+const MAX_BOUNDED_COARSE_ANGLES = 24
+
+function boundedAllowedCoarseAngles(
+  rotations: readonly number[],
+): number[] {
+  if (rotations.length <= MAX_BOUNDED_COARSE_ANGLES) {
+    return rotations.slice()
+  }
+
+  const uniqueByAngle = new Map<number, { rotation: number; index: number }>()
+  rotations.forEach((rotation, index) => {
+    const normalized = normDeg(rotation)
+    if (!uniqueByAngle.has(normalized)) {
+      uniqueByAngle.set(normalized, { rotation, index })
+    }
+  })
+  const allowed = [...uniqueByAngle.entries()]
+    .map(([normalized, value]) => ({ normalized, ...value }))
+    .sort((a, b) => a.normalized - b.normalized || a.index - b.index)
+  if (allowed.length <= MAX_BOUNDED_COARSE_ANGLES) {
+    return allowed.map(({ rotation }) => rotation)
+  }
+
+  const angularDistance = (a: number, b: number): number => {
+    const difference = Math.abs(a - b)
+    return Math.min(difference, 360 - difference)
+  }
+  const nearestAllowed = (target: number) => {
+    let low = 0
+    let high = allowed.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if (allowed[middle]!.normalized < target) low = middle + 1
+      else high = middle
+    }
+    const after = allowed[low % allowed.length]!
+    const before = allowed[(low - 1 + allowed.length) % allowed.length]!
+    const beforeDistance = angularDistance(before.normalized, target)
+    const afterDistance = angularDistance(after.normalized, target)
+    return beforeDistance < afterDistance ||
+      (beforeDistance === afterDistance && before.normalized < after.normalized)
+      ? before
+      : after
+  }
+
+  const selected = new Map<number, (typeof allowed)[number]>()
+  for (const target of coarseFreeAngles()) {
+    const candidate = nearestAllowed(target)
+    selected.set(candidate.normalized, candidate)
+  }
+
+  const fallback = uniqueByAngle.get(normDeg(rotations[0]!))!
+  const fallbackAngle = normDeg(fallback.rotation)
+  if (!selected.has(fallbackAngle)) {
+    if (selected.size >= MAX_BOUNDED_COARSE_ANGLES) {
+      let nearestKey: number | null = null
+      let nearestDistance = Infinity
+      for (const key of selected.keys()) {
+        const distance = angularDistance(key, fallbackAngle)
+        if (distance < nearestDistance) {
+          nearestKey = key
+          nearestDistance = distance
+        }
+      }
+      if (nearestKey != null) selected.delete(nearestKey)
+    }
+    selected.set(fallbackAngle, {
+      normalized: fallbackAngle,
+      ...fallback,
+    })
+  }
+
+  return [...selected.values()]
+    .sort((a, b) => a.normalized - b.normalized || a.index - b.index)
+    .map(({ rotation }) => rotation)
+}
+
 /**
  * Pick rotation + translation for a part.
  * Free depths: coarse (15°) / full (exhaustive 1°) / seed (refine around gene).
@@ -584,6 +677,7 @@ function pickBestVariant(
   opts: {
     freeCascade: boolean
     depth: FreeAngleDepth
+    boundedCoarse?: boolean
     seedRotation?: number
     exactNfp: boolean
     onAttempt?: (attempt: Omit<NestAttempt, 'sequence'>) => void
@@ -593,7 +687,25 @@ function pickBestVariant(
   const exactNfp = opts.exactNfp
 
   if (!opts.freeCascade) {
-    const angles = part.rotations
+    const boundedGrid = opts.depth === 'orthogonal'
+      ? ORTHOGONAL_ANGLES
+      : opts.depth === 'quick'
+        ? BALANCED_ANGLES
+        : null
+    const boundedAngles = boundedGrid?.flatMap((gridAngle) => {
+      const allowed = part.rotations.find((rotation) => {
+        const difference = Math.abs(rotation - gridAngle) % 360
+        return Math.min(difference, 360 - difference) <= 1e-9
+      })
+      return allowed == null ? [] : [allowed]
+    })
+    const angles = opts.depth === 'coarse' && opts.boundedCoarse
+      ? boundedAllowedCoarseAngles(part.rotations)
+      : boundedAngles?.length
+        ? boundedAngles
+        : boundedGrid
+          ? part.rotations.slice(0, 1)
+          : part.rotations
     const ok = evaluateAngles(
       part,
       angles,
@@ -629,7 +741,19 @@ function pickBestVariant(
   const topK = 3
 
   let ok: PlaceCand[]
-  if (opts.depth === 'seed' && opts.seedRotation != null) {
+  if (opts.depth === 'refine' && opts.seedRotation != null) {
+    ok = evaluateAngles(
+      part,
+      stages.refine([opts.seedRotation]),
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      bias,
+      exactNfp,
+      opts.onAttempt,
+    )
+  } else if (opts.depth === 'seed' && opts.seedRotation != null) {
     ok = evaluateAngles(
       part,
       stages.refine([opts.seedRotation]),
@@ -671,7 +795,11 @@ function pickBestVariant(
     }
   } else {
     const grid =
-      opts.depth === 'quick' ? [...BALANCED_ANGLES] : stages.coarse
+      opts.depth === 'orthogonal'
+        ? [...ORTHOGONAL_ANGLES]
+        : opts.depth === 'quick'
+          ? [...BALANCED_ANGLES]
+          : stages.coarse
     ok = evaluateAngles(
       part,
       grid,
@@ -708,8 +836,10 @@ function pickBestVariant(
   // medium stops after 5° refine — experiment proxy for full without 1° cost.
   if (
     opts.depth === 'coarse' ||
+    opts.depth === 'orthogonal' ||
     opts.depth === 'quick' ||
-    opts.depth === 'medium'
+    opts.depth === 'medium' ||
+    opts.depth === 'refine'
   ) {
     return ok[0]!
   }
@@ -762,16 +892,17 @@ function placeSequence(
     dayamaY: request.settings.dayamaY,
   })
   const freeCascade = usesFreeAngleCascade(request.settings)
-  const freeDepth: FreeAngleDepth = !freeCascade
+  const requestedDepth: FreeAngleDepth = options.polishFreeAngles
+    ? 'seed'
+    : (options.freeAngleDepth ?? 'coarse')
+  const freeDepth: FreeAngleDepth = !freeCascade &&
+    requestedDepth !== 'orthogonal' && requestedDepth !== 'quick'
     ? 'coarse'
-    : options.polishFreeAngles
-      ? 'seed'
-      : (options.freeAngleDepth ?? 'coarse')
+    : requestedDepth
   const exactNfp =
     options.nfpFidelity === 'exact' ||
     (options.nfpFidelity == null && (freeDepth === 'full' || !freeCascade))
   const signal = options.signal
-  const level = request.settings.optimizationLevel
   const partCount = sequence.length
   let attemptSequence = 0
   const emitAttempt = options.onAttempt
@@ -852,46 +983,71 @@ function placeSequence(
   ): PlaceCand | null => {
     if (!hasMaterialCapacity(entry, sheet)) return null
     const { part, variant } = entry
-    if (variant === 'best') {
-      const depthForBest = freeDepth === 'seed' ? 'coarse' : freeDepth
-      return pickBestVariant(
-        part,
+    const find = (useExactNfp: boolean): PlaceCand | null => {
+      if (variant === 'best') {
+        const depthForBest =
+          freeDepth === 'seed' || freeDepth === 'refine'
+            ? 'coarse'
+            : freeDepth
+        return pickBestVariant(
+          part,
+          sheet,
+          spacing,
+          allowPartInPart,
+          signal,
+          packBias,
+          {
+            freeCascade,
+            depth: depthForBest,
+            boundedCoarse: options.freeAngleDepth === 'coarse',
+            exactNfp: useExactNfp,
+            onAttempt,
+          },
+        )
+      }
+      if (
+        freeCascade &&
+        (freeDepth === 'seed' || freeDepth === 'refine')
+      ) {
+        return pickBestVariant(
+          part,
+          sheet,
+          spacing,
+          allowPartInPart,
+          signal,
+          packBias,
+          {
+            freeCascade: true,
+            depth: freeDepth,
+            seedRotation: variant.rotation,
+            exactNfp: useExactNfp,
+            onAttempt,
+          },
+        )
+      }
+      const pos = tryPlaceOnSheet(
+        variant,
         sheet,
         spacing,
         allowPartInPart,
         signal,
         packBias,
-        { freeCascade, depth: depthForBest, exactNfp, onAttempt },
+        useExactNfp,
+        onAttempt,
       )
+      return pos ? { variant, ...pos } : null
     }
-    if (freeCascade && freeDepth === 'seed') {
-      return pickBestVariant(
-        part,
-        sheet,
-        spacing,
-        allowPartInPart,
-        signal,
-        packBias,
-        {
-          freeCascade: true,
-          depth: 'seed',
-          seedRotation: variant.rotation,
-          exactNfp,
-          onAttempt,
-        },
-      )
+
+    const best = find(exactNfp)
+    if (best || signal?.aborted || exactNfp || !options.exactFallback) {
+      return best
     }
-    const pos = tryPlaceOnSheet(
-      variant,
-      sheet,
-      spacing,
-      allowPartInPart,
-      signal,
-      packBias,
-      exactNfp,
-      onAttempt,
-    )
-    return pos ? { variant, ...pos } : null
+    try {
+      options.onExactFallback?.(part.partId)
+    } catch {
+      // Diagnostic telemetry must never alter nesting.
+    }
+    return find(true)
   }
 
   const compareStockTrials = (
@@ -1266,7 +1422,6 @@ function placeSequence(
         partCount,
         unplacedCount: unplaced.length + (partCount - (i + 1)),
         sheetCount: sheets.length,
-        optimizationLevel: level,
         elapsedMs: performance.now() - t0,
         message: `BLF · ${placedCount} / ${partCount} parça · sheet ${sheets.length || 1}`,
         bestSoFar: partial,
@@ -1293,6 +1448,15 @@ export function runBottomLeftNest(
 ): NestingResult {
   const t0 = performance.now()
   validateNestingRequest(request)
+  return runBottomLeftNestUnchecked(request, options, t0)
+}
+
+/** Internal optimizer path; request must already have passed validation. */
+export function runBottomLeftNestUnchecked(
+  request: NestingRequest,
+  options: BlfOptions = {},
+  t0 = performance.now(),
+): NestingResult {
   const shouldProfile =
     options.profile === true || request.settings.profileBlf === true
   if (shouldProfile) beginBlfProfiling()
@@ -1302,9 +1466,9 @@ export function runBottomLeftNest(
     phase: 'prepare',
     message: 'Preparing parts',
   })
-  const prepared = prepareParts(request.parts, request.settings, {
-    sortByArea: true,
-  })
+  const prepared =
+    options.preparedParts ??
+    prepareParts(request.parts, request.settings, { sortByArea: true })
   options.onProgress?.({ ratio: 0.08, phase: 'seed', message: 'Placing parts' })
   const result = placeSequence(
     request,
@@ -1347,9 +1511,9 @@ export function placeWithOrderUnchecked(
   options: BlfOptions = {},
 ): NestingResult {
   const t0 = performance.now()
-  const prepared = prepareParts(request.parts, request.settings, {
-    sortByArea: false,
-  })
+  const prepared =
+    options.preparedParts ??
+    prepareParts(request.parts, request.settings, { sortByArea: false })
   const byId = new Map(prepared.map((p) => [p.partId, p]))
   const sequence: Array<{ part: PreparedPart; variant: 'best' }> = []
   const seen = new Set<string>()
@@ -1372,7 +1536,7 @@ export function placeWithOrderUnchecked(
 }
 
 /**
- * Place parts using a fixed order + rotation gene (for evolutionary evaluation).
+ * Place parts using a fixed order + rotation plan (for search evaluation).
  * Uses the same geometry-aware BLF/NFP placer — not a second engine.
  */
 export function placeWithPlan(
@@ -1396,9 +1560,9 @@ export function placeWithPlanUnchecked(
     throw new RangeError('Plan rotation values must be finite')
   }
   // Reuse shared NFP cache across gene evaluations (session opened by BLF baseline)
-  const prepared = prepareParts(request.parts, request.settings, {
-    sortByArea: false,
-  })
+  const prepared =
+    options.preparedParts ??
+    prepareParts(request.parts, request.settings, { sortByArea: false })
   const byId = new Map(prepared.map((p) => [p.partId, p]))
 
   const sequence: Array<{ part: PreparedPart; variant: PreparedVariant }> = []

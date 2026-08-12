@@ -12,6 +12,7 @@ import {
 } from '../../geometry'
 import {
   placeWithOrder,
+  placeWithOrderUnchecked,
   placeWithPlan,
   placeWithPlanUnchecked,
   runBottomLeftNest,
@@ -29,8 +30,6 @@ const baseSettings: NestingSettings = {
   allowedRotations: [0],
   rotationStepDeg: null,
   allowArbitraryRotation: false,
-  optimizationLevel: 'fast',
-  timeLimitMs: 5000,
 }
 
 function rectPart(
@@ -95,6 +94,47 @@ function worldSolid(part: GeometryPart, pl: Placement) {
     })),
   )
   return solidFromRings(outer, holes)
+}
+
+function denseContactFixture(stepped = false, denseCount = 117) {
+  const outer = Array.from({ length: denseCount }, (_, index) => ({
+    x: (20 * index) / (denseCount - 1),
+    y: index % 2 === 0 ? 0 : 0.05,
+  }))
+  outer.push(
+    { x: 20, y: 5 },
+    { x: 20, y: 10 },
+    { x: 15, y: 10 },
+    { x: 12, y: 10 },
+    { x: 10.4, y: 10 },
+    ...(stepped
+      ? [
+          { x: 10.4, y: 9.8 },
+          { x: 10.35, y: 9.8 },
+        ]
+      : []),
+    { x: stepped ? 10.35 : 10.4, y: 9.6 },
+    { x: 10, y: 9.6 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+  )
+  const host: GeometryPart = {
+    id: 'dense-host',
+    sourceElement: 'path',
+    originalIndex: 0,
+    sourceId: 'dense-host',
+    outer: { points: outer },
+    holes: [],
+    boundingBox: boundingBox(outer),
+    area: netArea({ points: outer }, []),
+    centroid: centroid(outer),
+    originalTransform: null,
+  }
+  const guest = rectPart('tiny', 1, 0, 0, 0.35, 0.35)
+  return request([host, guest], {
+    sheet: { widthMm: 20, heightMm: 10, marginMm: 0, quantity: 1 },
+    settings: { allowedRotations: [0] },
+  })
 }
 
 describe('runBottomLeftNest', () => {
@@ -815,6 +855,32 @@ describe('runBottomLeftNest', () => {
     expect(performance.now() - started).toBeLessThan(2_000)
   })
 
+  it('opens identical stock when it preserves capacity for the fixed suffix', () => {
+    const dimensions = [
+      [7, 3],
+      [8, 5],
+      [5, 3],
+      [9, 6],
+      [4, 9],
+      [6, 4],
+      [5, 5],
+    ] as const
+    const parts = dimensions.map(([width, height], index) =>
+      rectPart(`counterexample-${index}`, index, 0, 0, width, height),
+    )
+    const req = request(parts, {
+      sheet: { widthMm: 10, heightMm: 10, marginMm: 0, quantity: 2 },
+    })
+
+    const result = placeWithOrder(req, parts.map(({ id }) => id), {
+      nfpFidelity: 'exact',
+    })
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.statistics.placedCount).toBeGreaterThanOrEqual(5)
+  })
+
   it('16i. opens alternate stock instead of blocking a restricted future part', () => {
     const parts = [
       rectPart('first', 0, 0, 0, 10, 4),
@@ -933,6 +999,204 @@ describe('runBottomLeftNest', () => {
     expect(prepared[0]!.rotations).toBe(prepared[1]!.rotations)
   })
 
+  it('bounds dense stepped rotations during explicit coarse depth', () => {
+    const req = request([rectPart('dense-coarse', 0, 0, 0, 10, 2)], {
+      settings: { allowRotation: true, rotationStepDeg: 0.01 },
+    })
+    const allowed = new Set(prepareParts(req.parts, req.settings)[0]!.rotations)
+    const attempts: NestAttempt[] = []
+
+    const result = placeWithOrder(req, ['dense-coarse'], {
+      freeAngleDepth: 'coarse',
+      onAttempt: (attempt) => attempts.push(attempt),
+    })
+
+    expect(result.status).toBe('ok')
+    expect(attempts.length).toBeLessThanOrEqual(24)
+    expect(new Set(attempts.map(({ rotation }) => rotation)).size)
+      .toBe(attempts.length)
+    expect(attempts.some(({ rotation }) => rotation === 0)).toBe(true)
+    expect(attempts.every(({ rotation }) => allowed.has(rotation))).toBe(true)
+  })
+
+  it('samples only allowed large coarse sets and preserves small sets', () => {
+    const evaluate = (allowedRotationsExplicit: number[]) => {
+      const attempts: NestAttempt[] = []
+      const result = placeWithOrder(
+        request([rectPart('explicit-coarse', 0, 0, 0, 10, 2)], {
+          settings: { allowRotation: true, allowedRotationsExplicit },
+        }),
+        ['explicit-coarse'],
+        {
+          freeAngleDepth: 'coarse',
+          onAttempt: (attempt) => attempts.push(attempt),
+        },
+      )
+      expect(result.status).toBe('ok')
+      return attempts.map(({ rotation }) => rotation)
+    }
+    const large = Array.from({ length: 60 }, (_, index) => index * 6 + 1)
+
+    const sampled = evaluate(large)
+
+    expect(sampled.length).toBeLessThanOrEqual(24)
+    expect(new Set(sampled).size).toBe(sampled.length)
+    expect(sampled).toContain(large[0])
+    expect(sampled.every((rotation) => large.includes(rotation))).toBe(true)
+    expect(evaluate([15, 30, 75])).toEqual([15, 30, 75])
+  })
+
+  it('keeps canonical non-free rotation evaluation when coarse is implicit', () => {
+    const allowedRotationsExplicit = Array.from(
+      { length: 30 },
+      (_, index) => index * 12,
+    )
+    const attempts: NestAttempt[] = []
+
+    const result = placeWithOrder(
+      request([rectPart('implicit-coarse', 0, 0, 0, 10, 2)], {
+        settings: { allowRotation: true, allowedRotationsExplicit },
+      }),
+      ['implicit-coarse'],
+      { onAttempt: (attempt) => attempts.push(attempt) },
+    )
+
+    expect(result.status).toBe('ok')
+    expect(attempts.map(({ rotation }) => rotation))
+      .toEqual(allowedRotationsExplicit)
+  })
+
+  it('orthogonal depth evaluates exactly the four orthogonal angles', () => {
+    const rotations = new Set<number>()
+    const result = placeWithOrder(
+      request([rectPart('free', 0, 0, 0, 20, 10)], {
+        settings: {
+          rotationMode: 'free',
+          allowRotation: true,
+          allowArbitraryRotation: true,
+        },
+      }),
+      ['free'],
+      {
+        freeAngleDepth: 'orthogonal',
+        nfpFidelity: 'exact',
+        onAttempt: ({ rotation }) => rotations.add(rotation),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect([...rotations].sort((a, b) => a - b)).toEqual([0, 90, 180, 270])
+  })
+
+  it('bounds a one-degree rotation grid to orthogonal depth angles', () => {
+    const rotations = new Set<number>()
+    const result = placeWithOrder(
+      request([rectPart('stepped', 0, 0, 0, 20, 10)], {
+        settings: { allowRotation: true, rotationStepDeg: 1 },
+      }),
+      ['stepped'],
+      {
+        freeAngleDepth: 'orthogonal',
+        onAttempt: ({ rotation }) => rotations.add(rotation),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect([...rotations].sort((a, b) => a - b)).toEqual([0, 90, 180, 270])
+  })
+
+  it('bounds a one-degree rotation grid to quick depth angles', () => {
+    const rotations = new Set<number>()
+    const result = placeWithOrder(
+      request([rectPart('stepped', 0, 0, 0, 20, 10)], {
+        settings: { allowRotation: true, rotationStepDeg: 1 },
+      }),
+      ['stepped'],
+      {
+        freeAngleDepth: 'quick',
+        onAttempt: ({ rotation }) => rotations.add(rotation),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect([...rotations].sort((a, b) => a - b)).toEqual([
+      0, 45, 90, 135, 180, 225, 270, 315,
+    ])
+  })
+
+  it('intersects bounded depth with explicit rotations and falls back when empty', () => {
+    const evaluate = (allowedRotationsExplicit: number[]) => {
+      const rotations = new Set<number>()
+      const result = placeWithOrder(
+        request([rectPart('explicit', 0, 0, 0, 20, 10)], {
+          settings: { allowRotation: true, allowedRotationsExplicit },
+        }),
+        ['explicit'],
+        {
+          freeAngleDepth: 'orthogonal',
+          onAttempt: ({ rotation }) => rotations.add(rotation),
+        },
+      )
+      expect(result.status).toBe('ok')
+      return [...rotations].sort((a, b) => a - b)
+    }
+
+    expect(evaluate([15, 90])).toEqual([90])
+    expect(evaluate([15])).toEqual([15])
+  })
+
+  it('refine depth evaluates only the five-degree window around a plan rotation', () => {
+    const rotations = new Set<number>()
+    const result = placeWithPlan(
+      request([rectPart('free', 0, 0, 0, 20, 10)], {
+        settings: {
+          rotationMode: 'free',
+          allowRotation: true,
+          allowArbitraryRotation: true,
+        },
+      }),
+      { order: ['free'], rotations: [37] },
+      {
+        freeAngleDepth: 'refine',
+        nfpFidelity: 'exact',
+        onAttempt: ({ rotation }) => rotations.add(rotation),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect([...rotations].sort((a, b) => a - b)).toEqual([
+      22, 27, 32, 37, 42, 47, 52,
+    ])
+  })
+
+  it('reuses supplied prepared parts without mutating their order', () => {
+    const req = request([
+      rectPart('first', 0, 0, 0, 2, 2),
+      rectPart('second', 1, 0, 0, 2, 2),
+    ])
+    const supplied = Object.freeze(
+      prepareParts(req.parts, req.settings, { sortByArea: false }).reverse(),
+    )
+    const before = supplied.slice()
+    const results = [
+      runBottomLeftNest(req, { preparedParts: supplied }),
+      placeWithOrderUnchecked(req, [], { preparedParts: supplied }),
+      placeWithPlanUnchecked(req, { order: [], rotations: [] }, {
+        preparedParts: supplied,
+      }),
+    ]
+
+    for (const result of results) {
+      expect(result.status).toBe('ok')
+      if (result.status !== 'ok') continue
+      expect(result.placements.map(({ partId }) => partId)).toEqual([
+        'second',
+        'first',
+      ])
+    }
+    expect(supplied).toEqual(before)
+  })
+
   it('17. plan placement never duplicates a source part', () => {
     const req = request([rectPart('a', 0, 0, 0, 20, 20)])
     const duplicate = { order: ['a', 'a'], rotations: [0, 0] }
@@ -998,38 +1262,7 @@ describe('runBottomLeftNest', () => {
   })
 
   it('20. discrete canonical placement preserves a dense sub-0.5mm contact', () => {
-    const outer = Array.from({ length: 117 }, (_, index) => ({
-      x: (20 * index) / 116,
-      y: index % 2 === 0 ? 0 : 0.05,
-    }))
-    outer.push(
-      { x: 20, y: 5 },
-      { x: 20, y: 10 },
-      { x: 15, y: 10 },
-      { x: 12, y: 10 },
-      { x: 10.4, y: 10 },
-      { x: 10.4, y: 9.6 },
-      { x: 10, y: 9.6 },
-      { x: 10, y: 10 },
-      { x: 0, y: 10 },
-    )
-    const host: GeometryPart = {
-      id: 'dense-host',
-      sourceElement: 'path',
-      originalIndex: 0,
-      sourceId: 'dense-host',
-      outer: { points: outer },
-      holes: [],
-      boundingBox: boundingBox(outer),
-      area: netArea({ points: outer }, []),
-      centroid: centroid(outer),
-      originalTransform: null,
-    }
-    const guest = rectPart('tiny', 1, 0, 0, 0.35, 0.35)
-    const req = request([host, guest], {
-      sheet: { widthMm: 20, heightMm: 10, marginMm: 0, quantity: 1 },
-      settings: { allowedRotations: [0] },
-    })
+    const req = denseContactFixture()
 
     const canonical = runBottomLeftNest(req)
     const cheap = runBottomLeftNest(req, { nfpFidelity: 'simplified' })
@@ -1042,5 +1275,67 @@ describe('runBottomLeftNest', () => {
       .toMatchObject({ x: 10, y: 9.6 })
     expect(cheap.placements.find((placement) => placement.partId === 'tiny'))
       .toMatchObject({ x: 10.05, y: 9.65 })
+  })
+
+  it('retries a failed simplified dense contact with exact candidates', () => {
+    const req = denseContactFixture(true, 110)
+    const exact = runBottomLeftNest(req, { nfpFidelity: 'exact' })
+    const fallbackIds: string[] = []
+    const fallback = runBottomLeftNest(req, {
+      nfpFidelity: 'simplified',
+      exactFallback: true,
+      onExactFallback: (partId) => fallbackIds.push(partId),
+    })
+
+    expect(exact.status).toBe('ok')
+    expect(fallback.status).toBe('ok')
+    if (exact.status !== 'ok' || fallback.status !== 'ok') return
+    expect(exact.statistics.unplacedCount).toBe(0)
+    expect(fallback.statistics.unplacedCount).toBe(0)
+    expect(fallback.placements).toEqual(exact.placements)
+    expect(fallbackIds).toContain('tiny')
+  })
+
+  it('does not retry a successful simplified placement', () => {
+    const fallbackIds: string[] = []
+    const result = runBottomLeftNest(
+      request([rectPart('fits', 0, 0, 0, 2, 2)]),
+      {
+        nfpFidelity: 'simplified',
+        exactFallback: true,
+        onExactFallback: (partId) => fallbackIds.push(partId),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect(fallbackIds).toEqual([])
+  })
+
+  it('does not exact-retry an aborted simplified placement', () => {
+    const controller = new AbortController()
+    const fallbackIds: string[] = []
+    const result = runBottomLeftNest(denseContactFixture(true, 110), {
+      nfpFidelity: 'simplified',
+      exactFallback: true,
+      onAttempt: ({ partId }) => {
+        if (partId === 'tiny') controller.abort()
+      },
+      onExactFallback: (partId) => fallbackIds.push(partId),
+      signal: controller.signal,
+    })
+
+    expect(result.status).toBe('cancelled')
+    expect(fallbackIds).toEqual([])
+  })
+
+  it('does not exact-retry exact fidelity', () => {
+    const fallbackIds: string[] = []
+    runBottomLeftNest(denseContactFixture(true, 110), {
+      nfpFidelity: 'exact',
+      exactFallback: true,
+      onExactFallback: (partId) => fallbackIds.push(partId),
+    })
+
+    expect(fallbackIds).toEqual([])
   })
 })

@@ -9,11 +9,8 @@ import {
 import type { GeometryPart } from '../../geometry'
 import { boundingBox, centroid } from '../../geometry'
 import { localSearchImprove } from './localSearch'
-import { destroyRepairImprove } from './destroyRepair'
 import { createRng } from './rng'
-import { runEvolutionaryNest } from './geneticOptimizer'
 import type { NestingRequest, NestingSettings } from '../types'
-import { scoreNestingResult } from '../scoring/fitness'
 import { runBottomLeftNest } from '../placement/blf'
 import { solidsCollide, solidFromRings } from '../../geometry'
 
@@ -46,8 +43,6 @@ const baseSettings: NestingSettings = {
   rotationStepDeg: null,
   allowArbitraryRotation: false,
   rotationMode: 'orthogonal',
-  optimizationLevel: 'fast',
-  timeLimitMs: 600,
   seed: 11,
   allowPartInPart: false,
 }
@@ -95,99 +90,6 @@ describe('Stage 9 optimizer enhancements', () => {
     expect(evalFn(out).score.total).toBeLessThanOrEqual(startTotal)
     expect(calls).toBeGreaterThan(1)
   })
-
-  it('destroy/repair never worsens score', () => {
-    const ind = {
-      order: ['a', 'b', 'c', 'd', 'e'],
-      rotations: [0, 0, 90, 180, 270],
-    }
-    const evalFn = (x: typeof ind) => ({
-      score: {
-        total: x.order.map((id, i) => id.charCodeAt(0) * (i + 1)).reduce((a, b) => a + b, 0),
-      },
-    })
-    const start = evalFn(ind).score.total
-    const out = destroyRepairImprove(
-      ind,
-      [0, 90, 180, 270],
-      createRng(2),
-      evalFn,
-      performance.now() + 80,
-    )
-    expect(evalFn(out).score.total).toBeLessThanOrEqual(start)
-  })
-
-  it('deterministic same seed ⇒ same score', () => {
-    const request: NestingRequest = {
-      parts: [
-        { ...LPart(), id: 'a' },
-        { ...LPart(), id: 'b', originalIndex: 1 },
-        {
-          ...LPart(),
-          id: 'c',
-          originalIndex: 2,
-          outer: {
-            points: [
-              { x: 0, y: 0 },
-              { x: 20, y: 0 },
-              { x: 20, y: 15 },
-              { x: 0, y: 15 },
-            ],
-          },
-          boundingBox: boundingBox([
-            { x: 0, y: 0 },
-            { x: 20, y: 0 },
-            { x: 20, y: 15 },
-            { x: 0, y: 15 },
-          ]),
-          area: 300,
-          centroid: { x: 10, y: 7.5 },
-        },
-      ],
-      sheets: [{ widthMm: 200, heightMm: 150, marginMm: 5, quantity: 3 }],
-      // Large time budget so wall-clock jitter does not truncate differently
-      settings: { ...baseSettings, seed: 99, timeLimitMs: 60_000 },
-    }
-    const a = runEvolutionaryNest(request, {
-      seed: 99,
-      timeLimitMs: 60_000,
-      maxGenerations: 12,
-      deterministic: true,
-    })
-    const b = runEvolutionaryNest(request, {
-      seed: 99,
-      timeLimitMs: 60_000,
-      maxGenerations: 12,
-      deterministic: true,
-    })
-    expect(a.status).toBe('ok')
-    expect(b.status).toBe('ok')
-    if (a.status !== 'ok' || b.status !== 'ok') return
-    expect(scoreNestingResult(a).total).toBe(scoreNestingResult(b).total)
-    expect(a.placements.map((p) => `${p.partId}:${p.x}:${p.y}:${p.rotation}`)).toEqual(
-      b.placements.map((p) => `${p.partId}:${p.x}:${p.y}:${p.rotation}`),
-    )
-  }, 30_000)
-
-  it('optimized never worse than BLF', () => {
-    const request: NestingRequest = {
-      parts: [
-        { ...LPart(), id: 'p0' },
-        { ...LPart(), id: 'p1', originalIndex: 1 },
-        { ...LPart(), id: 'p2', originalIndex: 2 },
-      ],
-      sheets: [{ widthMm: 200, heightMm: 160, marginMm: 4, quantity: 4 }],
-      settings: { ...baseSettings, timeLimitMs: 400, seed: 3 },
-    }
-    const blf = runBottomLeftNest(request)
-    const evo = runEvolutionaryNest(request, { seed: 3, timeLimitMs: 400 })
-    expect(blf.status).toBe('ok')
-    expect(evo.status).toBe('ok')
-    if (blf.status !== 'ok' || evo.status !== 'ok') return
-    expect(scoreNestingResult(evo).total).toBeLessThanOrEqual(
-      scoreNestingResult(blf).total + 1e-6,
-    )
-  }, 20_000)
 
   it('spacing regression: larger spacing still valid (no overlap)', () => {
     const a = solidFromRings(
@@ -246,7 +148,7 @@ describe('Stage 9 optimizer enhancements', () => {
       const request: NestingRequest = {
         parts,
         sheets: [{ widthMm: 200, heightMm: 160, marginMm: 5, quantity: 4 }],
-        settings: { ...baseSettings, spacingMm: spacing, timeLimitMs: 200 },
+        settings: { ...baseSettings, spacingMm: spacing },
       }
       const result = runBottomLeftNest(request)
       expect(result.status).toBe('ok')

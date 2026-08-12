@@ -1,11 +1,10 @@
 import type { NestSettings as UiNestSettings, SheetSettings as UiSheetSettings } from '../state'
 import type { GeometryPart } from '../geometry'
-import { presetForLevel } from './optimization/presets'
 import { coarseFreeAngles } from './optimization/rotations'
 import type { NestInput, NestingRequest, NestingSettings, SheetDefinition } from './types'
 import { validateNestingRequest } from './core/validate'
 
-/** Map Stage 1 UI sheet + nest settings into an engine NestingRequest. */
+/** Map UI sheet and nest settings into an engine NestingRequest. */
 export function toNestingRequest(
   parts: GeometryPart[],
   sheet: UiSheetSettings,
@@ -20,10 +19,7 @@ export function toNestingRequest(
     },
   ]
 
-  const level = settings.optimizationLevel
-  const preset = presetForLevel(level)
-
-  // The gene pool uses the coarse grid; full placement checks every integer degree.
+  // Search starts on the coarse grid; full placement checks every integer degree.
   const nestingSettings: NestingSettings = {
     spacingMm: settings.gapMm,
     allowedRotations: coarseFreeAngles(),
@@ -32,8 +28,6 @@ export function toNestingRequest(
     allowArbitraryRotation: true,
     rotationMode: 'free',
     allowRotation: true,
-    optimizationLevel: level,
-    timeLimitMs: preset.timeLimitMs,
     seed: settings.seed,
     deterministic: settings.deterministic,
     allowPartInPart: settings.allowPartInPart,

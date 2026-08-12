@@ -18,6 +18,20 @@ export function swapMutation(ind: Individual, rng: Rng): Individual {
   return out
 }
 
+export function adjacentSwapMutation(ind: Individual, rng: Rng): Individual {
+  const out = cloneIndividual(ind)
+  const n = out.order.length
+  if (n < 2) return out
+  const i = rng.int(n - 1)
+  const id = out.order[i]!
+  out.order[i] = out.order[i + 1]!
+  out.order[i + 1] = id
+  const rotation = out.rotations[i]!
+  out.rotations[i] = out.rotations[i + 1]!
+  out.rotations[i + 1] = rotation
+  return out
+}
+
 export function insertionMutation(ind: Individual, rng: Rng): Individual {
   const out = cloneIndividual(ind)
   const n = out.order.length

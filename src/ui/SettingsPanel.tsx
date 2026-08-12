@@ -1,6 +1,5 @@
 import type { NestingSuccess } from '../nesting'
 import {
-  OPTIMIZATION_OPTIONS,
   type NestSettings,
   type SheetSettings,
   type SvgMeta,
@@ -172,25 +171,6 @@ export function SettingsPanel({
             />
           </label>
         </div>
-
-        <label className="field">
-          <span>Optimization</span>
-          <select
-            value={nest.optimizationLevel}
-            onChange={(e) =>
-              onNest({
-                ...nest,
-                optimizationLevel: e.target.value as NestSettings['optimizationLevel'],
-              })
-            }
-          >
-            {OPTIMIZATION_OPTIONS.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </label>
 
         <label className="switch">
           <input

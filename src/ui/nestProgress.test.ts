@@ -4,6 +4,7 @@ import {
   applyEngineProgress,
   isBetterNestResult,
   nestUiCancelledBest,
+  nestUiCancelledPlain,
   nestUiCompleted,
   nestUiError,
   nestUiFromEngineProgress,
@@ -60,6 +61,7 @@ describe('Stage 10A/10F nest progress UI state', () => {
     expect(ui?.title).toContain('hazırlanıyor')
     expect(ui?.percent).toBe(2)
     expect(ui?.detail).toContain('Parça')
+    expect(ui?.statusLine).toBeUndefined()
   })
 
   it('maps BLF seed progress with parts / sheet', () => {
@@ -72,41 +74,49 @@ describe('Stage 10A/10F nest progress UI state', () => {
         sheetCount: 1,
         jobId: 'j1',
         elapsedMs: 12400,
+        message: 'Initial layout',
       },
       'j1',
-      nestUiPreparing('j1', 16, 'fast', 1),
+      nestUiPreparing('j1', 16, 1),
     )
     expect(ui?.phase).toBe('blf')
-    expect(ui?.title).toBe('BLF yerleşimi')
+    expect(ui?.title).toBe('İlk yerleşim')
     expect(ui?.percent).toBe(75)
     expect(ui?.detail).toContain('Parça 12 / 16')
     expect(ui?.detail).toContain('Tabaka 1')
     expect(ui?.elapsedMs).toBe(12400)
     expect(ui?.iteration).toBe(1)
-    expect(ui?.statusLine).toBeTruthy()
+    expect(ui?.statusLine).toBe('Initial layout')
   })
 
-  it('maps optimizer progress with start / generation', () => {
-    const ui = nestUiFromEngineProgress(
+  it('maps order search from structured activity', () => {
+    const search = nestUiFromEngineProgress(
       {
         ratio: 0.48,
         phase: 'optimize',
-        optimizationLevel: 'deep',
-        multiStartIndex: 3,
-        multiStartCount: 8,
-        generation: 42,
         placedCount: 16,
         partCount: 16,
         jobId: 'j1',
+        activity: 'orders',
+        message: 'Boyuta göre sıralama deneniyor',
       },
       'j1',
     )
-    expect(ui?.phase).toBe('optimize')
-    expect(ui?.title).toContain('Deep')
-    expect(ui?.percent).toBe(48)
-    expect(ui?.detail).toContain('Start 3 / 8')
-    expect(ui?.detail).toContain('Generation 42')
-    expect(ui?.statusLine).toContain('Aday')
+    expect(search?.phase).toBe('optimize')
+    expect(search?.title).toBe('Sıralamalar deneniyor')
+    expect(search?.percent).toBe(48)
+    expect(search?.detail).toBe('Parça 16 / 16')
+    expect(search?.statusLine).toBe('Boyuta göre sıralama deneniyor')
+
+    const improve = nestUiFromEngineProgress(
+      {
+        ratio: 0.65,
+        phase: 'optimize',
+        message: 'Trying orders should remain display-only',
+      },
+      'j1',
+    )
+    expect(improve?.title).toBe('Yerleşim iyileştiriliyor')
   })
 
   it('keeps finalize progress in a running state', () => {
@@ -123,17 +133,17 @@ describe('Stage 10A/10F nest progress UI state', () => {
     )
 
     expect(ui?.phase).toBe('finalizing')
-    expect(ui?.title).toContain('sonlandırılıyor')
+    expect(ui?.title).toBe('Sonuç doğrulanıyor')
     expect(ui?.percent).toBe(98)
   })
 
   it('ignores stale jobId progress', () => {
-    const prev = nestUiPreparing('job-active', 16, 'fast')
+    const prev = nestUiPreparing('job-active', 16)
     const stale: NestProgress = {
       ratio: 0.99,
       phase: 'optimize',
       jobId: 'job-old',
-      generation: 999,
+      activity: 'beam',
     }
     const next = applyEngineProgress(prev, stale, 'job-active')
     expect(next).toBe(prev)
@@ -146,7 +156,7 @@ describe('Stage 10A/10F nest progress UI state', () => {
         ratio: 0.6,
         phase: 'optimize',
         jobId: 'j1',
-        generation: 10,
+        activity: 'beam',
       },
       'j1',
     )!
@@ -156,6 +166,14 @@ describe('Stage 10A/10F nest progress UI state', () => {
     expect(stopping.statusLine).toContain('en iyi')
     expect(stopping.percent).toBe(60)
     expect(stopping.awaitingStop).toBe(true)
+  })
+
+  it('preparing and cancellation carry iteration', () => {
+    const preparing = nestUiPreparing('j1', 16, 3)
+    const cancelled = nestUiCancelledPlain('j1', 'Stopped', preparing)
+
+    expect(preparing.iteration).toBe(3)
+    expect(cancelled.iteration).toBe(3)
   })
 
   it('completed summary keeps card visible at 100%', () => {

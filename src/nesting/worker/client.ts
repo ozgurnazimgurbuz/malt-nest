@@ -1,16 +1,16 @@
 import type { NestingEngine, NestingRunOptions } from '../engine'
-import { evolutionaryNestingEngine } from '../engines/evolutionaryEngine'
+import { automaticNestingEngine } from '../engines/automaticEngine'
 import { isBetterNestingResult } from '../scoring/fitness'
 import type { NestingRequest, NestingResult, NestingSuccess } from '../types'
 import type { WorkerInMessage, WorkerOutMessage } from './nestWorker'
 
 /**
- * Runs evolutionary nesting in a Web Worker in browsers.
+ * Runs automatic nesting in a Web Worker in browsers.
  * Non-browser callers fall back to the direct engine.
  * STOP hard-terminates the worker and returns the latest progress snapshot.
  */
 export class WorkerNestingEngine implements NestingEngine {
-  readonly id = 'evolutionary-worker-v1'
+  readonly id = 'automatic-worker-v1'
 
   async nest(
     request: NestingRequest,
@@ -27,7 +27,7 @@ export class WorkerNestingEngine implements NestingEngine {
       if (typeof window !== 'undefined') {
         throw new Error('Nesting requires Web Worker support')
       }
-      return evolutionaryNestingEngine.nest(request, options)
+      return automaticNestingEngine.nest(request, options)
     }
 
     const worker = new Worker(new URL('./nestWorker.ts', import.meta.url), {
@@ -86,7 +86,7 @@ export class WorkerNestingEngine implements NestingEngine {
             candidate?.status === 'ok' &&
             (!lastBest || isBetterNestingResult(candidate, lastBest))
           ) {
-            lastBest = candidate
+            lastBest = structuredClone(candidate)
           }
           options?.onProgress?.({ ...msg.progress, jobId: requestId })
           return

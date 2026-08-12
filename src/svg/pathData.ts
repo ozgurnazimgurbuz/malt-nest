@@ -140,7 +140,12 @@ export function flattenPathData(
     if (need === 0) {
       if (code === 'Z') {
         if (points.length > 0) {
-          points.push({ x: startX, y: startY })
+          const last = points[points.length - 1]!
+          if (Math.hypot(last.x - startX, last.y - startY) <= tolerance) {
+            points[points.length - 1] = { x: startX, y: startY }
+          } else {
+            points.push({ x: startX, y: startY })
+          }
           closed = true
           cx = startX
           cy = startY

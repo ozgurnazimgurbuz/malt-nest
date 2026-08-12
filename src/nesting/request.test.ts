@@ -49,12 +49,11 @@ describe('toNestingRequest free-angle rotation', () => {
     expect(req.settings.dayamaY).toBe(true)
   })
 
-  it('still maps production params from UI', () => {
+  it('maps production params without legacy optimizer settings', () => {
     const req = toNestingRequest([part], { widthMm: 1600, heightMm: 1000 }, {
       ...DEFAULT_NEST,
       gapMm: 3,
       marginMm: 8,
-      optimizationLevel: 'fast',
     })
     expect(req.sheets[0]).toMatchObject({
       widthMm: 1600,
@@ -62,7 +61,12 @@ describe('toNestingRequest free-angle rotation', () => {
       marginMm: 8,
     })
     expect(req.settings.spacingMm).toBe(3)
-    expect(req.settings.optimizationLevel).toBe('fast')
+    for (const removedKey of [
+      ['optimization', 'Level'].join(''),
+      ['time', 'LimitMs'].join(''),
+    ]) {
+      expect(req.settings).not.toHaveProperty(removedKey)
+    }
   })
 
   it('derives identical-sheet inventory from the number of parts', () => {
@@ -82,8 +86,6 @@ describe('toNestingRequest free-angle rotation', () => {
   it('keeps one empty sheet definition for an empty request', () => {
     const req = toNestingRequest([], DEFAULT_SHEET, DEFAULT_NEST)
     expect(req.sheets[0]?.quantity).toBe(1)
-    expect(req.settings.timeLimitMs).toBeGreaterThan(0)
-    expect(Number.isFinite(req.settings.timeLimitMs)).toBe(true)
   })
 
   it.each([

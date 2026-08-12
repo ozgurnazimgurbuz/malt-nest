@@ -36,6 +36,7 @@
 - Modify: `src/state/defaults.ts`
 - Modify: `src/state/index.ts`
 - Modify: `src/ui/SettingsPanel.tsx`
+- Modify: `src/App.tsx`
 - Modify: `src/nesting/request.ts`
 - Modify: `src/nesting/request.test.ts`
 - Modify: `src/nesting/types.ts`
@@ -75,6 +76,10 @@ legacy optimizer in Task 8.
 Keep `rotationMode: 'free'`, the coarse angle list, arbitrary rotation, and
 pack bias.
 
+`App.handleAutoNest` also supplies the fixed internal `'fast'` label to the
+legacy `nestUiPreparing` signature until Task 7 removes that argument. It must
+not read an optimization level from `NestSettings`.
+
 - [ ] **Step 4: Update direct test fixtures mechanically**
 
 Remove `optimizationLevel` only from user `NestSettings` literals. Do not
@@ -93,7 +98,7 @@ Expected: exit 0.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/state src/ui/SettingsPanel.tsx src/nesting/request.ts src/nesting/request.test.ts src/nesting/types.ts
+git add src/state src/ui/SettingsPanel.tsx src/App.tsx src/nesting/request.ts src/nesting/request.test.ts src/nesting/types.ts
 git commit -m "refactor: remove nesting optimization modes"
 ```
 

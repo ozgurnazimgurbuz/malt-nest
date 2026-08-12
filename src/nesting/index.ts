@@ -1,7 +1,7 @@
 export {
+  automaticNestingEngine,
   blfNestingEngine,
   defaultNestingEngine,
-  evolutionaryNestingEngine,
 } from './engine'
 export type { NestingEngine, NestingRunOptions } from './engine'
 export { nest, nestAsync } from './nest'
@@ -11,8 +11,8 @@ export {
   runBottomLeftNest,
 } from './placement/blf'
 export { applyPlacement, placementBounds } from './placement/worldGeometry'
-export { compareBlfVsEvolutionary } from './optimization/benchmark'
-export { runEvolutionaryNest } from './optimization/geneticOptimizer'
+export { compareBlfVsAutomatic } from './optimization/benchmark'
+export { runAutomaticNest } from './optimization/automaticOptimizer'
 export { nestInputToRequest, toNestingRequest } from './request'
 export {
   combineScore,
@@ -39,7 +39,6 @@ export type {
   NestPlacement,
   NestProgress,
   NestProgressPhase,
-  OptimizationLevel,
   Placement,
   SheetDefinition,
   SheetResult,

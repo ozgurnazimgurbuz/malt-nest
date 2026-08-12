@@ -1,7 +1,10 @@
 import { runBottomLeftNest } from '../placement/blf'
-import { scoreNestingResult } from '../scoring/fitness'
+import {
+  compareNestingResults,
+  scoreNestingResult,
+} from '../scoring/fitness'
 import type { NestingRequest, NestingSuccess } from '../types'
-import { runEvolutionaryNest } from './geneticOptimizer'
+import { runAutomaticNest } from './automaticOptimizer'
 
 export type BenchmarkRow = {
   engine: string
@@ -10,11 +13,17 @@ export type BenchmarkRow = {
   wasteMm2: number
   placed: number
   unplaced: number
-  timeMs: number
+  firstChampionMs: number
+  finalMs: number
   fitness: number
 }
 
-function row(label: string, result: NestingSuccess): BenchmarkRow {
+function row(
+  label: string,
+  result: NestingSuccess,
+  firstChampionMs: number,
+  finalMs: number,
+): BenchmarkRow {
   const score = scoreNestingResult(result)
   return {
     engine: label,
@@ -23,30 +32,45 @@ function row(label: string, result: NestingSuccess): BenchmarkRow {
     wasteMm2: result.wasteMm2,
     placed: result.statistics.placedCount,
     unplaced: result.statistics.unplacedCount,
-    timeMs: result.calculationTimeMs,
+    firstChampionMs,
+    finalMs,
     fitness: score.total,
   }
 }
 
-/** Dev helper: compare BLF baseline vs evolutionary on the same request. */
-export function compareBlfVsEvolutionary(request: NestingRequest): {
+/** Dev helper: compare BLF baseline vs automatic search on the same request. */
+export function compareBlfVsAutomatic(request: NestingRequest): {
   blf: BenchmarkRow
-  evolutionary: BenchmarkRow
+  automatic: BenchmarkRow
   improved: boolean
 } {
+  const blfStartedAt = performance.now()
   const blfRaw = runBottomLeftNest(request)
-  const evoRaw = runEvolutionaryNest(request, {
+  const blfFinalMs = performance.now() - blfStartedAt
+  const automaticStartedAt = performance.now()
+  let automaticFirstChampionMs: number | null = null
+  const automaticRaw = runAutomaticNest(request, {
     seed: request.settings.seed,
-    timeLimitMs: request.settings.timeLimitMs,
+    onProgress: ({ bestSoFar }) => {
+      if (automaticFirstChampionMs == null && bestSoFar) {
+        automaticFirstChampionMs = performance.now() - automaticStartedAt
+      }
+    },
   })
-  if (blfRaw.status !== 'ok' || evoRaw.status !== 'ok') {
+  const automaticFinalMs = performance.now() - automaticStartedAt
+  if (blfRaw.status !== 'ok' || automaticRaw.status !== 'ok') {
     throw new Error('Benchmark requires successful nests')
   }
-  const blf = row('blf', blfRaw)
-  const evolutionary = row('evolutionary', evoRaw)
+  const blf = row('blf', blfRaw, blfFinalMs, blfFinalMs)
+  const automatic = row(
+    'automatic',
+    automaticRaw,
+    automaticFirstChampionMs ?? automaticFinalMs,
+    automaticFinalMs,
+  )
   return {
     blf,
-    evolutionary,
-    improved: evolutionary.fitness < blf.fitness - 1e-9,
+    automatic,
+    improved: compareNestingResults(automaticRaw, blfRaw) < 0,
   }
 }

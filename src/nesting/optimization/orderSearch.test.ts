@@ -34,8 +34,6 @@ const settings: NestingSettings = {
   allowArbitraryRotation: false,
   rotationMode: 'orthogonal',
   allowRotation: true,
-  optimizationLevel: 'fast',
-  timeLimitMs: 500,
 }
 
 describe('buildOrderCandidates', () => {
@@ -112,5 +110,27 @@ describe('buildOrderCandidates', () => {
       'shuffle_3',
       'shuffle_4',
     ]))
+  })
+
+  it('returns every deterministic metric order without random shuffles', () => {
+    const parts = prepareParts(
+      [
+        rect('a', 40, 10, 0),
+        rect('b', 20, 20, 1),
+        rect('c', 10, 30, 2),
+        rect('d', 15, 15, 3),
+      ],
+      settings,
+      { sortByArea: false },
+    )
+
+    const candidates = buildOrderCandidates(parts, createRng(7), {
+      includeRandom: false,
+    })
+
+    expect(candidates.length).toBeGreaterThan(0)
+    expect(candidates.every(({ name }) => !name.startsWith('shuffle_'))).toBe(true)
+    expect(candidates.map(({ order }) => order.join(',')))
+      .toEqual([...new Set(candidates.map(({ order }) => order.join(',')))])
   })
 })

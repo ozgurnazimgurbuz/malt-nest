@@ -1,12 +1,15 @@
 /**
- * Permanent deterministic nesting geometry fixtures + BLF / evolutionary runs.
+ * Permanent deterministic nesting geometry fixtures + BLF / automatic runs.
  */
 import type { GeometryPart } from './types'
 import { boundingBox, centroid, netArea } from './ops'
 import { runBottomLeftNest } from '../nesting/placement/blf'
-import { runEvolutionaryNest } from '../nesting/optimization/geneticOptimizer'
+import { runAutomaticNest } from '../nesting/optimization/automaticOptimizer'
 import type { NestingRequest, NestingSuccess } from '../nesting/types'
-import { scoreNestingResult } from '../nesting/scoring/fitness'
+import {
+  compareNestingResults,
+  scoreNestingResult,
+} from '../nesting/scoring/fitness'
 
 export type FixtureId =
   | 'rectangles'
@@ -229,7 +232,7 @@ export function buildFixture(id: FixtureId): GeometryPart[] {
 
 export type NestBenchRow = {
   fixture: FixtureId
-  engine: 'blf' | 'evolutionary'
+  engine: 'blf' | 'automatic'
   placed: number
   unplaced: number
   sheets: number
@@ -237,7 +240,9 @@ export type NestBenchRow = {
   waste: number
   compactness: number
   score: number
-  ms: number
+  firstChampionMs: number
+  finalMs: number
+  canonicalVsSeed: number | null
 }
 
 function requestFor(parts: GeometryPart[]): NestingRequest {
@@ -248,8 +253,6 @@ function requestFor(parts: GeometryPart[]): NestingRequest {
       spacingMm: 2,
       allowedRotations: [0, 90, 180, 270],
       allowArbitraryRotation: false,
-      optimizationLevel: 'fast',
-      timeLimitMs: 400,
       seed: 7,
       allowPartInPart: false,
     },
@@ -304,30 +307,44 @@ export function runNestingFixtureSuite(): NestBenchRow[] {
         waste: blf.wasteMm2,
         compactness: compactness(blf),
         score: sc.total,
-        ms: blfMs,
+        firstChampionMs: blfMs,
+        finalMs: blfMs,
+        canonicalVsSeed: null,
       })
     }
 
     const t1 = performance.now()
-    const evo = runEvolutionaryNest(req, {
+    let firstChampionMs: number | null = null
+    let exactSeed: NestingSuccess | null = null
+    const automatic = runAutomaticNest(req, {
       seed: 7,
-      timeLimitMs: 400,
-      maxGenerations: 40,
+      deterministic: true,
+      now: () => 0,
+      onProgress: ({ bestSoFar }) => {
+        if (exactSeed == null && bestSoFar) {
+          firstChampionMs = performance.now() - t1
+          exactSeed = bestSoFar
+        }
+      },
     })
-    const evoMs = performance.now() - t1
-    if (evo.status === 'ok') {
-      const sc = scoreNestingResult(evo)
+    const automaticMs = performance.now() - t1
+    if (automatic.status === 'ok') {
+      const sc = scoreNestingResult(automatic)
       rows.push({
         fixture: id,
-        engine: 'evolutionary',
-        placed: evo.statistics.placedCount,
-        unplaced: evo.statistics.unplacedCount,
-        sheets: evo.statistics.sheetCountUsed,
-        utilization: evo.utilization,
-        waste: evo.wasteMm2,
-        compactness: compactness(evo),
+        engine: 'automatic',
+        placed: automatic.statistics.placedCount,
+        unplaced: automatic.statistics.unplacedCount,
+        sheets: automatic.statistics.sheetCountUsed,
+        utilization: automatic.utilization,
+        waste: automatic.wasteMm2,
+        compactness: compactness(automatic),
         score: sc.total,
-        ms: evoMs,
+        firstChampionMs: firstChampionMs ?? automaticMs,
+        finalMs: automaticMs,
+        canonicalVsSeed: exactSeed == null
+          ? null
+          : compareNestingResults(automatic, exactSeed),
       })
     }
   }
@@ -338,7 +355,7 @@ export function formatNestBench(rows: NestBenchRow[]): string {
   const lines = ['Nesting fixture benchmark', '-------------------------']
   for (const r of rows) {
     lines.push(
-      `${r.fixture.padEnd(16)} ${r.engine.padEnd(12)} placed=${r.placed}/${r.placed + r.unplaced} sheets=${r.sheets} util=${(r.utilization * 100).toFixed(1)}% score=${r.score.toFixed(1)} ${r.ms.toFixed(1)}ms`,
+      `${r.fixture.padEnd(16)} ${r.engine.padEnd(12)} placed=${r.placed}/${r.placed + r.unplaced} sheets=${r.sheets} util=${(r.utilization * 100).toFixed(1)}% score=${r.score.toFixed(1)} first=${r.firstChampionMs.toFixed(1)}ms final=${r.finalMs.toFixed(1)}ms`,
     )
   }
   return lines.join('\n')

@@ -6,18 +6,15 @@ export type SheetSettings = {
   heightMm: number
 }
 
-export type UiOptimizationLevel = 'fast' | 'balanced' | 'deep'
-
 /** User-facing production parameters only (rotation/dayama are engine-owned). */
 export type NestSettings = {
   gapMm: number
   marginMm: number
-  optimizationLevel: UiOptimizationLevel
   allowPartInPart: boolean
   /** Developer/debug seed (deterministic). */
   seed: number
   /**
-   * Developer: ignore wall-clock truncation; generation/op limits only.
+   * Developer: use evaluation-count convergence only.
    * Same seed ⇒ same result.
    */
   deterministic: boolean
@@ -30,7 +27,7 @@ export type SvgMeta = {
   width: number | null
   /** Document height in millimeters when resolvable. */
   height: number | null
-  /** Real parsed GeometryPart count (Stage 2). */
+  /** Real parsed GeometryPart count. */
   partCount: number
   parts: GeometryPart[]
   warnings: ParserWarning[]

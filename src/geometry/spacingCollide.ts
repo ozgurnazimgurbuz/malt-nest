@@ -10,7 +10,7 @@ import {
  * Clearance uses boundary-to-boundary distance (edges + vertices), not
  * vertex-only checks. Clipper geometric offset is applied in NFP construction
  * (`computeNfp` / `offsetSolid`) where it is cached — not on every collide
- * call (that regresses evolutionary performance).
+ * call (that regresses search performance).
  */
 export function solidsCollide(
   a: Solid,

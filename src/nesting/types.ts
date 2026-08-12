@@ -1,7 +1,7 @@
 import type { GeometryPart } from '../geometry'
 import type { NestSettings as UiNestSettings, SheetSettings as UiSheetSettings } from '../state'
 
-/** @deprecated Prefer NestingRequest — kept for Stage 1–2 façade compatibility. */
+/** @deprecated Prefer NestingRequest — kept for façade compatibility. */
 export type NestInput = {
   parts: GeometryPart[]
   sheet: UiSheetSettings
@@ -17,8 +17,6 @@ export type SheetDefinition = {
   /** Optional remnant / offcut identifier (roadmap). */
   remnantId?: string | null
 }
-
-export type OptimizationLevel = 'fast' | 'balanced' | 'deep'
 
 export type RotationMode = 'orthogonal' | 'balanced' | 'deep' | 'free'
 
@@ -42,11 +40,9 @@ export type NestingSettings = {
   rotationMode?: RotationMode
   /** UI mirror: whether rotation is enabled at all. */
   allowRotation?: boolean
-  optimizationLevel: OptimizationLevel
-  timeLimitMs: number
-  /** Seed for evolutionary RNG (reproducible runs). */
+  /** Seed for search RNG (reproducible runs). */
   seed?: number
-  /** When true, ignore wall-clock truncation (generation/op limits only). */
+  /** When true, stop by evaluation-count convergence only. */
   deterministic?: boolean
   /** Future: kerf compensation (mm). */
   kerfMm?: number
@@ -162,11 +158,7 @@ export type NestProgress = {
   /** 0..1 — real engine progress (do not invent in UI). */
   ratio: number
   phase: NestProgressPhase
-  generation?: number
-  /** 1-based multi-start index when optimizing. */
-  multiStartIndex?: number
-  /** Total multi-starts for this preset. */
-  multiStartCount?: number
+  activity?: 'initial' | 'orders' | 'beam' | 'refine' | 'repair' | 'verify'
   bestScore?: number
   bestUtilization?: number
   sheetCount?: number
@@ -176,7 +168,6 @@ export type NestProgress = {
   placedCount?: number
   partCount?: number
   unplacedCount?: number
-  optimizationLevel?: OptimizationLevel
   /** Latest valid best (for STOP / hard-terminate fallback). */
   bestSoFar?: NestingSuccess
   /** Identifies progress snapshots from the traced canonical placement pass. */

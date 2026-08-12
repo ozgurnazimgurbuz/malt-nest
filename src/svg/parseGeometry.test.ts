@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { polygonArea } from '../geometry'
+import { validateGeometryPart } from '../nesting/core/validate'
 import { parseSvgGeometry } from './parseGeometry'
 
 const TOL = 0.5
@@ -13,6 +14,15 @@ function expectClose(a: number, b: number, tol = TOL) {
 }
 
 describe('parseSvgGeometry', () => {
+  it('keeps Illustrator cubic outlines simple after flattening', () => {
+    const doc = parseSvgGeometry(
+      svg('<path d="M3969.5,5874.8l-608.4-635.1,554.6-4.2c87.1-.7,150.5-77.7,167-159.7,21.2-105.6-52.2-224.9-168.6-225.4l-867.9-4.2.5-220.8,880.4,3.3c99,.4,187.2,50,254.4,118,97.5,98.7,137.3,234.6,110.1,374.2-38.2,196.2-209.9,337.4-422.4,332.5l394.8,419.3-294.6,2.1Z"/>', 'viewBox="0 0 9765.3 7403.3"'),
+    )
+
+    expect(doc.partCount).toBe(1)
+    expect(() => validateGeometryPart(doc.parts[0]!)).not.toThrow()
+  })
+
   it('1. rect', () => {
     const doc = parseSvgGeometry(svg('<rect x="10" y="20" width="30" height="40"/>'))
     expect(doc.partCount).toBe(1)

@@ -4,9 +4,18 @@
 import type { GeometryPart } from './types'
 import { boundingBox, centroid, netArea } from './ops'
 import { runBottomLeftNest } from '../nesting/placement/blf'
-import { runEvolutionaryNest } from '../nesting/optimization/geneticOptimizer'
-import type { NestingRequest } from '../nesting/types'
-import { scoreNestingResult } from '../nesting/scoring/fitness'
+import { runAutomaticNest } from '../nesting/optimization/automaticOptimizer'
+import type { NestingRequest, NestingSuccess } from '../nesting/types'
+import {
+  packedBoundsMm2,
+  scoreNestingResult,
+} from '../nesting/scoring/fitness'
+import { prepareParts } from '../nesting/core/prepare'
+import {
+  beginBlfProfiling,
+  endBlfProfiling,
+  getBlfProfileSnapshot,
+} from './debug/blfProfiler'
 
 export type FabId = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J'
 
@@ -138,16 +147,62 @@ export function buildFabFixture(id: FabId): GeometryPart[] {
   }
 }
 
-export type FabRow = {
-  id: FabId
-  engine: 'blf' | 'evolutionary'
-  placed: number
-  unplaced: number
-  sheets: number
+export type CanonicalMetrics = {
+  unplacedCount: number
+  placedCount: number
+  sheetCountUsed: number
+  wasteMm2: number
   utilization: number
-  waste: number
+  packedBoundsMm2: number
+}
+
+export type LegacyBenchmarkRow = CanonicalMetrics & {
+  fixtureId: FabId
+  preset: 'fast' | 'balanced' | 'deep'
+  medianElapsedMs: number
+}
+
+export type ChampionSnapshot = {
+  elapsedMs: number
+  engineId: string
+  metrics: CanonicalMetrics
   score: number
-  ms: number
+}
+
+export type AutomaticBenchmarkRun = {
+  timeline: ChampionSnapshot[]
+  firstChampionMs: number
+  finalMs: number
+  exactReplayMs: number
+  finalMetrics: CanonicalMetrics
+  finalScore: number
+}
+
+export type FabFixtureBenchmark = {
+  id: FabId
+  partCount: number
+  runs: AutomaticBenchmarkRun[]
+  firstChampionMedianMs: number
+  finalMedianMs: number
+  exactReplayMedianMs: number
+  seedWallMs: number
+  geometryMs: number
+  geometryShare: number
+  bestFinalMetrics: CanonicalMetrics
+  bestFinalScore: number
+}
+
+export type LegacyComparison = {
+  legacy: LegacyBenchmarkRow
+  reachedMs: number[]
+  automaticMedianMs: number
+  deltaMs: number
+  pass: boolean
+}
+
+export type FabBenchmark = {
+  fixtures: FabFixtureBenchmark[]
+  comparisons: LegacyComparison[]
 }
 
 function requestFor(parts: GeometryPart[], opts?: { partInPart?: boolean }): NestingRequest {
@@ -159,68 +214,280 @@ function requestFor(parts: GeometryPart[], opts?: { partInPart?: boolean }): Nes
       allowedRotations: [0, 90, 180, 270],
       allowArbitraryRotation: false,
       rotationMode: 'orthogonal',
-      optimizationLevel: 'fast',
-      timeLimitMs: 500,
       seed: 9,
       allowPartInPart: opts?.partInPart ?? false,
     },
   }
 }
 
-export function runFabBenchmark(): FabRow[] {
-  const ids: FabId[] = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
-  const rows: FabRow[] = []
-  for (const id of ids) {
-    const parts = buildFabFixture(id)
-    const req = requestFor(parts, { partInPart: id === 'G' })
-
-    const t0 = performance.now()
-    const blf = runBottomLeftNest(req)
-    const blfMs = performance.now() - t0
-    if (blf.status === 'ok') {
-      rows.push({
-        id,
-        engine: 'blf',
-        placed: blf.statistics.placedCount,
-        unplaced: blf.statistics.unplacedCount,
-        sheets: blf.statistics.sheetCountUsed,
-        utilization: blf.utilization,
-        waste: blf.wasteMm2,
-        score: scoreNestingResult(blf).total,
-        ms: blfMs,
-      })
-    }
-
-    const t1 = performance.now()
-    const evo = runEvolutionaryNest(req, {
-      seed: 9,
-      timeLimitMs: 500,
-      maxGenerations: 60,
-    })
-    const evoMs = performance.now() - t1
-    if (evo.status === 'ok') {
-      rows.push({
-        id,
-        engine: 'evolutionary',
-        placed: evo.statistics.placedCount,
-        unplaced: evo.statistics.unplacedCount,
-        sheets: evo.statistics.sheetCountUsed,
-        utilization: evo.utilization,
-        waste: evo.wasteMm2,
-        score: scoreNestingResult(evo).total,
-        ms: evoMs,
-      })
-    }
+export function canonicalMetrics(result: NestingSuccess): CanonicalMetrics {
+  return {
+    unplacedCount: result.statistics.unplacedCount,
+    placedCount: result.statistics.placedCount,
+    sheetCountUsed: result.statistics.sheetCountUsed,
+    wasteMm2: result.wasteMm2,
+    utilization: result.utilization,
+    packedBoundsMm2: packedBoundsMm2(result),
   }
-  return rows
 }
 
-export function formatFabBench(rows: FabRow[]): string {
-  const lines = ['Stage 9 fabrication fixtures', '----------------------------']
-  for (const r of rows) {
+/** Benchmark mirror of compareNestingResults; placedCount is report-only. */
+export function compareCanonicalMetrics(
+  a: CanonicalMetrics,
+  b: CanonicalMetrics,
+): number {
+  if (a.unplacedCount !== b.unplacedCount) {
+    return a.unplacedCount - b.unplacedCount
+  }
+  if (a.sheetCountUsed !== b.sheetCountUsed) {
+    return a.sheetCountUsed - b.sheetCountUsed
+  }
+  if (Math.abs(a.wasteMm2 - b.wasteMm2) > 1e-6) {
+    return a.wasteMm2 - b.wasteMm2
+  }
+  if (Math.abs(a.utilization - b.utilization) > 1e-9) {
+    return b.utilization - a.utilization
+  }
+  if (Math.abs(a.packedBoundsMm2 - b.packedBoundsMm2) > 1e-6) {
+    return a.packedBoundsMm2 - b.packedBoundsMm2
+  }
+  return 0
+}
+
+function median(values: number[]): number {
+  const sorted = values.slice().sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)]!
+}
+
+function measureAutomatic(request: NestingRequest): AutomaticBenchmarkRun {
+  const startedAt = performance.now()
+  const published: Array<{
+    elapsedMs: number
+    result: NestingSuccess
+  }> = []
+  const exactDurations: number[] = []
+  const result = runAutomaticNest(request, {
+    seed: 9,
+    onProgress: ({ bestSoFar }) => {
+      if (bestSoFar) {
+        published.push({
+          elapsedMs: performance.now() - startedAt,
+          result: bestSoFar,
+        })
+      }
+    },
+    onEvaluation: ({ kind, elapsedMs }) => {
+      if (kind === 'exact') exactDurations.push(elapsedMs)
+    },
+  })
+  const finalMs = performance.now() - startedAt
+  if (result.status !== 'ok') {
+    throw new Error('Automatic fabrication benchmark requires a successful nest')
+  }
+
+  const timeline: ChampionSnapshot[] = []
+  const append = (
+    elapsedMs: number,
+    champion: NestingSuccess,
+  ): void => {
+    const point = {
+      elapsedMs,
+      engineId: champion.engineId,
+      metrics: canonicalMetrics(champion),
+      score: scoreNestingResult(champion).total,
+    }
+    const previous = timeline.at(-1)
+    if (!previous) {
+      timeline.push(point)
+      return
+    }
+    const comparison = compareCanonicalMetrics(point.metrics, previous.metrics)
+    if (comparison < 0) timeline.push(point)
+    else if (comparison > 0) {
+      throw new Error('Automatic benchmark observed a regressing champion')
+    }
+  }
+  for (const point of published) append(point.elapsedMs, point.result)
+
+  const finalMetrics = canonicalMetrics(result)
+  const last = timeline.at(-1)
+  if (!last || compareCanonicalMetrics(finalMetrics, last.metrics) < 0) {
+    append(finalMs, result)
+  } else if (compareCanonicalMetrics(finalMetrics, last.metrics) > 0) {
+    throw new Error('Automatic benchmark final result regressed from its champion')
+  }
+
+  return {
+    timeline,
+    firstChampionMs: timeline[0]!.elapsedMs,
+    finalMs,
+    exactReplayMs: exactDurations.reduce((sum, elapsedMs) => sum + elapsedMs, 0),
+    finalMetrics,
+    finalScore: scoreNestingResult(result).total,
+  }
+}
+
+function profileAutomaticSeed(request: NestingRequest): {
+  seedWallMs: number
+  geometryMs: number
+  geometryShare: number
+} {
+  const preparedParts = prepareParts(request.parts, request.settings, {
+    sortByArea: true,
+  })
+  let seedWallMs = 0
+  let snapshot: ReturnType<typeof getBlfProfileSnapshot> | null = null
+  beginBlfProfiling()
+  try {
+    const startedAt = performance.now()
+    const result = runBottomLeftNest(request, {
+      freeAngleDepth: 'orthogonal',
+      nfpFidelity: 'simplified',
+      exactFallback: true,
+      preparedParts,
+      engineId: 'automatic-blf-v1',
+    })
+    seedWallMs = performance.now() - startedAt
+    if (result.status !== 'ok') {
+      throw new Error('Profiled automatic seed requires a successful nest')
+    }
+    snapshot = getBlfProfileSnapshot()
+  } finally {
+    endBlfProfiling()
+  }
+  if (!snapshot || !Number.isFinite(seedWallMs) || seedWallMs <= 0) {
+    throw new Error('Profiled automatic seed produced invalid timing data')
+  }
+  const clipperMs = Object.values(snapshot.clipper).reduce(
+    (sum, operation) => sum + operation.ms,
+    0,
+  )
+  const geometryMs = clipperMs + snapshot.collisionMs
+  return {
+    seedWallMs,
+    geometryMs,
+    geometryShare: geometryMs / seedWallMs,
+  }
+}
+
+export function runFabBenchmark(
+  baseline: readonly LegacyBenchmarkRow[],
+): FabBenchmark {
+  const ids: FabId[] = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J']
+  const fixtures: FabFixtureBenchmark[] = []
+  for (const id of ids) {
+    const parts = buildFabFixture(id)
+    const request = requestFor(parts, { partInPart: id === 'G' })
+    const warmup = runAutomaticNest(request, { seed: 9 })
+    if (warmup.status !== 'ok') {
+      throw new Error(`Automatic warm-up failed for fixture ${id}`)
+    }
+    const runs = Array.from({ length: 3 }, () => measureAutomatic(request))
+    const profile = profileAutomaticSeed(request)
+    const bestFinalRun = runs.reduce(
+      (best, run) =>
+        compareCanonicalMetrics(run.finalMetrics, best.finalMetrics) < 0
+          ? run
+          : best,
+      runs[0]!,
+    )
+    fixtures.push({
+      id,
+      partCount: parts.length,
+      runs,
+      firstChampionMedianMs: median(runs.map(({ firstChampionMs }) => firstChampionMs)),
+      finalMedianMs: median(runs.map(({ finalMs }) => finalMs)),
+      exactReplayMedianMs: median(runs.map(({ exactReplayMs }) => exactReplayMs)),
+      ...profile,
+      bestFinalMetrics: bestFinalRun.finalMetrics,
+      bestFinalScore: bestFinalRun.finalScore,
+    })
+  }
+
+  const byId = new Map(fixtures.map((fixture) => [fixture.id, fixture]))
+  const comparisons = baseline.map((legacy): LegacyComparison => {
+    const fixture = byId.get(legacy.fixtureId)
+    if (!fixture) throw new Error(`Missing fixture ${legacy.fixtureId}`)
+    const reachedMs = fixture.runs.map((run) =>
+      run.timeline.find(
+        ({ metrics }) => compareCanonicalMetrics(metrics, legacy) <= 0,
+      )?.elapsedMs ?? Number.POSITIVE_INFINITY,
+    )
+    const allReached = reachedMs.every(Number.isFinite)
+    const automaticMedianMs = allReached
+      ? median(reachedMs)
+      : Number.POSITIVE_INFINITY
+    return {
+      legacy,
+      reachedMs,
+      automaticMedianMs,
+      deltaMs: automaticMedianMs - legacy.medianElapsedMs,
+      pass: allReached && automaticMedianMs <= legacy.medianElapsedMs,
+    }
+  })
+  return { fixtures, comparisons }
+}
+
+function formatMs(value: number): string {
+  return Number.isFinite(value) ? `${value.toFixed(1)} ms` : 'not reached'
+}
+
+function formatMetrics(metrics: CanonicalMetrics, score: number): string {
+  return `placed=${metrics.placedCount}, unplaced=${metrics.unplacedCount}, sheets=${metrics.sheetCountUsed}, waste=${metrics.wasteMm2.toFixed(2)} mm², util=${(metrics.utilization * 100).toFixed(3)}%, bounds=${metrics.packedBoundsMm2.toFixed(2)} mm², score=${score.toFixed(3)}`
+}
+
+export function formatAutomaticBenchmarkReport(
+  benchmark: FabBenchmark,
+  context: { date: string; environment: string },
+): string {
+  const lines = [
+    '# Automatic Anytime Benchmark — After',
+    '',
+    `Generated ${context.date} on ${context.environment}. Timings are machine-relative and use one warm-up followed by three measured runs per fixture.`,
+    '',
+    'Geometry share is the raw `(clipper ms + collision ms) / profiled seed wall ms`; it is not clamped and may slightly exceed 100% from instrumentation overhead.',
+    '',
+    '## Fixture summary',
+    '',
+    '| Fixture | Parts | First champion median | Final median | Exact replay median | Geometry share | Best final canonical metrics |',
+    '| --- | ---: | ---: | ---: | ---: | ---: | --- |',
+  ]
+  for (const fixture of benchmark.fixtures) {
     lines.push(
-      `${r.id} ${r.engine.padEnd(12)} placed=${r.placed} unplaced=${r.unplaced} sheets=${r.sheets} util=${(r.utilization * 100).toFixed(1)}% waste=${r.waste.toFixed(0)} score=${r.score.toFixed(0)} ${r.ms.toFixed(0)}ms`,
+      `| ${fixture.id} | ${fixture.partCount} | ${formatMs(fixture.firstChampionMedianMs)} | ${formatMs(fixture.finalMedianMs)} | ${formatMs(fixture.exactReplayMedianMs)} | ${(fixture.geometryShare * 100).toFixed(1)}% raw (${fixture.geometryMs.toFixed(1)} / ${fixture.seedWallMs.toFixed(1)} ms) | ${formatMetrics(fixture.bestFinalMetrics, fixture.bestFinalScore)} |`,
     )
   }
+
+  lines.push(
+    '',
+    '## Legacy time-to-score comparison',
+    '',
+    '| Fixture | Preset | Legacy median | Automatic median time-to-score | Delta | Pass |',
+    '| --- | --- | ---: | ---: | ---: | --- |',
+  )
+  for (const comparison of benchmark.comparisons) {
+    lines.push(
+      `| ${comparison.legacy.fixtureId} | ${comparison.legacy.preset} | ${formatMs(comparison.legacy.medianElapsedMs)} | ${formatMs(comparison.automaticMedianMs)} | ${formatMs(comparison.deltaMs)} | ${comparison.pass ? 'PASS' : 'FAIL'} |`,
+    )
+  }
+
+  lines.push('', '## Champion timelines', '')
+  for (const fixture of benchmark.fixtures) {
+    const runs = fixture.runs.map((run, index) => {
+      const champions = run.timeline
+        .map(({ elapsedMs, metrics, score }) =>
+          `${formatMs(elapsedMs)} [${formatMetrics(metrics, score)}]`)
+        .join(' → ')
+      return `run ${index + 1}: ${champions} (final ${formatMs(run.finalMs)}, score=${run.finalScore.toFixed(3)})`
+    })
+    lines.push(`- **${fixture.id}** — ${runs.join('; ')}`)
+  }
+
+  const passed = benchmark.comparisons.every(({ pass }) => pass)
+  lines.push(
+    '',
+    `**Overall: ${passed ? 'PASS' : 'FAIL'} — ${benchmark.comparisons.filter(({ pass }) => pass).length}/${benchmark.comparisons.length} legacy rows reached within their median time.**`,
+    '',
+  )
   return lines.join('\n')
 }

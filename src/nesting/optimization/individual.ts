@@ -55,7 +55,7 @@ export function individualKey(
   ind: Individual,
   settingsKey: string,
 ): string {
-  return `${settingsKey}|${ind.order.join(',')}|${ind.rotations.join(',')}`
+  return JSON.stringify([settingsKey, ind.order, ind.rotations])
 }
 
 export function settingsCacheKey(input: {

@@ -6,7 +6,7 @@ import {
   type GeometryPart,
   type Point,
 } from '../../geometry'
-import { runEvolutionaryNest } from '../optimization/geneticOptimizer'
+import { runAutomaticNest } from '../optimization/automaticOptimizer'
 import {
   placeWithOrder,
   placeWithPlan,
@@ -60,8 +60,6 @@ function request(): NestingRequest {
       spacingMm: 0,
       allowedRotations: [0],
       allowArbitraryRotation: false,
-      optimizationLevel: 'fast',
-      timeLimitMs: 100,
       seed: 1,
     },
   }
@@ -73,13 +71,9 @@ describe('validateNestingRequest', () => {
     ['non-finite width', (req: NestingRequest) => { req.sheets[0]!.widthMm = Infinity }],
     ['infeasible margin', (req: NestingRequest) => { req.sheets[0]!.marginMm = 50 }],
     ['negative spacing', (req: NestingRequest) => { req.settings.spacingMm = -1 }],
-    ['non-finite time', (req: NestingRequest) => { req.settings.timeLimitMs = Infinity }],
     ['non-finite seed', (req: NestingRequest) => { req.settings.seed = Infinity }],
     ['non-finite quantity', (req: NestingRequest) => { req.sheets[0]!.quantity = Infinity }],
     ['fractional quantity', (req: NestingRequest) => { req.sheets[0]!.quantity = 1.5 }],
-    ['invalid optimization level', (req: NestingRequest) => {
-      req.settings.optimizationLevel = 'unbounded' as never
-    }],
     ['invalid rotation mode', (req: NestingRequest) => {
       req.settings.rotationMode = 'diagonal' as never
     }],
@@ -222,7 +216,7 @@ describe('validateNestingRequest', () => {
     req.sheets[0]!.marginMm = -5
 
     expect(() => runBottomLeftNest(req)).toThrow('margin')
-    expect(() => runEvolutionaryNest(req)).toThrow('margin')
+    expect(() => runAutomaticNest(req)).toThrow('margin')
     expect(() => placeWithOrder(req, ['a'])).toThrow('margin')
     expect(() =>
       placeWithPlan(req, { order: ['a'], rotations: [0] }),
