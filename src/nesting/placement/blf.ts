@@ -1,6 +1,7 @@
 import {
   beginNestingGeometrySession,
   findPartInPartPlacement,
+  geomEps,
   solidInsideRect,
   solidsCollide,
   type Solid,
@@ -26,7 +27,10 @@ import {
   freeAngleCascadeStages,
   usesFreeAngleCascade,
 } from '../optimization/rotations'
-import { validateNestingRequest } from '../core/validate'
+import {
+  geometryMetadataTolerance,
+  validateNestingRequest,
+} from '../core/validate'
 import {
   beginBlfProfiling,
   blfProfileBeginPart,
@@ -144,6 +148,48 @@ type SequenceEntry = {
 }
 
 type FitDimensions = { width: number; height: number }
+
+function ringPerimeter(points: ReadonlyArray<{ x: number; y: number }>): number {
+  let total = 0
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i]!
+    const b = points[(i + 1) % points.length]!
+    total += Math.hypot(b.x - a.x, b.y - a.y)
+  }
+  return total
+}
+
+function hasMaterialCapacity(entry: SequenceEntry, sheet: SheetState): boolean {
+  const areas = [...sheet.placed.map(({ area }) => area), entry.part.area]
+  const lowerTotal = areas.reduce(
+    (sum, area) => sum + Math.max(0, area - geometryMetadataTolerance(area)),
+    0,
+  )
+  const rings = [
+    ...sheet.placed.flatMap(({ solid }) => [solid.outer, ...solid.holes]),
+    { points: entry.part.sourceOuter },
+    ...entry.part.sourceHoles.map((points) => ({ points })),
+  ]
+  const boundaryLength = rings.reduce(
+    (sum, ring) => sum + ringPerimeter(ring.points),
+    0,
+  )
+  const tolerance = geomEps() * 10
+  const width = sheet.widthMm - sheet.marginMm * 2
+  const height = sheet.heightMm - sheet.marginMm * 2
+  const expandedSheetArea =
+    (width + tolerance * 2) * (height + tolerance * 2)
+  const collisionSlackMm2 =
+    tolerance * 2 * boundaryLength +
+    Math.PI * rings.length * tolerance * tolerance
+  const admittedArea = expandedSheetArea + collisionSlackMm2
+  const roundoffMm2 =
+    16 *
+    Number.EPSILON *
+    areas.length *
+    Math.max(1, lowerTotal, admittedArea)
+  return lowerTotal <= admittedArea + roundoffMm2
+}
 
 function freeAngleDimensions(part: PreparedPart): FitDimensions[] {
   return coarseFreeAngles(1).map((angle) => rotationDimensions(part, angle))
@@ -754,6 +800,7 @@ function placeSequence(
     sheet: SheetState,
     onAttempt: ((attempt: Omit<NestAttempt, 'sequence'>) => void) | undefined,
   ): PlaceCand | null => {
+    if (!hasMaterialCapacity(entry, sheet)) return null
     const { part, variant } = entry
     if (variant === 'best') {
       const depthForBest = freeDepth === 'seed' ? 'coarse' : freeDepth

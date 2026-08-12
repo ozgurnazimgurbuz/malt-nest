@@ -11,12 +11,18 @@ import {
 } from '../../geometry'
 import type { NestingRequest } from '../types'
 
+export const GEOMETRY_METADATA_RELATIVE_TOLERANCE = 1e-6
+
+export function geometryMetadataTolerance(value: number): number {
+  return GEOMETRY_METADATA_RELATIVE_TOLERANCE * Math.max(1, Math.abs(value))
+}
+
 function finite(value: number, name: string): void {
   if (!Number.isFinite(value)) throw new RangeError(`${name} must be finite`)
 }
 
 function matchesGeometry(actual: number, expected: number): boolean {
-  return Math.abs(actual - expected) <= 1e-6 * Math.max(1, Math.abs(expected))
+  return Math.abs(actual - expected) <= geometryMetadataTolerance(expected)
 }
 
 function ringSelfIntersects(points: GeometryPart['outer']['points']): boolean {
