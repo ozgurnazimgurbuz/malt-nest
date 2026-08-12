@@ -17,6 +17,7 @@ import {
   runAutomaticNest,
   type AutomaticOptions,
 } from './automaticOptimizer'
+import type { RepairOperator } from './destroyRepair'
 import { buildOrderCandidates } from './orderSearch'
 import { createRng } from './rng'
 
@@ -313,7 +314,7 @@ async function refinementScenario(refineWaste: number) {
   }
 }
 
-async function repairImprovementScenario() {
+async function repairImprovementScenario(repairExactWaste = 50) {
   const req = request([
     rect('a', 0, 83, 65),
     rect('b', 1, 42, 53),
@@ -324,6 +325,10 @@ async function repairImprovementScenario() {
   ])
   req.sheets = [{ widthMm: 500, heightMm: 500, marginMm: 0, quantity: 1 }]
   let phase: 'search' | 'repair' = 'search'
+  let latestProposalOperator: RepairOperator | null = null
+  const proposedOperators: RepairOperator[] = []
+  const rewardedProposalOperators: RepairOperator[] = []
+  const sequence: string[] = []
   vi.resetModules()
   vi.doMock('../placement/blf', async (importOriginal) => {
     const actual = await importOriginal<typeof import('../placement/blf')>()
@@ -344,7 +349,7 @@ async function repairImprovementScenario() {
         nestRequest,
         plan.order,
         phase === 'repair'
-          ? options.freeAngleDepth === 'refine' ? 40 : 50
+          ? options.freeAngleDepth === 'refine' ? 40 : repairExactWaste
           : options.freeAngleDepth === 'refine' ? 110 : 100,
       )
     return {
@@ -354,15 +359,35 @@ async function repairImprovementScenario() {
       placeWithPlanUnchecked,
     }
   })
+  vi.doMock('./destroyRepair', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./destroyRepair')>()
+    const proposeRepair: typeof actual.proposeRepair = (...args) => {
+      const proposal = actual.proposeRepair(...args)
+      latestProposalOperator = proposal.operator
+      proposedOperators.push(proposal.operator)
+      return proposal
+    }
+    const rewardRepairOperator: typeof actual.rewardRepairOperator = vi.fn(
+      (state, operator) => {
+        if (latestProposalOperator) {
+          rewardedProposalOperators.push(latestProposalOperator)
+        }
+        sequence.push(`reward:${operator}`)
+        actual.rewardRepairOperator(state, operator)
+      },
+    )
+    return { ...actual, proposeRepair, rewardRepairOperator }
+  })
 
   try {
     const { runAutomaticNest: runMockedAutomaticNest } =
       await import('./automaticOptimizer')
+    const repairModule = await import('./destroyRepair')
+    const rewardSpy = vi.mocked(repairModule.rewardRepairOperator)
     const controller = new AbortController()
-    const sequence: string[] = []
     let inRepair = false
     let repairStage: 'candidate' | 'refine' | 'seed' = 'candidate'
-    runMockedAutomaticNest(req, {
+    const result = runMockedAutomaticNest(req, {
       deterministic: true,
       now: () => 0,
       signal: controller.signal,
@@ -389,9 +414,16 @@ async function repairImprovementScenario() {
         if (kind === 'exact') repairStage = 'candidate'
       },
     })
-    return sequence
+    return {
+      proposedOperators,
+      result,
+      rewardedProposalOperators,
+      rewardSpy,
+      sequence,
+    }
   } finally {
     vi.doUnmock('../placement/blf')
+    vi.doUnmock('./destroyRepair')
     vi.resetModules()
   }
 }
@@ -629,7 +661,7 @@ describe('runAutomaticNest', () => {
   })
 
   it('refines a repair champion before evaluating another repair', async () => {
-    const sequence = await repairImprovementScenario()
+    const { sequence } = await repairImprovementScenario()
     const repairRank = sequence.indexOf('rank:candidate:true')
     const repairChampion = sequence.indexOf('repair:champion')
     const repairExact = sequence.indexOf('exact:candidate:true')
@@ -645,6 +677,31 @@ describe('runAutomaticNest', () => {
     expect(refineStart).toBeGreaterThan(repairExact)
     expect(refineExact).toBeGreaterThan(refineStart)
     expect(nextRepairRank === -1 || nextRepairRank > refineExact).toBe(true)
+  })
+
+  it('rewards the applied repair operator only after exact champion promotion', async () => {
+    const {
+      proposedOperators,
+      rewardedProposalOperators,
+      rewardSpy,
+      sequence,
+    } = await repairImprovementScenario()
+    const repairExact = sequence.indexOf('exact:candidate:true')
+    const rewardEvent = sequence.findIndex((event) => event.startsWith('reward:'))
+    const rewardedOperator = rewardSpy.mock.calls[0]?.[1]
+
+    expect(rewardSpy).toHaveBeenCalledTimes(1)
+    expect(rewardedOperator).toBe(proposedOperators.at(-1))
+    expect(rewardedProposalOperators).toEqual([rewardedOperator])
+    expect(rewardEvent).toBeGreaterThan(repairExact)
+  })
+
+  it('does not reward a repair operator when exact replay does not improve', async () => {
+    const { result, rewardSpy, sequence } = await repairImprovementScenario(100)
+
+    expect(result.status).toBe('ok')
+    expect(sequence).toContain('exact:candidate:false')
+    expect(rewardSpy).not.toHaveBeenCalled()
   })
 
   it('forwards attempt telemetry only from the initial BLF pass', () => {
