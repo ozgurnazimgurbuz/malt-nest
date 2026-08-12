@@ -318,6 +318,25 @@ it('cancels playback when the canvas context is unavailable', async () => {
   await view.cleanup()
 })
 
+it('cancels playback without crashing when initial canvas sizing throws', async () => {
+  context.setTransform.mockImplementationOnce(() => {
+    throw new Error('canvas resize failed')
+  })
+  const livePlayback = {
+    enqueueAttempts: vi.fn(),
+    enqueueCommit: vi.fn(),
+    attach: vi.fn(() => vi.fn()),
+    seal: vi.fn(async () => undefined),
+    cancel: vi.fn(),
+  } satisfies LiveNestPlayback
+
+  const view = await renderPreview(livePlayback)
+
+  expect(livePlayback.cancel).toHaveBeenCalledOnce()
+
+  await view.cleanup()
+})
+
 it('shows live placements and playback while nesting', async () => {
   const container = document.createElement('div')
   document.body.append(container)

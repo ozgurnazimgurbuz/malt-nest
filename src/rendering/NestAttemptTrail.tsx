@@ -163,18 +163,24 @@ export function NestAttemptTrail({
       },
     }
 
+    let observer: ResizeObserver | null = null
     const resize = () => {
-      width = canvas.clientWidth
-      height = canvas.clientHeight
-      if (width <= 0 || height <= 0) return
-      const scale = window.devicePixelRatio || 1
-      canvas.width = Math.max(1, Math.round(width * scale))
-      canvas.height = Math.max(1, Math.round(height * scale))
-      context.setTransform(scale, 0, 0, scale, 0, 0)
-      draw(performance.now())
+      try {
+        width = canvas.clientWidth
+        height = canvas.clientHeight
+        if (width <= 0 || height <= 0) return
+        const scale = window.devicePixelRatio || 1
+        canvas.width = Math.max(1, Math.round(width * scale))
+        canvas.height = Math.max(1, Math.round(height * scale))
+        context.setTransform(scale, 0, 0, scale, 0, 0)
+        draw(performance.now())
+      } catch {
+        observer?.disconnect()
+        playback.cancel()
+      }
     }
 
-    const observer =
+    observer =
       typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(resize)
     observer?.observe(canvas)
     resize()
