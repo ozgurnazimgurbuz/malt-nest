@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { NestingSuccess } from '../types'
-import { individualKey, isValidIndividual, type Individual } from './individual'
+import { isValidIndividual, type Individual } from './individual'
 import { expandOrder, selectBeam, type RankedCandidate } from './beamSearch'
 import { createRng } from './rng'
 
@@ -92,21 +92,37 @@ describe('bounded order beam helpers', () => {
     ])
   })
 
-  it('selects canonically best distinct candidates, not the lowest weighted score', () => {
+  it('selects in canonical order despite deliberately reversed scalar scores', () => {
     const candidates = [
-      candidate('partial', result({ unplaced: 1, sheets: 1, waste: 0 })),
-      candidate('complete', result({ sheets: 2, waste: 99_999 })),
-      candidate('best', result({ sheets: 1, waste: 200 })),
-      candidate('duplicate-best', result({ sheets: 1, waste: 0 })),
+      {
+        ...candidate('partial', result({ unplaced: 1, sheets: 1, waste: 0 })),
+        score: { total: 0 },
+      },
+      {
+        ...candidate('two-sheets', result({ sheets: 2, waste: 0 })),
+        score: { total: 1 },
+      },
+      {
+        ...candidate('more-waste', result({ waste: 11, utilization: 0.99, boundsArea: 1 })),
+        score: { total: 2 },
+      },
+      {
+        ...candidate('lower-utilization', result({ waste: 10, utilization: 0.7, boundsArea: 1 })),
+        score: { total: 3 },
+      },
+      {
+        ...candidate('looser-bounds', result({ waste: 10, utilization: 0.8, boundsArea: 30 })),
+        score: { total: 4 },
+      },
+      {
+        ...candidate('best', result({ waste: 10, utilization: 0.8, boundsArea: 20 })),
+        score: { total: 5 },
+      },
     ]
-    candidates[3]!.individual = candidates[2]!.individual
 
-    const selected = selectBeam(candidates, 2)
+    const selected = selectBeam(candidates, 6)
 
-    expect(selected).toEqual([candidates[2], candidates[1]])
-    expect(individualKey(selected[0]!.individual, '')).toBe(
-      individualKey(candidates[2]!.individual, ''),
-    )
+    expect(selected).toEqual([...candidates].reverse())
   })
 
   it('uses the supplied settings key for deduplication and keeps stable ties without mutation', () => {
