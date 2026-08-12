@@ -6,7 +6,10 @@ import { boundingBox, centroid, netArea } from './ops'
 import { runBottomLeftNest } from '../nesting/placement/blf'
 import { runAutomaticNest } from '../nesting/optimization/automaticOptimizer'
 import type { NestingRequest, NestingSuccess } from '../nesting/types'
-import { packedBoundsMm2 } from '../nesting/scoring/fitness'
+import {
+  packedBoundsMm2,
+  scoreNestingResult,
+} from '../nesting/scoring/fitness'
 import { prepareParts } from '../nesting/core/prepare'
 import {
   beginBlfProfiling,
@@ -163,6 +166,7 @@ export type ChampionSnapshot = {
   elapsedMs: number
   engineId: string
   metrics: CanonicalMetrics
+  score: number
 }
 
 export type AutomaticBenchmarkRun = {
@@ -171,6 +175,7 @@ export type AutomaticBenchmarkRun = {
   finalMs: number
   exactReplayMs: number
   finalMetrics: CanonicalMetrics
+  finalScore: number
 }
 
 export type FabFixtureBenchmark = {
@@ -184,6 +189,7 @@ export type FabFixtureBenchmark = {
   geometryMs: number
   geometryShare: number
   bestFinalMetrics: CanonicalMetrics
+  bestFinalScore: number
 }
 
 export type LegacyComparison = {
@@ -288,6 +294,7 @@ function measureAutomatic(request: NestingRequest): AutomaticBenchmarkRun {
       elapsedMs,
       engineId: champion.engineId,
       metrics: canonicalMetrics(champion),
+      score: scoreNestingResult(champion).total,
     }
     const previous = timeline.at(-1)
     if (!previous) {
@@ -316,6 +323,7 @@ function measureAutomatic(request: NestingRequest): AutomaticBenchmarkRun {
     finalMs,
     exactReplayMs: exactDurations.reduce((sum, elapsedMs) => sum + elapsedMs, 0),
     finalMetrics,
+    finalScore: scoreNestingResult(result).total,
   }
 }
 
@@ -376,12 +384,12 @@ export function runFabBenchmark(
     }
     const runs = Array.from({ length: 3 }, () => measureAutomatic(request))
     const profile = profileAutomaticSeed(request)
-    const bestFinalMetrics = runs.reduce(
+    const bestFinalRun = runs.reduce(
       (best, run) =>
-        compareCanonicalMetrics(run.finalMetrics, best) < 0
-          ? run.finalMetrics
+        compareCanonicalMetrics(run.finalMetrics, best.finalMetrics) < 0
+          ? run
           : best,
-      runs[0]!.finalMetrics,
+      runs[0]!,
     )
     fixtures.push({
       id,
@@ -391,7 +399,8 @@ export function runFabBenchmark(
       finalMedianMs: median(runs.map(({ finalMs }) => finalMs)),
       exactReplayMedianMs: median(runs.map(({ exactReplayMs }) => exactReplayMs)),
       ...profile,
-      bestFinalMetrics,
+      bestFinalMetrics: bestFinalRun.finalMetrics,
+      bestFinalScore: bestFinalRun.finalScore,
     })
   }
 
@@ -423,8 +432,8 @@ function formatMs(value: number): string {
   return Number.isFinite(value) ? `${value.toFixed(1)} ms` : 'not reached'
 }
 
-function formatMetrics(metrics: CanonicalMetrics): string {
-  return `placed=${metrics.placedCount}, unplaced=${metrics.unplacedCount}, sheets=${metrics.sheetCountUsed}, waste=${metrics.wasteMm2.toFixed(2)} mm², util=${(metrics.utilization * 100).toFixed(3)}%, bounds=${metrics.packedBoundsMm2.toFixed(2)} mm²`
+function formatMetrics(metrics: CanonicalMetrics, score: number): string {
+  return `placed=${metrics.placedCount}, unplaced=${metrics.unplacedCount}, sheets=${metrics.sheetCountUsed}, waste=${metrics.wasteMm2.toFixed(2)} mm², util=${(metrics.utilization * 100).toFixed(3)}%, bounds=${metrics.packedBoundsMm2.toFixed(2)} mm², score=${score.toFixed(3)}`
 }
 
 export function formatAutomaticBenchmarkReport(
@@ -445,7 +454,7 @@ export function formatAutomaticBenchmarkReport(
   ]
   for (const fixture of benchmark.fixtures) {
     lines.push(
-      `| ${fixture.id} | ${fixture.partCount} | ${formatMs(fixture.firstChampionMedianMs)} | ${formatMs(fixture.finalMedianMs)} | ${formatMs(fixture.exactReplayMedianMs)} | ${(fixture.geometryShare * 100).toFixed(1)}% raw (${fixture.geometryMs.toFixed(1)} / ${fixture.seedWallMs.toFixed(1)} ms) | ${formatMetrics(fixture.bestFinalMetrics)} |`,
+      `| ${fixture.id} | ${fixture.partCount} | ${formatMs(fixture.firstChampionMedianMs)} | ${formatMs(fixture.finalMedianMs)} | ${formatMs(fixture.exactReplayMedianMs)} | ${(fixture.geometryShare * 100).toFixed(1)}% raw (${fixture.geometryMs.toFixed(1)} / ${fixture.seedWallMs.toFixed(1)} ms) | ${formatMetrics(fixture.bestFinalMetrics, fixture.bestFinalScore)} |`,
     )
   }
 
@@ -466,9 +475,10 @@ export function formatAutomaticBenchmarkReport(
   for (const fixture of benchmark.fixtures) {
     const runs = fixture.runs.map((run, index) => {
       const champions = run.timeline
-        .map(({ elapsedMs, metrics }) => `${formatMs(elapsedMs)} [${formatMetrics(metrics)}]`)
+        .map(({ elapsedMs, metrics, score }) =>
+          `${formatMs(elapsedMs)} [${formatMetrics(metrics, score)}]`)
         .join(' → ')
-      return `run ${index + 1}: ${champions} (final ${formatMs(run.finalMs)})`
+      return `run ${index + 1}: ${champions} (final ${formatMs(run.finalMs)}, score=${run.finalScore.toFixed(3)})`
     })
     lines.push(`- **${fixture.id}** — ${runs.join('; ')}`)
   }

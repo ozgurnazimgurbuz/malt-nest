@@ -26,6 +26,20 @@ Open the printed local URL (usually `http://localhost:5173`).
 | `npm run test` | Geometry unit tests |
 | `npm run preview` | Preview production build |
 
+The strict automatic-nesting benchmark is opt-in because it runs one warm-up
+and three measured samples for each fabrication fixture:
+
+```bash
+RUN_AUTOMATIC_BENCHMARK=1 npm test -- --run src/geometry/fabFixtures.test.ts
+```
+
+To rerun the same strict acceptance checks and update the benchmark report only
+when all comparisons pass:
+
+```bash
+UPDATE_BENCHMARK_DOCS=1 npm test -- --run src/geometry/fabFixtures.test.ts
+```
+
 ## Module layout
 
 | Path | Role |
@@ -44,11 +58,11 @@ Open the printed local URL (usually `http://localhost:5173`).
 - Internal units: **millimeters**
 - Winding: outer contours **CCW**, holes **CW**
 - Curve tolerance: `curveToleranceMm` (default `0.25`)
-- AUTO NEST immediately publishes an exact-validated initial layout, then
-  automatically searches for improvements.
+- AUTO NEST uses one progressive engine. It immediately publishes an
+  exact-validated initial layout, then automatically searches for improvements.
 - A candidate replaces the current layout only when exact replay confirms it is
   strictly better.
-- Search stops on convergence, its safety limit, or STOP. Stopping preserves the
-  best exact-validated layout found so far.
+- Search stops on convergence, its safety limit, or STOP. Cancellation returns
+  the best exact-validated layout found so far.
 - Orthogonal rotations are explored first; when arbitrary rotation is enabled,
   additional angles are refined progressively.

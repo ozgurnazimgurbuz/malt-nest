@@ -25,8 +25,9 @@ const REPORT_PATH = resolve(
 )
 const FIXTURE_IDS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J'] as const
 const PRESETS = ['fast', 'balanced', 'deep'] as const
+const UPDATE_BENCHMARK_DOCS = process.env.UPDATE_BENCHMARK_DOCS === '1'
 const RUN_AUTOMATIC_BENCHMARK =
-  process.env.RUN_AUTOMATIC_BENCHMARK === '1'
+  process.env.RUN_AUTOMATIC_BENCHMARK === '1' || UPDATE_BENCHMARK_DOCS
 const benchmarkIt = RUN_AUTOMATIC_BENCHMARK ? it : it.skip
 const BASELINE_KEYS = [
   'fixtureId',
@@ -147,6 +148,7 @@ describe.sequential('automatic anytime fabrication benchmark', () => {
       expect(fixture.runs).toHaveLength(3)
       expect(Number.isFinite(fixture.geometryShare)).toBe(true)
       expect(fixture.geometryShare).toBeGreaterThanOrEqual(0)
+      expect(Number.isFinite(fixture.bestFinalScore)).toBe(true)
       for (const run of fixture.runs) {
         expect(run.timeline.length).toBeGreaterThan(0)
         expect(run.timeline[0]?.engineId).toBe('automatic-blf-v1')
@@ -154,6 +156,8 @@ describe.sequential('automatic anytime fabrication benchmark', () => {
         expect(Number.isFinite(run.exactReplayMs)).toBe(true)
         expect(run.exactReplayMs).toBeGreaterThanOrEqual(0)
         expect(run.exactReplayMs).toBeLessThanOrEqual(run.finalMs + 5)
+        expect(Number.isFinite(run.finalScore)).toBe(true)
+        expect(run.timeline.every(({ score }) => Number.isFinite(score))).toBe(true)
         for (let i = 1; i < run.timeline.length; i++) {
           const previous = run.timeline[i - 1]!
           const current = run.timeline[i]!
@@ -181,9 +185,10 @@ describe.sequential('automatic anytime fabrication benchmark', () => {
           automaticBestPackedBoundsMm2:
             fixture.bestFinalMetrics.packedBoundsMm2,
           timelines: fixture.runs.map(({ timeline }) =>
-            timeline.map(({ elapsedMs, metrics }) => ({
+            timeline.map(({ elapsedMs, metrics, score }) => ({
               elapsedMs,
               packedBoundsMm2: metrics.packedBoundsMm2,
+              score,
             })),
           ),
         }
@@ -218,6 +223,7 @@ describe.sequential('automatic anytime fabrication benchmark', () => {
     expect(report).toContain('## Fixture summary')
     expect(report).toContain('## Legacy time-to-score comparison')
     expect(report).toContain('## Champion timelines')
+    expect(report).toContain('score=')
     expect(report).toContain('**Overall: PASS')
     expect(report).not.toMatch(/TBD|NaN|Infinity/)
     expect(report).not.toMatch(/\|[ \t]*\|/)
@@ -228,10 +234,7 @@ describe.sequential('automatic anytime fabrication benchmark', () => {
       report.match(/^\| [A-J] \| (?:fast|balanced|deep) \|/gm),
     ).toHaveLength(30)
 
-    if (
-      RUN_AUTOMATIC_BENCHMARK &&
-      process.env.UPDATE_BENCHMARK_DOCS === '1'
-    ) {
+    if (UPDATE_BENCHMARK_DOCS) {
       writeFileSync(REPORT_PATH, report)
     }
   }, 600_000)
