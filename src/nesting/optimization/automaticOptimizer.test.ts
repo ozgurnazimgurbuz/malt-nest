@@ -28,8 +28,6 @@ const settings: NestingSettings = {
   allowArbitraryRotation: true,
   allowRotation: true,
   rotationMode: 'free',
-  optimizationLevel: 'fast',
-  timeLimitMs: 500,
   seed: 7,
 }
 

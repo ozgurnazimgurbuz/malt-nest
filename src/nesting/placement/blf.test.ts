@@ -30,8 +30,6 @@ const baseSettings: NestingSettings = {
   allowedRotations: [0],
   rotationStepDeg: null,
   allowArbitraryRotation: false,
-  optimizationLevel: 'fast',
-  timeLimitMs: 5000,
 }
 
 function rectPart(

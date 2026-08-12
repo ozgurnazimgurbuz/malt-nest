@@ -89,15 +89,11 @@ describe('Stage 10A/10F nest progress UI state', () => {
     expect(ui?.statusLine).toBe('Initial layout')
   })
 
-  it('maps order search separately and ignores transitional mode fields', () => {
+  it('maps order search from structured activity', () => {
     const search = nestUiFromEngineProgress(
       {
         ratio: 0.48,
         phase: 'optimize',
-        optimizationLevel: 'deep',
-        multiStartIndex: 3,
-        multiStartCount: 8,
-        generation: 42,
         placedCount: 16,
         partCount: 16,
         jobId: 'j1',
@@ -110,9 +106,7 @@ describe('Stage 10A/10F nest progress UI state', () => {
     expect(search?.title).toBe('Sıralamalar deneniyor')
     expect(search?.percent).toBe(48)
     expect(search?.detail).toBe('Parça 16 / 16')
-    expect(search?.detail).not.toMatch(/Start|Generation|Fast|Balanced|Deep/)
     expect(search?.statusLine).toBe('Boyuta göre sıralama deneniyor')
-    expect(search).not.toHaveProperty('optimizationLevel')
 
     const improve = nestUiFromEngineProgress(
       {
@@ -149,7 +143,7 @@ describe('Stage 10A/10F nest progress UI state', () => {
       ratio: 0.99,
       phase: 'optimize',
       jobId: 'job-old',
-      generation: 999,
+      activity: 'beam',
     }
     const next = applyEngineProgress(prev, stale, 'job-active')
     expect(next).toBe(prev)
@@ -162,7 +156,7 @@ describe('Stage 10A/10F nest progress UI state', () => {
         ratio: 0.6,
         phase: 'optimize',
         jobId: 'j1',
-        generation: 10,
+        activity: 'beam',
       },
       'j1',
     )!
@@ -172,17 +166,14 @@ describe('Stage 10A/10F nest progress UI state', () => {
     expect(stopping.statusLine).toContain('en iyi')
     expect(stopping.percent).toBe(60)
     expect(stopping.awaitingStop).toBe(true)
-    expect(stopping).not.toHaveProperty('optimizationLevel')
   })
 
-  it('preparing and cancellation carry iteration without an optimization level', () => {
+  it('preparing and cancellation carry iteration', () => {
     const preparing = nestUiPreparing('j1', 16, 3)
     const cancelled = nestUiCancelledPlain('j1', 'Stopped', preparing)
 
     expect(preparing.iteration).toBe(3)
-    expect(preparing).not.toHaveProperty('optimizationLevel')
     expect(cancelled.iteration).toBe(3)
-    expect(cancelled).not.toHaveProperty('optimizationLevel')
   })
 
   it('completed summary keeps card visible at 100%', () => {

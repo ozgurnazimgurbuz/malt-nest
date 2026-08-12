@@ -18,8 +18,6 @@ export type SheetDefinition = {
   remnantId?: string | null
 }
 
-export type OptimizationLevel = 'fast' | 'balanced' | 'deep'
-
 export type RotationMode = 'orthogonal' | 'balanced' | 'deep' | 'free'
 
 /**
@@ -42,11 +40,9 @@ export type NestingSettings = {
   rotationMode?: RotationMode
   /** UI mirror: whether rotation is enabled at all. */
   allowRotation?: boolean
-  optimizationLevel: OptimizationLevel
-  timeLimitMs: number
-  /** Seed for evolutionary RNG (reproducible runs). */
+  /** Seed for search RNG (reproducible runs). */
   seed?: number
-  /** When true, ignore wall-clock truncation (generation/op limits only). */
+  /** When true, stop by evaluation-count convergence only. */
   deterministic?: boolean
   /** Future: kerf compensation (mm). */
   kerfMm?: number
@@ -163,11 +159,6 @@ export type NestProgress = {
   ratio: number
   phase: NestProgressPhase
   activity?: 'initial' | 'orders' | 'beam' | 'refine' | 'repair' | 'verify'
-  generation?: number
-  /** 1-based multi-start index when optimizing. */
-  multiStartIndex?: number
-  /** Total multi-starts for this preset. */
-  multiStartCount?: number
   bestScore?: number
   bestUtilization?: number
   sheetCount?: number
@@ -177,7 +168,6 @@ export type NestProgress = {
   placedCount?: number
   partCount?: number
   unplacedCount?: number
-  optimizationLevel?: OptimizationLevel
   /** Latest valid best (for STOP / hard-terminate fallback). */
   bestSoFar?: NestingSuccess
   /** Identifies progress snapshots from the traced canonical placement pass. */

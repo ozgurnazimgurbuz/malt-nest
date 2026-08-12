@@ -93,8 +93,6 @@ const settings: NestingSettings = {
   allowedRotations: [0, 90, 180, 270],
   allowArbitraryRotation: false,
   rotationMode: 'orthogonal',
-  optimizationLevel: 'fast',
-  timeLimitMs: 500,
   seed: 1,
   allowPartInPart: false,
 }

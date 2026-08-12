@@ -19,7 +19,7 @@ export function toNestingRequest(
     },
   ]
 
-  // The gene pool uses the coarse grid; full placement checks every integer degree.
+  // Search starts on the coarse grid; full placement checks every integer degree.
   const nestingSettings: NestingSettings = {
     spacingMm: settings.gapMm,
     allowedRotations: coarseFreeAngles(),
@@ -28,8 +28,6 @@ export function toNestingRequest(
     allowArbitraryRotation: true,
     rotationMode: 'free',
     allowRotation: true,
-    optimizationLevel: 'fast',
-    timeLimitMs: 5_000,
     seed: settings.seed,
     deterministic: settings.deterministic,
     allowPartInPart: settings.allowPartInPart,

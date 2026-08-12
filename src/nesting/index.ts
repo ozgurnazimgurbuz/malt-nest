@@ -11,7 +11,7 @@ export {
   runBottomLeftNest,
 } from './placement/blf'
 export { applyPlacement, placementBounds } from './placement/worldGeometry'
-export { compareBlfVsEvolutionary } from './optimization/benchmark'
+export { compareBlfVsAutomatic } from './optimization/benchmark'
 export { runAutomaticNest } from './optimization/automaticOptimizer'
 export { nestInputToRequest, toNestingRequest } from './request'
 export {
@@ -39,7 +39,6 @@ export type {
   NestPlacement,
   NestProgress,
   NestProgressPhase,
-  OptimizationLevel,
   Placement,
   SheetDefinition,
   SheetResult,

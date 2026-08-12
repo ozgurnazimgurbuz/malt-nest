@@ -168,8 +168,6 @@ export function runGeometryBenchmark(): BenchRow[] {
       spacingMm: 2,
       allowedRotations: [0, 90, 180, 270],
       allowArbitraryRotation: false,
-      optimizationLevel: 'fast',
-      timeLimitMs: 200,
       seed: 1,
       allowPartInPart: false,
     },

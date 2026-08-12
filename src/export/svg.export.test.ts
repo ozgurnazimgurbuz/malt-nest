@@ -379,8 +379,6 @@ describe('Stage 8 — SVG export', () => {
         spacingMm: 2,
         allowedRotations: [0, 90, 180, 270],
         allowArbitraryRotation: false,
-        optimizationLevel: 'fast' as const,
-        timeLimitMs: 200,
         seed: 1,
         allowPartInPart: false,
       },

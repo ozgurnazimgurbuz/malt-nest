@@ -23,8 +23,6 @@ const request: NestingRequest = {
     spacingMm: 0,
     allowedRotations: [0],
     allowArbitraryRotation: false,
-    optimizationLevel: 'fast',
-    timeLimitMs: 100,
   },
 }
 
@@ -131,7 +129,6 @@ describe('WorkerNestingEngine', () => {
         deterministic: false,
       }),
     )
-    expect(automaticNest.mock.calls[0]![1]).not.toHaveProperty('timeLimitMs')
   })
 
   it('opts into tracing and forwards only matching attempt batches', async () => {

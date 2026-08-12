@@ -4,9 +4,12 @@
 import type { GeometryPart } from './types'
 import { boundingBox, centroid, netArea } from './ops'
 import { runBottomLeftNest } from '../nesting/placement/blf'
-import { runEvolutionaryNest } from '../nesting/optimization/geneticOptimizer'
-import type { NestingRequest } from '../nesting/types'
-import { scoreNestingResult } from '../nesting/scoring/fitness'
+import { runAutomaticNest } from '../nesting/optimization/automaticOptimizer'
+import type { NestingRequest, NestingSuccess } from '../nesting/types'
+import {
+  compareNestingResults,
+  scoreNestingResult,
+} from '../nesting/scoring/fitness'
 
 export type FabId = 'A' | 'B' | 'C' | 'D' | 'E' | 'F' | 'G' | 'H' | 'I' | 'J'
 
@@ -140,14 +143,16 @@ export function buildFabFixture(id: FabId): GeometryPart[] {
 
 export type FabRow = {
   id: FabId
-  engine: 'blf' | 'evolutionary'
+  engine: 'blf' | 'automatic'
   placed: number
   unplaced: number
   sheets: number
   utilization: number
   waste: number
   score: number
-  ms: number
+  firstChampionMs: number
+  finalMs: number
+  canonicalVsSeed: number | null
 }
 
 function requestFor(parts: GeometryPart[], opts?: { partInPart?: boolean }): NestingRequest {
@@ -159,8 +164,6 @@ function requestFor(parts: GeometryPart[], opts?: { partInPart?: boolean }): Nes
       allowedRotations: [0, 90, 180, 270],
       allowArbitraryRotation: false,
       rotationMode: 'orthogonal',
-      optimizationLevel: 'fast',
-      timeLimitMs: 500,
       seed: 9,
       allowPartInPart: opts?.partInPart ?? false,
     },
@@ -187,28 +190,40 @@ export function runFabBenchmark(): FabRow[] {
         utilization: blf.utilization,
         waste: blf.wasteMm2,
         score: scoreNestingResult(blf).total,
-        ms: blfMs,
+        firstChampionMs: blfMs,
+        finalMs: blfMs,
+        canonicalVsSeed: null,
       })
     }
 
-    const t1 = performance.now()
-    const evo = runEvolutionaryNest(req, {
+    const automaticStartedAt = performance.now()
+    let firstChampionMs: number | null = null
+    let exactSeed = null as NestingSuccess | null
+    const automatic = runAutomaticNest(req, {
       seed: 9,
-      timeLimitMs: 500,
-      maxGenerations: 60,
+      onProgress: ({ bestSoFar }) => {
+        if (firstChampionMs == null && bestSoFar) {
+          firstChampionMs = performance.now() - automaticStartedAt
+          exactSeed = bestSoFar
+        }
+      },
     })
-    const evoMs = performance.now() - t1
-    if (evo.status === 'ok') {
+    const automaticMs = performance.now() - automaticStartedAt
+    if (automatic.status === 'ok') {
       rows.push({
         id,
-        engine: 'evolutionary',
-        placed: evo.statistics.placedCount,
-        unplaced: evo.statistics.unplacedCount,
-        sheets: evo.statistics.sheetCountUsed,
-        utilization: evo.utilization,
-        waste: evo.wasteMm2,
-        score: scoreNestingResult(evo).total,
-        ms: evoMs,
+        engine: 'automatic',
+        placed: automatic.statistics.placedCount,
+        unplaced: automatic.statistics.unplacedCount,
+        sheets: automatic.statistics.sheetCountUsed,
+        utilization: automatic.utilization,
+        waste: automatic.wasteMm2,
+        score: scoreNestingResult(automatic).total,
+        firstChampionMs: firstChampionMs ?? automaticMs,
+        finalMs: automaticMs,
+        canonicalVsSeed: exactSeed == null
+          ? null
+          : compareNestingResults(automatic, exactSeed),
       })
     }
   }
@@ -219,7 +234,7 @@ export function formatFabBench(rows: FabRow[]): string {
   const lines = ['Stage 9 fabrication fixtures', '----------------------------']
   for (const r of rows) {
     lines.push(
-      `${r.id} ${r.engine.padEnd(12)} placed=${r.placed} unplaced=${r.unplaced} sheets=${r.sheets} util=${(r.utilization * 100).toFixed(1)}% waste=${r.waste.toFixed(0)} score=${r.score.toFixed(0)} ${r.ms.toFixed(0)}ms`,
+      `${r.id} ${r.engine.padEnd(12)} placed=${r.placed} unplaced=${r.unplaced} sheets=${r.sheets} util=${(r.utilization * 100).toFixed(1)}% waste=${r.waste.toFixed(0)} score=${r.score.toFixed(0)} first=${r.firstChampionMs.toFixed(0)}ms final=${r.finalMs.toFixed(0)}ms`,
     )
   }
   return lines.join('\n')

@@ -6,7 +6,7 @@ import {
   type Solid,
 } from '../../geometry'
 
-/** Call once per nesting request (BLF or evolutionary) — not per gene. */
+/** Call once per nesting request (BLF or automatic) — not per candidate. */
 export function beginPlacementSession(): void {
   beginNestingGeometrySession()
 }
@@ -807,7 +807,6 @@ function placeSequence(
     options.nfpFidelity === 'exact' ||
     (options.nfpFidelity == null && (freeDepth === 'full' || !freeCascade))
   const signal = options.signal
-  const level = request.settings.optimizationLevel
   const partCount = sequence.length
   let attemptSequence = 0
   const emitAttempt = options.onAttempt
@@ -1326,7 +1325,6 @@ function placeSequence(
         partCount,
         unplacedCount: unplaced.length + (partCount - (i + 1)),
         sheetCount: sheets.length,
-        optimizationLevel: level,
         elapsedMs: performance.now() - t0,
         message: `BLF · ${placedCount} / ${partCount} parça · sheet ${sheets.length || 1}`,
         bestSoFar: partial,
@@ -1441,7 +1439,7 @@ export function placeWithOrderUnchecked(
 }
 
 /**
- * Place parts using a fixed order + rotation gene (for evolutionary evaluation).
+ * Place parts using a fixed order + rotation plan (for search evaluation).
  * Uses the same geometry-aware BLF/NFP placer — not a second engine.
  */
 export function placeWithPlan(

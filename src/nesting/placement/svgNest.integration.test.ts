@@ -11,8 +11,6 @@ const settings: NestingSettings = {
   allowedRotations: [0, 90, 180, 270],
   rotationStepDeg: null,
   allowArbitraryRotation: false,
-  optimizationLevel: 'fast',
-  timeLimitMs: 5000,
 }
 
 function worldSolid(part: GeometryPart, pl: Placement) {

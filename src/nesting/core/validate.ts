@@ -177,15 +177,8 @@ export function validateNestingRequest(request: NestingRequest): void {
   if (request.settings.spacingMm < 0) {
     throw new RangeError('Part spacing must be nonnegative')
   }
-  finite(request.settings.timeLimitMs, 'Nesting time limit')
-  if (request.settings.timeLimitMs <= 0) {
-    throw new RangeError('Nesting time limit must be positive')
-  }
   if (request.settings.seed != null) {
     finite(request.settings.seed, 'Nesting seed')
-  }
-  if (!['fast', 'balanced', 'deep'].includes(request.settings.optimizationLevel)) {
-    throw new RangeError('Invalid optimization level')
   }
   if (
     request.settings.rotationMode != null &&

@@ -96,8 +96,6 @@ describe('packBias / dayama preference', () => {
       allowedRotations: [0],
       rotationStepDeg: null,
       allowArbitraryRotation: false,
-      optimizationLevel: 'fast',
-      timeLimitMs: 1000,
     })
     const variant = prepared[0]!.variants[0]!
     const ifp = { minX: 0, minY: 0, maxX: 90, maxY: 90 }

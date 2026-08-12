@@ -14,7 +14,7 @@ export type NestSettings = {
   /** Developer/debug seed (deterministic). */
   seed: number
   /**
-   * Developer: ignore wall-clock truncation; generation/op limits only.
+   * Developer: use evaluation-count convergence only.
    * Same seed ⇒ same result.
    */
   deterministic: boolean

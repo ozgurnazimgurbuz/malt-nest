@@ -34,8 +34,6 @@ const settings: NestingSettings = {
   allowArbitraryRotation: false,
   rotationMode: 'orthogonal',
   allowRotation: true,
-  optimizationLevel: 'fast',
-  timeLimitMs: 500,
 }
 
 describe('buildOrderCandidates', () => {

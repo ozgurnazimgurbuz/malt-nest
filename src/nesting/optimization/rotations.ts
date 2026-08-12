@@ -1,10 +1,6 @@
 import type { GeometryPart, Point } from '../../geometry'
 import { signedArea } from '../../geometry'
-import type {
-  NestingSettings,
-  OptimizationLevel,
-  RotationMode,
-} from '../types'
+import type { NestingSettings, RotationMode } from '../types'
 
 export type { RotationMode }
 
@@ -171,12 +167,6 @@ export function resolveAllowedAngles(
     return uniqSorted(settings.allowedRotations)
   }
   return anglesForMode(mode, parts)
-}
-
-export function defaultModeForLevel(level: OptimizationLevel): RotationMode {
-  if (level === 'deep') return 'deep'
-  if (level === 'balanced') return 'balanced'
-  return 'orthogonal'
 }
 
 /** True when engine should run free-angle placement search. */

@@ -9,8 +9,6 @@ const request: NestingRequest = {
     spacingMm: 0,
     allowedRotations: [0],
     allowArbitraryRotation: false,
-    optimizationLevel: 'fast',
-    timeLimitMs: 100,
   },
 }
 
