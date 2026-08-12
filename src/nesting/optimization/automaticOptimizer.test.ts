@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest'
 import type { GeometryPart } from '../../geometry'
 import { boundingBox } from '../../geometry'
 import { prepareParts } from '../core/prepare'
-import { placeWithPlan, runBottomLeftNest } from '../placement/blf'
+import {
+  placeWithOrder,
+  placeWithPlan,
+  runBottomLeftNest,
+} from '../placement/blf'
 import {
   compareNestingResults,
   isBetterNestingResult,
@@ -193,7 +197,16 @@ async function fidelityPromotionScenario(
           (requiredKeys.has(order.join(',')) ? 200 : (options.childWaste ?? 200)),
       )
     const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
-      (nestRequest, plan) => scoredResult(nestRequest, plan.order, 100)
+      (nestRequest, plan, placementOptions) => scoredResult(
+        nestRequest,
+        plan.order,
+        placementOptions.nfpFidelity === 'simplified'
+          ? cheapWaste.get(plan.order.join(',')) ??
+            (requiredKeys.has(plan.order.join(','))
+              ? 200
+              : (options.childWaste ?? 200))
+          : 100,
+      )
     return {
       ...actual,
       runBottomLeftNestUnchecked,
@@ -346,8 +359,10 @@ async function repairImprovementScenario(repairExactWaste = 50) {
       (nestRequest, plan, options) => scoredResult(
         nestRequest,
         plan.order,
-        phase === 'repair'
-          ? options.freeAngleDepth === 'refine' ? 40 : repairExactWaste
+        options.nfpFidelity === 'simplified'
+          ? phase === 'repair' ? 50 : 100
+          : phase === 'repair'
+            ? options.freeAngleDepth === 'refine' ? 40 : repairExactWaste
           : options.freeAngleDepth === 'refine' ? 110 : 100,
       )
     return {
@@ -788,6 +803,73 @@ describe('runAutomaticNest', () => {
     const { exactOrderNames, targetName } = await fidelityPromotionScenario(45)
 
     expect(exactOrderNames).toContain(targetName)
+  })
+
+  it('preserves a supplied non-default rotation when ranking an exact candidate', async () => {
+    const req = request([
+      rect('a', 0, 15, 14),
+      rect('b', 1, 17, 8),
+      rect('c', 2, 3, 18),
+      rect('d', 3, 5, 12),
+    ], {
+      allowedRotations: [0, 90],
+      allowedRotationsExplicit: [0, 90],
+      allowArbitraryRotation: false,
+      rotationMode: 'orthogonal',
+    })
+    req.sheets = [{ widthMm: 22, heightMm: 30, marginMm: 0, quantity: 2 }]
+    const supplied = {
+      order: ['a', 'b', 'c', 'd'],
+      rotations: [0, 0, 90, 0],
+    }
+    const suppliedResult = placeWithPlan(req, supplied, {
+      nfpFidelity: 'exact',
+    })
+    const rerotatedResult = placeWithOrder(req, supplied.order, {
+      freeAngleDepth: 'quick',
+      nfpFidelity: 'simplified',
+    })
+    expect(suppliedResult.status).toBe('ok')
+    expect(rerotatedResult.status).toBe('ok')
+    if (suppliedResult.status !== 'ok' || rerotatedResult.status !== 'ok') return
+    expect(suppliedResult.placements.find(({ partId }) => partId === 'c')?.rotation)
+      .toBe(90)
+    expect(isBetterNestingResult(suppliedResult, rerotatedResult)).toBe(true)
+
+    vi.resetModules()
+    vi.doMock('./destroyRepair', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./destroyRepair')>()
+      const proposeRepair: typeof actual.proposeRepair = () => ({
+        individual: supplied,
+        operator: 'random',
+      })
+      return { ...actual, proposeRepair }
+    })
+
+    try {
+      const { runAutomaticNest: runMockedAutomaticNest } =
+        await import('./automaticOptimizer')
+      const published: NestingSuccess[] = []
+      const result = runMockedAutomaticNest(req, {
+        deterministic: true,
+        now: () => 0,
+        onProgress: ({ bestSoFar }) => {
+          if (bestSoFar) published.push(bestSoFar)
+        },
+      })
+
+      expect(result.status).toBe('ok')
+      if (result.status !== 'ok') return
+      expect(published.some((candidate) =>
+        compareNestingResults(candidate, suppliedResult) === 0 &&
+        candidate.placements.map(({ rotation }) => rotation).join(',') ===
+          suppliedResult.placements.map(({ rotation }) => rotation).join(','),
+      )).toBe(true)
+      expect(compareNestingResults(result, suppliedResult)).toBeLessThanOrEqual(0)
+    } finally {
+      vi.doUnmock('./destroyRepair')
+      vi.resetModules()
+    }
   })
 
   it('preserves the champion when an exact replay rejects a cheap improvement', async () => {

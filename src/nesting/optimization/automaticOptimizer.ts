@@ -359,13 +359,16 @@ export function runAutomaticNest(
     }
 
     const started = now()
-    const placed = placeWithOrderUnchecked(request, individual.order, {
+    const rankOptions = {
       signal: options.signal,
       freeAngleDepth: depth,
-      nfpFidelity: 'simplified',
+      nfpFidelity: 'simplified' as const,
       preparedParts,
       engineId: 'automatic-anytime-v1',
-    })
+    }
+    const placed = depth === 'coarse'
+      ? placeWithOrderUnchecked(request, individual.order, rankOptions)
+      : placeWithPlanUnchecked(request, individual, rankOptions)
     const elapsedMs = Math.max(0, now() - started)
     if (placed.status === 'cancelled') {
       return { candidate: null, cancelled: true }
