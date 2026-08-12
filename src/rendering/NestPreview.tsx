@@ -3,7 +3,7 @@ import type { GeometryPart } from '../geometry'
 import type { Placement } from '../nesting'
 import { applyPlacement, placementBounds } from '../nesting/placement/worldGeometry'
 import type { SheetSettings } from '../state'
-import type { TimedNestAttempt } from '../ui/liveNestTrace'
+import type { LiveNestPlayback } from '../ui/liveNestTrace'
 import { NestAttemptTrail } from './NestAttemptTrail'
 
 type Props = {
@@ -12,8 +12,7 @@ type Props = {
   parts: GeometryPart[]
   placements: Placement[]
   sheetIndex: number
-  attempts?: TimedNestAttempt[]
-  current?: TimedNestAttempt | null
+  playback?: LiveNestPlayback | null
   debug?: boolean
 }
 
@@ -32,30 +31,14 @@ export function NestPreview({
   parts,
   placements,
   sheetIndex,
-  attempts = [],
-  current = null,
+  playback = null,
   debug = false,
 }: Props) {
   const w = Math.max(1, sheet.widthMm)
   const h = Math.max(1, sheet.heightMm)
   const m = Math.max(0, marginMm)
   const sheetPlacements = placements.filter((p) => p.sheetIndex === sheetIndex)
-  const sheetAttempts = attempts.filter(
-    (attempt) => attempt.sheetIndex === sheetIndex,
-  )
   const partMap = new Map(parts.map((p) => [p.id, p]))
-  const currentPart =
-    current?.sheetIndex === sheetIndex ? partMap.get(current.partId) : undefined
-  const currentGeometry =
-    currentPart && current
-      ? applyPlacement(currentPart, {
-          partId: current.partId,
-          sheetIndex: current.sheetIndex,
-          x: current.x,
-          y: current.y,
-          rotation: current.rotation,
-        })
-      : null
 
   return (
     <div
@@ -112,29 +95,13 @@ export function NestPreview({
           )
         })}
       </svg>
-      {sheetAttempts.length > 0 ? (
+      {playback ? (
         <NestAttemptTrail
-          attempts={sheetAttempts}
+          playback={playback}
           parts={parts}
           sheetWidth={w}
           sheetHeight={h}
         />
-      ) : null}
-      {currentGeometry ? (
-        <svg
-          className="nest-preview__attempt-svg"
-          viewBox={`0 0 ${w} ${h}`}
-          preserveAspectRatio="none"
-          aria-hidden="true"
-        >
-          <path
-            className="nest-preview__attempt-ghost"
-            d={[currentGeometry.outer, ...currentGeometry.holes]
-              .map(ringPath)
-              .join(' ')}
-            fillRule="evenodd"
-          />
-        </svg>
       ) : null}
     </div>
   )

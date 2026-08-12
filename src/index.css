@@ -1082,24 +1082,6 @@ input {
   pointer-events: none;
 }
 
-.nest-preview__attempt-svg {
-  position: absolute;
-  inset: 0;
-  z-index: 3;
-  display: block;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.nest-preview__attempt-ghost {
-  fill: rgba(250, 204, 21, 0.12);
-  stroke: #facc15;
-  stroke-width: 0.7;
-  stroke-dasharray: 3 2;
-  vector-effect: non-scaling-stroke;
-}
-
 .nest-preview__board {
   fill: #141a22;
   stroke: #5a6a7e;
