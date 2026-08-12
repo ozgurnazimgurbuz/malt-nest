@@ -20,10 +20,10 @@ Use `@superpowers:test-driven-development` for every production change. Apply th
 - Modify `src/rendering/NestAttemptTrail.tsx`: make the existing single canvas the imperative playback sink; draw both the current outline and fading anchors.
 - Modify `src/rendering/NestPreview.tsx`: pass the playback controller to the canvas and remove the React/SVG current-ghost path.
 - Modify `src/rendering/NestPreview.test.ts`: verify canvas attachment, frame-by-frame drawing, and no inactive canvas overhead.
+- Modify `src/ui/Workspace.tsx`: render compact live placements and pass the active controller to `NestPreview`.
 - Modify `src/index.css`: remove the obsolete attempt SVG layer; retain one pointer-events-free canvas overlay.
 - Modify `src/App.tsx`: create/cancel one controller per traced job, enqueue callbacks synchronously, and await normal drain before applying completion.
 - Modify `src/App.test.ts`: cover exact frame playback, commit ordering, completion waiting, immediate invalidation, and zero App re-renders for same-sheet attempts.
-- Modify `src/ui/Workspace.tsx`: render compact committed placements and pass the active controller to `NestPreview`.
 
 No nesting algorithm, worker protocol, batching limit, candidate order, or scoring file changes are required. `src/nesting/worker/attemptBatcher.ts` remains the transport optimization.
 
@@ -302,6 +302,7 @@ git commit -m "feat: add frame-paced nesting playback"
 - Modify: `src/rendering/NestAttemptTrail.tsx:1-91`
 - Modify: `src/rendering/NestPreview.tsx:1-141`
 - Modify: `src/rendering/NestPreview.test.ts:1-222`
+- Modify: `src/ui/Workspace.tsx:1-186`
 - Modify: `src/index.css:1056-1102`
 
 - [ ] **Step 1: Write failing canvas playback tests**
@@ -436,6 +437,17 @@ playback?: LiveNestPlayback | null
 
 Render `NestAttemptTrail` only when `playback` exists. Delete current-geometry computation and the `.nest-preview__attempt-svg` element. Remove `.nest-preview__attempt-svg` and `.nest-preview__attempt-ghost` CSS; retain `.nest-attempt-trail` at `z-index: 2` above the committed SVG.
 
+Migrate `Workspace` in the same task so the repository never has an intentionally
+broken intermediate preview contract:
+
+```ts
+const placements = showLiveNest ? liveTrace.placements : nestResult!.placements
+```
+
+Pass `playback={showLiveNest ? liveTrace.playback : null}` to `NestPreview` and
+remove its obsolete `attempts/current` props. Keep active-sheet and picker
+behavior unchanged.
+
 - [ ] **Step 5: Run rendering and controller tests**
 
 Run:
@@ -449,7 +461,7 @@ Expected: PASS; Canvas owns every transient frame and no React node represents t
 - [ ] **Step 6: Commit the renderer**
 
 ```bash
-git add src/rendering/NestAttemptTrail.tsx src/rendering/NestPreview.tsx src/rendering/NestPreview.test.ts src/index.css
+git add src/rendering/NestAttemptTrail.tsx src/rendering/NestPreview.tsx src/rendering/NestPreview.test.ts src/ui/Workspace.tsx src/index.css
 git commit -m "feat: render every nesting attempt on canvas"
 ```
 
@@ -458,7 +470,6 @@ git commit -m "feat: render every nesting attempt on canvas"
 **Files:**
 - Modify: `src/App.tsx:1-335,390-435`
 - Modify: `src/App.test.ts:1-360`
-- Modify: `src/ui/Workspace.tsx:1-186`
 - Modify: `src/rendering/NestPreview.test.ts:150-222`
 
 - [ ] **Step 1: Write failing App lifecycle regressions**
@@ -604,23 +615,7 @@ Call `playbackRef.current?.cancel()` in all immediate invalidation paths:
 
 Delete the trail-expiry timeout effect; fade/pruning now belongs to the canvas sink and its sole RAF loop.
 
-- [ ] **Step 5: Pass compact live state through Workspace**
-
-Change the live placement selection to:
-
-```ts
-const placements = showLiveNest ? liveTrace.placements : nestResult!.placements
-```
-
-Pass only:
-
-```tsx
-playback={showLiveNest ? liveTrace.playback : null}
-```
-
-Remove `attempts/current` props. Keep the live sheet picker behavior and canonical result/export paths unchanged.
-
-- [ ] **Step 6: Run the full focused feature matrix**
+- [ ] **Step 5: Run the full focused feature matrix**
 
 Run:
 
@@ -638,10 +633,10 @@ npx vitest run \
 
 Expected: PASS. Existing worker batching and traced-versus-untraced result invariance must remain green.
 
-- [ ] **Step 7: Commit lifecycle integration**
+- [ ] **Step 6: Commit lifecycle integration**
 
 ```bash
-git add src/App.tsx src/App.test.ts src/ui/Workspace.tsx src/rendering/NestPreview.test.ts
+git add src/App.tsx src/App.test.ts src/rendering/NestPreview.test.ts
 git commit -m "fix: play nesting attempts without visual batching"
 ```
 
