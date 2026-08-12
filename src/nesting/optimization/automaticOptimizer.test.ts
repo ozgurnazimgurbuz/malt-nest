@@ -674,6 +674,35 @@ describe('runAutomaticNest', () => {
     expect(result.unplacedPartIds).toEqual([])
   })
 
+  it('publishes structured progress activity independently of messages', () => {
+    const progress: NestProgress[] = []
+
+    runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+      deterministic: true,
+      onProgress: (item) => progress.push(item),
+    })
+
+    expect(progress.every(({ activity }) => activity != null)).toBe(true)
+    expect(progress.find(({ phase }) => phase === 'seed')?.activity).toBe(
+      'initial',
+    )
+    expect(
+      progress.find(({ message }) => message?.startsWith('Trying orders'))
+        ?.activity,
+    ).toBe('orders')
+    expect(
+      progress.find(({ message }) => message?.startsWith('Improving layout · layer'))
+        ?.activity,
+    ).toBe('beam')
+    expect(
+      progress.find(({ message }) => message?.includes('finalist'))?.activity,
+    ).toBe('refine')
+    expect(
+      progress.find(({ message }) => message === 'Improving layout')?.activity,
+    ).toBe('repair')
+    expect(progress.at(-1)?.activity).toBe('verify')
+  })
+
   it('returns before preparation when already aborted', async () => {
     vi.resetModules()
     vi.doMock('../core/prepare', async (importOriginal) => {

@@ -296,6 +296,46 @@ describe('WorkerNestingEngine', () => {
     expect(automaticNest).not.toHaveBeenCalled()
   })
 
+  it('protects the retained best snapshot from progress observer mutation', async () => {
+    vi.stubGlobal('Worker', FakeWorker)
+    const controller = new AbortController()
+    const best: NestingSuccess = {
+      ...fallbackResult,
+      placements: [
+        { partId: 'part-1', sheetIndex: 0, x: 1, y: 2, rotation: 0 },
+      ],
+      statistics: {
+        ...fallbackResult.statistics,
+        partCount: 1,
+        placedCount: 1,
+      },
+      engineId: 'original',
+    }
+    const pending = new WorkerNestingEngine().nest(request, {
+      jobId: 'job-1',
+      signal: controller.signal,
+      onProgress: (progress) => {
+        progress.bestSoFar!.placements.length = 0
+        progress.bestSoFar!.statistics.placedCount = 0
+      },
+    })
+
+    FakeWorker.latest?.onmessage?.({
+      data: {
+        type: 'progress',
+        requestId: 'job-1',
+        progress: { phase: 'optimize', ratio: 0.5, bestSoFar: best },
+      },
+    } as MessageEvent)
+    controller.abort()
+
+    const result = await pending
+    expect(result.status).toBe('cancelled')
+    if (result.status !== 'cancelled') return
+    expect(result.bestSoFar?.placements).toHaveLength(1)
+    expect(result.bestSoFar?.statistics.placedCount).toBe(1)
+  })
+
   it('keeps the canonical best snapshot when later progress is worse', async () => {
     vi.stubGlobal('Worker', FakeWorker)
     const controller = new AbortController()

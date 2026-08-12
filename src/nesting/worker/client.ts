@@ -86,7 +86,7 @@ export class WorkerNestingEngine implements NestingEngine {
             candidate?.status === 'ok' &&
             (!lastBest || isBetterNestingResult(candidate, lastBest))
           ) {
-            lastBest = candidate
+            lastBest = structuredClone(candidate)
           }
           options?.onProgress?.({ ...msg.progress, jobId: requestId })
           return

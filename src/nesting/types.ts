@@ -162,6 +162,7 @@ export type NestProgress = {
   /** 0..1 — real engine progress (do not invent in UI). */
   ratio: number
   phase: NestProgressPhase
+  activity?: 'initial' | 'orders' | 'beam' | 'refine' | 'repair' | 'verify'
   generation?: number
   /** 1-based multi-start index when optimizing. */
   multiStartIndex?: number

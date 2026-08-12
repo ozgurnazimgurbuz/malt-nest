@@ -101,7 +101,8 @@ describe('Stage 10A/10F nest progress UI state', () => {
         placedCount: 16,
         partCount: 16,
         jobId: 'j1',
-        message: 'Trying orders · largest first',
+        activity: 'orders',
+        message: 'Boyuta göre sıralama deneniyor',
       },
       'j1',
     )
@@ -110,14 +111,14 @@ describe('Stage 10A/10F nest progress UI state', () => {
     expect(search?.percent).toBe(48)
     expect(search?.detail).toBe('Parça 16 / 16')
     expect(search?.detail).not.toMatch(/Start|Generation|Fast|Balanced|Deep/)
-    expect(search?.statusLine).toBe('Trying orders · largest first')
+    expect(search?.statusLine).toBe('Boyuta göre sıralama deneniyor')
     expect(search).not.toHaveProperty('optimizationLevel')
 
     const improve = nestUiFromEngineProgress(
       {
         ratio: 0.65,
         phase: 'optimize',
-        message: 'Improving layout · layer 2',
+        message: 'Trying orders should remain display-only',
       },
       'j1',
     )

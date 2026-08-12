@@ -129,7 +129,7 @@ export function nestUiFromEngineProgress(
       visible: true,
       jobId: p.jobId ?? activeJobId,
       phase: 'optimize',
-      title: p.message?.includes('Trying orders')
+      title: p.activity === 'orders'
         ? 'Sıralamalar deneniyor'
         : 'Yerleşim iyileştiriliyor',
       percent,
