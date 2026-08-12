@@ -39,14 +39,24 @@ function operatorRng(operator: RepairOperator, rest = 0): Rng {
 function part(partId: string, width = 10, height = 10, area = width * height): PreparedPart {
   return {
     partId,
+    sourceIndex: 0,
     area,
+    variants: [],
+    rotations: [0],
+    maxWidth: width,
+    maxHeight: height,
+    perimeter: 2 * (width + height),
+    widestRotation: 0,
+    tallestRotation: 0,
+    hasHoles: false,
     sourceOuter: [
       { x: 0, y: 0 },
       { x: width, y: 0 },
       { x: width, y: height },
       { x: 0, y: height },
     ],
-  } as PreparedPart
+    sourceHoles: [],
+  }
 }
 
 function result(
@@ -144,7 +154,9 @@ describe('repair proposals', () => {
     )
 
     expectValid(start, proposal.individual)
-    expect(proposal.operator).toBe(operator)
+    expect(proposal.operator).toBe(
+      operator === 'bounds' || operator === 'sheet' ? 'random' : operator,
+    )
     expect(start).toEqual(snapshots.start)
     expect(nesting).toEqual(snapshots.nesting)
     expect([...prepared.entries()]).toEqual(snapshots.prepared)
@@ -166,6 +178,27 @@ describe('repair proposals', () => {
     const proposal = proposeRepair(start, [], nesting, prepared, operatorRng('bounds'), createRepairState())
     expect(proposal.individual.order[0]).toBe('c')
     expectValid(start, proposal.individual)
+  })
+
+  it('bounds uses rotated local bounds with BLF translation coordinates', () => {
+    const rotated = {
+      ...part('rotated', 20, 10),
+      sourceOuter: [
+        { x: 10, y: 20 },
+        { x: 30, y: 20 },
+        { x: 30, y: 30 },
+        { x: 10, y: 30 },
+      ],
+    }
+    const start = individual(['a', 'b', 'd', 'rotated', 'c'])
+    const prepared = new Map(start.order.map((id) => [id, id === 'rotated' ? rotated : part(id)]))
+    const nesting = result(
+      [{ partId: 'rotated', sheetIndex: 2, x: 100, y: 50, rotation: 90 }],
+      [sheet(2, 125, 85)],
+    )
+
+    const proposal = proposeRepair(start, [], nesting, prepared, operatorRng('bounds'), createRepairState())
+    expect(proposal.individual.order[0]).toBe('rotated')
   })
 
   it('sheet targets the least efficient used sheet rather than the last sheet', () => {
@@ -206,17 +239,34 @@ describe('repair proposals', () => {
     expectValid(start, proposal.individual)
   })
 
-  it.each(['bounds', 'sheet', 'unplaced'] as const)('%s falls back to random removal', (operator) => {
+  it('unplaced moves both failed part and predecessor for five parts', () => {
+    const start = individual(['a', 'b', 'c', 'd', 'e'])
+    const proposal = proposeRepair(
+      start,
+      [],
+      result([], [], ['d']),
+      new Map(),
+      operatorRng('unplaced'),
+      createRepairState(),
+    )
+    expect(new Set(proposal.individual.order.slice(0, 2))).toEqual(new Set(['c', 'd']))
+  })
+
+  it.each(['bounds', 'sheet', 'unplaced'] as const)('%s attributes fallback to random repair', (operator) => {
     const start = individual()
+    const state = createRepairState()
     const proposal = proposeRepair(
       start,
       [],
       result(),
       new Map(),
-      operatorRng(operator),
-      createRepairState(),
+      operatorRng(operator, 0.99),
+      state,
     )
-    expect(proposal.individual.order).not.toEqual(start.order)
+    rewardRepairOperator(state, proposal.operator)
+    expect(proposal.operator).toBe('random')
+    expect(proposal.individual.order).toEqual(start.order)
+    expect(state.weights).toEqual({ random: 2, bounds: 1, sheet: 1, unplaced: 1 })
     expectValid(start, proposal.individual)
   })
 

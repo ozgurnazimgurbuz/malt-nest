@@ -1,5 +1,5 @@
 import { geomEps } from '../../geometry'
-import { rotationDimensions, type PreparedPart } from '../core/prepare'
+import { createVariant, type PreparedPart } from '../core/prepare'
 import { isBetterScore } from '../scoring/fitness'
 import type { NestingSuccess } from '../types'
 import { cloneIndividual, type Individual } from './individual'
@@ -47,8 +47,9 @@ function boundedIndices(
   candidates: Iterable<number>,
   length: number,
   rng: Rng,
+  minimum = 1,
 ): number[] {
-  const limit = Math.min(length - 1, Math.max(1, Math.ceil(length * 0.2)))
+  const limit = Math.min(length - 1, Math.max(minimum, Math.ceil(length * 0.2)))
   return rng.shuffle([...new Set(candidates)]).slice(0, limit)
 }
 
@@ -66,9 +67,9 @@ function boundsIndices(
     const prepared = preparedById.get(placement.partId)
     const index = start.order.indexOf(placement.partId)
     if (!bounds || !prepared || index < 0) continue
-    const dimensions = rotationDimensions(prepared, placement.rotation)
-    const touchesRight = Math.abs(placement.x + dimensions.width - bounds.maxX) <= tolerance
-    const touchesBottom = Math.abs(placement.y + dimensions.height - bounds.maxY) <= tolerance
+    const localBounds = createVariant(prepared, placement.rotation).solid.bounds
+    const touchesRight = Math.abs(placement.x + localBounds.maxX - bounds.maxX) <= tolerance
+    const touchesBottom = Math.abs(placement.y + localBounds.maxY - bounds.maxY) <= tolerance
     if (touchesRight || touchesBottom) candidates.push(index)
   }
   return boundedIndices(candidates, start.order.length, rng)
@@ -120,7 +121,7 @@ function unplacedIndices(start: Individual, result: NestingSuccess, rng: Rng): n
     if (index > 0) candidates.push(index - 1)
     candidates.push(index)
   }
-  return boundedIndices(candidates, start.order.length, rng)
+  return boundedIndices(candidates, start.order.length, rng, 2)
 }
 
 function repair(
@@ -155,7 +156,7 @@ export function proposeRepair(
   rng: Rng,
   state: RepairState,
 ): { individual: Individual; operator: RepairOperator } {
-  const operator = chooseRepairOperator(state, rng)
+  let operator = chooseRepairOperator(state, rng)
   if (start.order.length < 2) return { individual: cloneIndividual(start), operator }
 
   let indices: number[] = []
@@ -163,6 +164,7 @@ export function proposeRepair(
   if (operator === 'sheet') indices = sheetIndices(start, result, preparedById, rng)
   if (operator === 'unplaced') indices = unplacedIndices(start, result, rng)
   if (operator === 'random' || indices.length === 0) {
+    operator = 'random'
     const count = Math.min(
       start.order.length - 1,
       Math.max(1, Math.ceil(start.order.length * 0.1)),
