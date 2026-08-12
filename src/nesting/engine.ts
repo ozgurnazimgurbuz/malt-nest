@@ -1,5 +1,5 @@
 import { blfNestingEngine } from './engines/blfEngine'
-import { evolutionaryNestingEngine } from './engines/evolutionaryEngine'
+import { automaticNestingEngine } from './engines/automaticEngine'
 import type {
   NestingRequest,
   NestingResult,
@@ -28,7 +28,7 @@ export interface NestingEngine {
   ): Promise<NestingResult>
 }
 
-/** Default: worker-backed evolutionary optimizer (BLF baseline inside). */
+/** Default: worker-backed automatic optimizer (BLF baseline inside). */
 export const defaultNestingEngine: NestingEngine = workerNestingEngine
 
-export { blfNestingEngine, evolutionaryNestingEngine }
+export { automaticNestingEngine, blfNestingEngine }

@@ -1,4 +1,4 @@
-import type { NestingSuccess, NestProgress, OptimizationLevel } from '../nesting'
+import type { NestingSuccess, NestProgress } from '../nesting'
 import { isBetterNestingResult } from '../nesting'
 
 /** UI-facing nest progress phase (observability only). */
@@ -20,11 +20,10 @@ export type NestUiProgress = {
   title: string
   /** 0–100 from engine `ratio` (never invented). */
   percent: number
-  /** Secondary lines: parts / sheet / start / gen. */
+  /** Secondary lines: parts / sheet. */
   detail: string
   /** Tertiary status from engine message or phase hint. */
   statusLine?: string
-  optimizationLevel?: OptimizationLevel | string
   /** Soft pulse while waiting on cancel (keeps last %). */
   awaitingStop: boolean
   /** Wall-clock job start (UI); elapsed derived from this + engine elapsedMs. */
@@ -51,14 +50,6 @@ export type NestUiProgress = {
 export function percentFromRatio(ratio: number | undefined): number {
   if (ratio == null || !Number.isFinite(ratio)) return 0
   return Math.round(Math.min(1, Math.max(0, ratio)) * 100)
-}
-
-function levelLabel(level?: string): string {
-  if (!level) return ''
-  if (level === 'fast') return 'Fast'
-  if (level === 'balanced') return 'Balanced'
-  if (level === 'deep') return 'Deep'
-  return level
 }
 
 /** Shared canonical nesting-result order. */
@@ -94,9 +85,9 @@ export function nestUiFromEngineProgress(
   }
 
   const percent = percentFromRatio(p.ratio)
-  const level = p.optimizationLevel
   const parts = partsLine(p)
   const sheet = sheetLine(p)
+  const detail = [parts, sheet].filter(Boolean).join('\n') || '…'
   const startedAtMs = prev?.startedAtMs
   const elapsedMs = p.elapsedMs ?? prev?.elapsedMs
   const iteration = prev?.iteration
@@ -109,8 +100,7 @@ export function nestUiFromEngineProgress(
       title: 'Nesting hazırlanıyor',
       percent,
       detail: parts ?? '…',
-      statusLine: p.message ?? 'Hazırlanıyor…',
-      optimizationLevel: level,
+      statusLine: p.message,
       awaitingStop: false,
       startedAtMs,
       elapsedMs,
@@ -123,11 +113,10 @@ export function nestUiFromEngineProgress(
       visible: true,
       jobId: p.jobId ?? activeJobId,
       phase: 'blf',
-      title: 'BLF yerleşimi',
+      title: 'İlk yerleşim',
       percent,
-      detail: [parts, sheet].filter(Boolean).join('\n') || '…',
-      statusLine: p.message ?? 'Yerleşim aranıyor…',
-      optimizationLevel: level,
+      detail,
+      statusLine: p.message,
       awaitingStop: false,
       startedAtMs,
       elapsedMs,
@@ -136,26 +125,16 @@ export function nestUiFromEngineProgress(
   }
 
   if (p.phase === 'optimize') {
-    const start =
-      p.multiStartIndex != null && p.multiStartCount != null
-        ? `Start ${p.multiStartIndex} / ${p.multiStartCount}`
-        : null
-    const gen =
-      p.generation != null
-        ? p.multiStartCount != null
-          ? `Generation ${p.generation}`
-          : `Generation ${p.generation}`
-        : null
-    const lvl = levelLabel(level)
     return {
       visible: true,
       jobId: p.jobId ?? activeJobId,
       phase: 'optimize',
-      title: lvl ? `${lvl} optimization` : 'Optimize',
+      title: p.message?.includes('Trying orders')
+        ? 'Sıralamalar deneniyor'
+        : 'Yerleşim iyileştiriliyor',
       percent,
-      detail: [start, gen, parts, sheet].filter(Boolean).join('\n') || '…',
-      statusLine: p.message ?? 'Aday pozisyonlar değerlendiriliyor…',
-      optimizationLevel: level,
+      detail,
+      statusLine: p.message,
       awaitingStop: false,
       startedAtMs,
       elapsedMs,
@@ -168,11 +147,10 @@ export function nestUiFromEngineProgress(
       visible: true,
       jobId: p.jobId ?? activeJobId,
       phase: 'finalizing',
-      title: 'Nest sonlandırılıyor',
+      title: 'Sonuç doğrulanıyor',
       percent,
-      detail: [parts, sheet].filter(Boolean).join('\n') || '…',
-      statusLine: p.message ?? 'Son adaylar değerlendiriliyor…',
-      optimizationLevel: level,
+      detail,
+      statusLine: p.message,
       awaitingStop: false,
       startedAtMs,
       elapsedMs,
@@ -186,9 +164,8 @@ export function nestUiFromEngineProgress(
     phase: 'completed',
     title: 'Nest tamamlandı',
     percent: percentFromRatio(p.ratio ?? 1),
-    detail: parts ?? '…',
+    detail,
     statusLine: p.message,
-    optimizationLevel: level,
     awaitingStop: false,
     startedAtMs,
     elapsedMs,
@@ -199,7 +176,6 @@ export function nestUiFromEngineProgress(
 export function nestUiPreparing(
   jobId: string,
   partCount: number,
-  level: OptimizationLevel | string,
   iteration?: number,
 ): NestUiProgress {
   return {
@@ -210,7 +186,6 @@ export function nestUiPreparing(
     percent: 0,
     detail: `Parça 0 / ${partCount}`,
     statusLine: 'Hazırlanıyor…',
-    optimizationLevel: level,
     awaitingStop: false,
     startedAtMs: performance.now(),
     elapsedMs: 0,
@@ -227,7 +202,6 @@ export function nestUiStopping(prev: NestUiProgress | null): NestUiProgress {
     percent: prev?.percent ?? 0,
     detail: prev?.detail ?? 'En iyi sonuç bekleniyor',
     statusLine: 'Mevcut en iyi sonuç uygulanıyor…',
-    optimizationLevel: prev?.optimizationLevel,
     awaitingStop: true,
     startedAtMs: prev?.startedAtMs,
     elapsedMs: prev?.elapsedMs,
@@ -296,7 +270,6 @@ export function nestUiCancelledPlain(
     percent: prev?.percent ?? 0,
     detail: prev?.detail ?? '',
     statusLine: prev?.statusLine,
-    optimizationLevel: prev?.optimizationLevel,
     awaitingStop: false,
     startedAtMs: prev?.startedAtMs,
     elapsedMs: prev?.elapsedMs,

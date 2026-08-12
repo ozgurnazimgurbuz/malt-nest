@@ -210,7 +210,7 @@ export default function App() {
     }
     setCalculating(true)
     setLiveTrace(traceEnabled ? startLiveNestTrace(jobId) : null)
-    const preparing = nestUiPreparing(jobId, svg.partCount, 'fast', nextIter)
+    const preparing = nestUiPreparing(jobId, svg.partCount, nextIter)
     setNestProgress(preparing)
     setStatus({
       kind: 'info',

@@ -1,4 +1,4 @@
-import { runEvolutionaryNest } from '../optimization/geneticOptimizer'
+import { runAutomaticNest } from '../optimization/automaticOptimizer'
 import type {
   NestAttempt,
   NestingRequest,
@@ -28,14 +28,13 @@ self.onmessage = (ev: MessageEvent<WorkerInMessage>) => {
 
   out({ type: 'started', requestId: msg.requestId })
   try {
-    const result = runEvolutionaryNest(msg.request, {
+    const result = runAutomaticNest(msg.request, {
       onAttempt: attemptBatcher?.push,
       onAttemptFlush: attemptBatcher?.flush,
       onProgress: (progress) => {
         out({ type: 'progress', requestId: msg.requestId, progress })
       },
       seed: msg.request.settings.seed,
-      timeLimitMs: msg.request.settings.timeLimitMs,
       deterministic: msg.request.settings.deterministic === true,
     })
     attemptBatcher?.flush()
