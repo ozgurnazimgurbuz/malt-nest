@@ -100,7 +100,7 @@ export function Workspace({
               >
                 {nestResult!.sheets.map((s) => (
                   <option key={s.sheetIndex} value={s.sheetIndex}>
-                    {s.sheetIndex + 1} / {nestResult.sheets.length}
+                    {s.sheetIndex + 1} / {nestResult!.sheets.length}
                   </option>
                 ))}
               </select>
