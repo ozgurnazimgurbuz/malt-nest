@@ -82,6 +82,11 @@ export type BlfOptions = {
   polishFreeAngles?: boolean
   /** Exact for canonical discrete/full placement; simplified only for cheap ranking. */
   nfpFidelity?: 'simplified' | 'exact'
+  exactFallback?: boolean
+  /** Diagnostic observer used by tests/profiling. */
+  onExactFallback?: (partId: string) => void
+  /** Internal optimizer reuse; must correspond to this request. */
+  preparedParts?: PreparedPart[]
 }
 
 /** Gene plan: placement order + per-part rotation (aligned with order). */
@@ -755,46 +760,64 @@ function placeSequence(
     onAttempt: ((attempt: Omit<NestAttempt, 'sequence'>) => void) | undefined,
   ): PlaceCand | null => {
     const { part, variant } = entry
-    if (variant === 'best') {
-      const depthForBest = freeDepth === 'seed' ? 'coarse' : freeDepth
-      return pickBestVariant(
-        part,
+    const find = (useExactNfp: boolean): PlaceCand | null => {
+      if (variant === 'best') {
+        const depthForBest = freeDepth === 'seed' ? 'coarse' : freeDepth
+        return pickBestVariant(
+          part,
+          sheet,
+          spacing,
+          allowPartInPart,
+          signal,
+          packBias,
+          {
+            freeCascade,
+            depth: depthForBest,
+            exactNfp: useExactNfp,
+            onAttempt,
+          },
+        )
+      }
+      if (freeCascade && freeDepth === 'seed') {
+        return pickBestVariant(
+          part,
+          sheet,
+          spacing,
+          allowPartInPart,
+          signal,
+          packBias,
+          {
+            freeCascade: true,
+            depth: 'seed',
+            seedRotation: variant.rotation,
+            exactNfp: useExactNfp,
+            onAttempt,
+          },
+        )
+      }
+      const pos = tryPlaceOnSheet(
+        variant,
         sheet,
         spacing,
         allowPartInPart,
         signal,
         packBias,
-        { freeCascade, depth: depthForBest, exactNfp, onAttempt },
+        useExactNfp,
+        onAttempt,
       )
+      return pos ? { variant, ...pos } : null
     }
-    if (freeCascade && freeDepth === 'seed') {
-      return pickBestVariant(
-        part,
-        sheet,
-        spacing,
-        allowPartInPart,
-        signal,
-        packBias,
-        {
-          freeCascade: true,
-          depth: 'seed',
-          seedRotation: variant.rotation,
-          exactNfp,
-          onAttempt,
-        },
-      )
+
+    const best = find(exactNfp)
+    if (best || signal?.aborted || exactNfp || !options.exactFallback) {
+      return best
     }
-    const pos = tryPlaceOnSheet(
-      variant,
-      sheet,
-      spacing,
-      allowPartInPart,
-      signal,
-      packBias,
-      exactNfp,
-      onAttempt,
-    )
-    return pos ? { variant, ...pos } : null
+    try {
+      options.onExactFallback?.(part.partId)
+    } catch {
+      // Diagnostic telemetry must never alter nesting.
+    }
+    return find(true)
   }
 
   const compareStockTrials = (
@@ -1205,9 +1228,9 @@ export function runBottomLeftNest(
     phase: 'prepare',
     message: 'Preparing parts',
   })
-  const prepared = prepareParts(request.parts, request.settings, {
-    sortByArea: true,
-  })
+  const prepared =
+    options.preparedParts ??
+    prepareParts(request.parts, request.settings, { sortByArea: true })
   options.onProgress?.({ ratio: 0.08, phase: 'seed', message: 'Placing parts' })
   const result = placeSequence(
     request,
@@ -1250,9 +1273,9 @@ export function placeWithOrderUnchecked(
   options: BlfOptions = {},
 ): NestingResult {
   const t0 = performance.now()
-  const prepared = prepareParts(request.parts, request.settings, {
-    sortByArea: false,
-  })
+  const prepared =
+    options.preparedParts ??
+    prepareParts(request.parts, request.settings, { sortByArea: false })
   const byId = new Map(prepared.map((p) => [p.partId, p]))
   const sequence: Array<{ part: PreparedPart; variant: 'best' }> = []
   const seen = new Set<string>()
@@ -1299,9 +1322,9 @@ export function placeWithPlanUnchecked(
     throw new RangeError('Plan rotation values must be finite')
   }
   // Reuse shared NFP cache across gene evaluations (session opened by BLF baseline)
-  const prepared = prepareParts(request.parts, request.settings, {
-    sortByArea: false,
-  })
+  const prepared =
+    options.preparedParts ??
+    prepareParts(request.parts, request.settings, { sortByArea: false })
   const byId = new Map(prepared.map((p) => [p.partId, p]))
 
   const sequence: Array<{ part: PreparedPart; variant: PreparedVariant }> = []

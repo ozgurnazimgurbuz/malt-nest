@@ -12,6 +12,7 @@ import {
 } from '../../geometry'
 import {
   placeWithOrder,
+  placeWithOrderUnchecked,
   placeWithPlan,
   placeWithPlanUnchecked,
   runBottomLeftNest,
@@ -95,6 +96,47 @@ function worldSolid(part: GeometryPart, pl: Placement) {
     })),
   )
   return solidFromRings(outer, holes)
+}
+
+function denseContactFixture(stepped = false, denseCount = 117) {
+  const outer = Array.from({ length: denseCount }, (_, index) => ({
+    x: (20 * index) / (denseCount - 1),
+    y: index % 2 === 0 ? 0 : 0.05,
+  }))
+  outer.push(
+    { x: 20, y: 5 },
+    { x: 20, y: 10 },
+    { x: 15, y: 10 },
+    { x: 12, y: 10 },
+    { x: 10.4, y: 10 },
+    ...(stepped
+      ? [
+          { x: 10.4, y: 9.8 },
+          { x: 10.35, y: 9.8 },
+        ]
+      : []),
+    { x: stepped ? 10.35 : 10.4, y: 9.6 },
+    { x: 10, y: 9.6 },
+    { x: 10, y: 10 },
+    { x: 0, y: 10 },
+  )
+  const host: GeometryPart = {
+    id: 'dense-host',
+    sourceElement: 'path',
+    originalIndex: 0,
+    sourceId: 'dense-host',
+    outer: { points: outer },
+    holes: [],
+    boundingBox: boundingBox(outer),
+    area: netArea({ points: outer }, []),
+    centroid: centroid(outer),
+    originalTransform: null,
+  }
+  const guest = rectPart('tiny', 1, 0, 0, 0.35, 0.35)
+  return request([host, guest], {
+    sheet: { widthMm: 20, heightMm: 10, marginMm: 0, quantity: 1 },
+    settings: { allowedRotations: [0] },
+  })
 }
 
 describe('runBottomLeftNest', () => {
@@ -933,6 +975,34 @@ describe('runBottomLeftNest', () => {
     expect(prepared[0]!.rotations).toBe(prepared[1]!.rotations)
   })
 
+  it('reuses supplied prepared parts without mutating their order', () => {
+    const req = request([
+      rectPart('first', 0, 0, 0, 2, 2),
+      rectPart('second', 1, 0, 0, 2, 2),
+    ])
+    const supplied = Object.freeze(
+      prepareParts(req.parts, req.settings, { sortByArea: false }).reverse(),
+    )
+    const before = supplied.slice()
+    const results = [
+      runBottomLeftNest(req, { preparedParts: supplied }),
+      placeWithOrderUnchecked(req, [], { preparedParts: supplied }),
+      placeWithPlanUnchecked(req, { order: [], rotations: [] }, {
+        preparedParts: supplied,
+      }),
+    ]
+
+    for (const result of results) {
+      expect(result.status).toBe('ok')
+      if (result.status !== 'ok') continue
+      expect(result.placements.map(({ partId }) => partId)).toEqual([
+        'second',
+        'first',
+      ])
+    }
+    expect(supplied).toEqual(before)
+  })
+
   it('17. plan placement never duplicates a source part', () => {
     const req = request([rectPart('a', 0, 0, 0, 20, 20)])
     const duplicate = { order: ['a', 'a'], rotations: [0, 0] }
@@ -998,38 +1068,7 @@ describe('runBottomLeftNest', () => {
   })
 
   it('20. discrete canonical placement preserves a dense sub-0.5mm contact', () => {
-    const outer = Array.from({ length: 117 }, (_, index) => ({
-      x: (20 * index) / 116,
-      y: index % 2 === 0 ? 0 : 0.05,
-    }))
-    outer.push(
-      { x: 20, y: 5 },
-      { x: 20, y: 10 },
-      { x: 15, y: 10 },
-      { x: 12, y: 10 },
-      { x: 10.4, y: 10 },
-      { x: 10.4, y: 9.6 },
-      { x: 10, y: 9.6 },
-      { x: 10, y: 10 },
-      { x: 0, y: 10 },
-    )
-    const host: GeometryPart = {
-      id: 'dense-host',
-      sourceElement: 'path',
-      originalIndex: 0,
-      sourceId: 'dense-host',
-      outer: { points: outer },
-      holes: [],
-      boundingBox: boundingBox(outer),
-      area: netArea({ points: outer }, []),
-      centroid: centroid(outer),
-      originalTransform: null,
-    }
-    const guest = rectPart('tiny', 1, 0, 0, 0.35, 0.35)
-    const req = request([host, guest], {
-      sheet: { widthMm: 20, heightMm: 10, marginMm: 0, quantity: 1 },
-      settings: { allowedRotations: [0] },
-    })
+    const req = denseContactFixture()
 
     const canonical = runBottomLeftNest(req)
     const cheap = runBottomLeftNest(req, { nfpFidelity: 'simplified' })
@@ -1042,5 +1081,67 @@ describe('runBottomLeftNest', () => {
       .toMatchObject({ x: 10, y: 9.6 })
     expect(cheap.placements.find((placement) => placement.partId === 'tiny'))
       .toMatchObject({ x: 10.05, y: 9.65 })
+  })
+
+  it('retries a failed simplified dense contact with exact candidates', () => {
+    const req = denseContactFixture(true, 110)
+    const exact = runBottomLeftNest(req, { nfpFidelity: 'exact' })
+    const fallbackIds: string[] = []
+    const fallback = runBottomLeftNest(req, {
+      nfpFidelity: 'simplified',
+      exactFallback: true,
+      onExactFallback: (partId) => fallbackIds.push(partId),
+    })
+
+    expect(exact.status).toBe('ok')
+    expect(fallback.status).toBe('ok')
+    if (exact.status !== 'ok' || fallback.status !== 'ok') return
+    expect(exact.statistics.unplacedCount).toBe(0)
+    expect(fallback.statistics.unplacedCount).toBe(0)
+    expect(fallback.placements).toEqual(exact.placements)
+    expect(fallbackIds).toContain('tiny')
+  })
+
+  it('does not retry a successful simplified placement', () => {
+    const fallbackIds: string[] = []
+    const result = runBottomLeftNest(
+      request([rectPart('fits', 0, 0, 0, 2, 2)]),
+      {
+        nfpFidelity: 'simplified',
+        exactFallback: true,
+        onExactFallback: (partId) => fallbackIds.push(partId),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect(fallbackIds).toEqual([])
+  })
+
+  it('does not exact-retry an aborted simplified placement', () => {
+    const controller = new AbortController()
+    const fallbackIds: string[] = []
+    const result = runBottomLeftNest(denseContactFixture(true, 110), {
+      nfpFidelity: 'simplified',
+      exactFallback: true,
+      onAttempt: ({ partId }) => {
+        if (partId === 'tiny') controller.abort()
+      },
+      onExactFallback: (partId) => fallbackIds.push(partId),
+      signal: controller.signal,
+    })
+
+    expect(result.status).toBe('cancelled')
+    expect(fallbackIds).toEqual([])
+  })
+
+  it('does not exact-retry exact fidelity', () => {
+    const fallbackIds: string[] = []
+    runBottomLeftNest(denseContactFixture(true, 110), {
+      nfpFidelity: 'exact',
+      exactFallback: true,
+      onExactFallback: (partId) => fallbackIds.push(partId),
+    })
+
+    expect(fallbackIds).toEqual([])
   })
 })
