@@ -100,7 +100,6 @@ export function buildOrderCandidates(
   push('hole_aware', holeAwareOrder(parts))
 
   if (options.includeRandom !== false) {
-    // Seeded shuffles diversify the automatic beam candidates.
     const base = orderBy(parts, (p) => p.area)
     for (let i = 0; i < 5 && (limit == null || out.length < limit); i++) {
       push(`shuffle_${i}`, rng.shuffle(base))
