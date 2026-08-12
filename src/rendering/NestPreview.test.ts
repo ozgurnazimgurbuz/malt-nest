@@ -140,6 +140,30 @@ it('renders committed placements and the current attempted part separately', asy
   container.remove()
 })
 
+it('does not mount attempt rendering without live attempts', async () => {
+  const container = document.createElement('div')
+  document.body.append(container)
+  const root = createRoot(container)
+
+  await act(async () =>
+    root.render(
+      createElement(NestPreview, {
+        sheet: { widthMm: 100, heightMm: 100 },
+        marginMm: 0,
+        parts: [partA],
+        placements: [placementA],
+        sheetIndex: 0,
+      }),
+    ),
+  )
+
+  expect(container.querySelector('.nest-attempt-trail')).toBeNull()
+  expect(container.querySelector('.nest-preview__attempt-ghost')).toBeNull()
+
+  await act(async () => root.unmount())
+  container.remove()
+})
+
 it('shows the live sheet and committed snapshot while nesting', async () => {
   const container = document.createElement('div')
   document.body.append(container)

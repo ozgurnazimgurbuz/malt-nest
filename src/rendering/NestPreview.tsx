@@ -112,12 +112,14 @@ export function NestPreview({
           )
         })}
       </svg>
-      <NestAttemptTrail
-        attempts={sheetAttempts}
-        parts={parts}
-        sheetWidth={w}
-        sheetHeight={h}
-      />
+      {sheetAttempts.length > 0 ? (
+        <NestAttemptTrail
+          attempts={sheetAttempts}
+          parts={parts}
+          sheetWidth={w}
+          sheetHeight={h}
+        />
+      ) : null}
       {currentGeometry ? (
         <svg
           className="nest-preview__attempt-svg"
