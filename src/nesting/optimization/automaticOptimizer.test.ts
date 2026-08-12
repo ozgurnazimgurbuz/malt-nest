@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { GeometryPart } from '../../geometry'
 import { boundingBox } from '../../geometry'
 import { prepareParts } from '../core/prepare'
@@ -76,6 +76,277 @@ function champions(progress: NestProgress[]): NestingSuccess[] {
   return progress.flatMap(({ bestSoFar }) => bestSoFar ? [bestSoFar] : [])
 }
 
+function scoredResult(
+  req: NestingRequest,
+  order: readonly string[],
+  wasteMm2: number,
+): NestingSuccess {
+  return {
+    status: 'ok',
+    placements: order.map((partId, index) => ({
+      partId,
+      sheetIndex: 0,
+      x: index,
+      y: 0,
+      rotation: 0,
+    })),
+    sheets: [{
+      sheetIndex: 0,
+      widthMm: 500,
+      heightMm: 500,
+      placedCount: order.length,
+      utilization: 0.5,
+      wasteMm2,
+      usedBounds: { minX: 0, minY: 0, maxX: order.length, maxY: 1 },
+    }],
+    unplacedPartIds: [],
+    utilization: 0.5,
+    wasteMm2,
+    calculationTimeMs: 0,
+    statistics: {
+      partCount: req.parts.length,
+      placedCount: req.parts.length,
+      unplacedCount: 0,
+      sheetCountUsed: 1,
+      totalPartAreaMm2: 1,
+      totalSheetAreaMm2: 250_000,
+      overallUtilization: 0.5,
+      overallWasteMm2: wasteMm2,
+    },
+    engineId: 'test',
+  }
+}
+
+async function fidelityPromotionScenario(
+  targetWaste: number,
+  options: { stopAtFirstLayer?: boolean; childWaste?: number } = {},
+) {
+  const req = request([
+    rect('a', 0, 83, 65),
+    rect('b', 1, 42, 53),
+    rect('c', 2, 82, 63),
+    rect('d', 3, 47, 9),
+    rect('e', 4, 23, 70),
+    rect('f', 5, 40, 6),
+    rect('g', 6, 52, 14),
+    rect('h', 7, 16, 52),
+    rect('i', 8, 32, 12),
+    rect('j', 9, 14, 17),
+    rect('k', 10, 77, 72),
+    rect('l', 11, 63, 32),
+  ])
+  req.sheets = [{ widthMm: 500, heightMm: 500, marginMm: 0, quantity: 1 }]
+  const prepared = prepareParts(req.parts, req.settings, { sortByArea: true })
+  const required = buildOrderCandidates(prepared, createRng(7), {
+    includeRandom: false,
+  })
+  const seedOrder = prepared.map(({ partId }) => partId)
+  const seedKey = seedOrder.join(',')
+  const alternatives = required.filter(({ order }) => order.join(',') !== seedKey)
+  if (alternatives.length < 5) throw new Error('fixture needs five alternative orders')
+  const targetOrder = alternatives[4]!.order
+  const requiredKeys = new Set(required.map(({ order }) => order.join(',')))
+  const cheapWaste = new Map<string, number>([
+    [seedKey, 50],
+    ...alternatives.slice(0, 4).map(
+      ({ order }, index) => [order.join(','), 10 + index * 10] as const,
+    ),
+    [targetOrder.join(','), targetWaste],
+  ])
+
+  vi.resetModules()
+  vi.doMock('../placement/blf', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../placement/blf')>()
+    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
+      (nestRequest, options) => scoredResult(
+        nestRequest,
+        options.preparedParts?.map(({ partId }) => partId) ?? [],
+        80,
+      )
+    const placeWithOrderUnchecked: typeof actual.placeWithOrderUnchecked =
+      (nestRequest, order) => scoredResult(
+        nestRequest,
+        order,
+        cheapWaste.get(order.join(',')) ??
+          (requiredKeys.has(order.join(',')) ? 200 : (options.childWaste ?? 200)),
+      )
+    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
+      (nestRequest, plan) => scoredResult(nestRequest, plan.order, 100)
+    return {
+      ...actual,
+      runBottomLeftNestUnchecked,
+      placeWithOrderUnchecked,
+      placeWithPlanUnchecked,
+    }
+  })
+
+  try {
+    const { runAutomaticNest: runMockedAutomaticNest } =
+      await import('./automaticOptimizer')
+    const exactOrderKeys: string[] = []
+    const exactEvents: Array<{
+      source: string
+      stage: string
+      order: readonly string[]
+      improved: boolean
+    }> = []
+    const beamLayers: Array<{ layer: number; stable: boolean }> = []
+    let publishedChampions = 0
+    let clock = 0
+    runMockedAutomaticNest(req, {
+      deterministic: options.stopAtFirstLayer === false,
+      now: () => clock,
+      onBeamLayer: (info) => beamLayers.push(info),
+      onExactReplay: (info) => {
+        exactEvents.push(info)
+        const { source, stage, order } = info
+        if (source === 'order' && stage === 'fixed') {
+          exactOrderKeys.push(order.join(','))
+        }
+      },
+      onProgress: ({ bestSoFar, message }) => {
+        if (bestSoFar) publishedChampions++
+        if (
+          options.stopAtFirstLayer !== false &&
+          message?.startsWith('Improving layout · layer')
+        ) {
+          clock = 5_000
+        }
+      },
+    })
+    return {
+      beamLayers,
+      exactEvents,
+      exactOrderKeys,
+      publishedChampions,
+      targetKey: targetOrder.join(','),
+    }
+  } finally {
+    vi.doUnmock('../placement/blf')
+    vi.resetModules()
+  }
+}
+
+async function refinementScenario(refineWaste: number) {
+  const req = request([rect('a', 0, 20, 10)])
+  vi.resetModules()
+  vi.doMock('../placement/blf', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../placement/blf')>()
+    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
+      (nestRequest, options) => scoredResult(
+        nestRequest,
+        options.preparedParts?.map(({ partId }) => partId) ?? [],
+        120,
+      )
+    const placeWithOrderUnchecked: typeof actual.placeWithOrderUnchecked =
+      (nestRequest, order) => scoredResult(nestRequest, order, 100)
+    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
+      (nestRequest, plan, options) => scoredResult(
+        nestRequest,
+        plan.order,
+        options.freeAngleDepth === 'refine'
+          ? refineWaste
+          : options.freeAngleDepth === 'seed'
+            ? 80
+            : 100,
+      )
+    return {
+      ...actual,
+      runBottomLeftNestUnchecked,
+      placeWithOrderUnchecked,
+      placeWithPlanUnchecked,
+    }
+  })
+
+  try {
+    const { runAutomaticNest: runMockedAutomaticNest } =
+      await import('./automaticOptimizer')
+    const finalistStages: Array<{ stage: string; improved: boolean }> = []
+    runMockedAutomaticNest(req, {
+      deterministic: true,
+      now: () => 0,
+      onExactReplay: ({ source, stage, improved }) => {
+        if (source === 'finalist') finalistStages.push({ stage, improved })
+      },
+    })
+    return finalistStages
+  } finally {
+    vi.doUnmock('../placement/blf')
+    vi.resetModules()
+  }
+}
+
+async function repairImprovementScenario() {
+  const req = request([
+    rect('a', 0, 83, 65),
+    rect('b', 1, 42, 53),
+    rect('c', 2, 82, 63),
+    rect('d', 3, 47, 9),
+    rect('e', 4, 23, 70),
+    rect('f', 5, 40, 6),
+  ])
+  req.sheets = [{ widthMm: 500, heightMm: 500, marginMm: 0, quantity: 1 }]
+  let phase: 'search' | 'repair' = 'search'
+  vi.resetModules()
+  vi.doMock('../placement/blf', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../placement/blf')>()
+    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
+      (nestRequest, options) => scoredResult(
+        nestRequest,
+        options.preparedParts?.map(({ partId }) => partId) ?? [],
+        120,
+      )
+    const placeWithOrderUnchecked: typeof actual.placeWithOrderUnchecked =
+      (nestRequest, order) => scoredResult(
+        nestRequest,
+        order,
+        phase === 'repair' ? 50 : 100,
+      )
+    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
+      (nestRequest, plan, options) => scoredResult(
+        nestRequest,
+        plan.order,
+        phase === 'repair'
+          ? options.freeAngleDepth === 'refine' ? 40 : 50
+          : options.freeAngleDepth === 'refine' ? 110 : 100,
+      )
+    return {
+      ...actual,
+      runBottomLeftNestUnchecked,
+      placeWithOrderUnchecked,
+      placeWithPlanUnchecked,
+    }
+  })
+
+  try {
+    const { runAutomaticNest: runMockedAutomaticNest } =
+      await import('./automaticOptimizer')
+    const controller = new AbortController()
+    const sequence: string[] = []
+    runMockedAutomaticNest(req, {
+      deterministic: true,
+      now: () => 0,
+      signal: controller.signal,
+      onProgress: ({ message }) => {
+        if (message === 'Improving layout') phase = 'repair'
+      },
+      onExactReplay: ({ source, stage }) => {
+        if (source !== 'repair') return
+        sequence.push(`exact:${stage}`)
+        if (stage === 'refine') controller.abort()
+      },
+      onRepairReward: (operator) => {
+        sequence.push(`reward:${operator}`)
+        throw new Error('ignored repair observer')
+      },
+    })
+    return sequence
+  } finally {
+    vi.doUnmock('../placement/blf')
+    vi.resetModules()
+  }
+}
+
 describe('runAutomaticNest', () => {
   it('publishes an exact seed before optimize and never regresses', () => {
     const req = request([
@@ -116,6 +387,33 @@ describe('runAutomaticNest', () => {
         expect(compareNestingResults(replay, champion)).toBe(0)
       }
     }
+  })
+
+  it('preserves the selected seed order when result placements are grouped by sheet', () => {
+    const req = request([
+      rect('a', 0, 6, 10),
+      rect('b', 1, 6, 10),
+      rect('c', 2, 4, 10),
+    ])
+    req.sheets = [{ widthMm: 10, heightMm: 10, marginMm: 0, quantity: 2 }]
+    const flattened = runBottomLeftNest(req, {
+      freeAngleDepth: 'orthogonal',
+      nfpFidelity: 'simplified',
+      exactFallback: true,
+    })
+    expect(flattened.status).toBe('ok')
+    if (flattened.status !== 'ok') return
+    expect(flattened.placements.map(({ partId }) => partId)).toEqual([
+      'a', 'c', 'b',
+    ])
+
+    const exactOrders: string[][] = []
+    runAutomaticNest(req, {
+      deterministic: true,
+      onExactReplay: ({ order }) => exactOrders.push([...order]),
+    })
+
+    expect(exactOrders[0]).toEqual(['a', 'b', 'c'])
   })
 
   it('is reproducible for the same deterministic seed and evaluation count', () => {
@@ -204,6 +502,76 @@ describe('runAutomaticNest', () => {
     expect(result.status).toBe('ok')
     expect(exactImprovements).toContain(false)
     expect(champions(progress)).toHaveLength(1)
+  })
+
+  it('does not replay a non-beam candidate that only beats the exact champion', async () => {
+    const { exactOrderKeys, targetKey } = await fidelityPromotionScenario(75)
+
+    expect(exactOrderKeys).not.toContain(targetKey)
+  })
+
+  it('replays a non-beam candidate that improves the champion cheap result', async () => {
+    const { exactOrderKeys, targetKey } = await fidelityPromotionScenario(45)
+
+    expect(exactOrderKeys).toContain(targetKey)
+  })
+
+  it('preserves the champion when an exact replay rejects a cheap improvement', async () => {
+    const { exactEvents, publishedChampions, targetKey } =
+      await fidelityPromotionScenario(45)
+
+    expect(exactEvents).toContainEqual(
+      expect.objectContaining({
+        source: 'order',
+        stage: 'fixed',
+        order: targetKey.split(','),
+        improved: false,
+      }),
+    )
+    expect(publishedChampions).toBe(1)
+  })
+
+  it('runs a genuine second beam layer and then stabilizes', async () => {
+    const { beamLayers } = await fidelityPromotionScenario(75, {
+      stopAtFirstLayer: false,
+      childWaste: 1,
+    })
+
+    expect(beamLayers.length).toBeGreaterThan(1)
+    expect(beamLayers[0]).toMatchObject({ layer: 1, stable: false })
+    expect(beamLayers.at(-1)).toMatchObject({ stable: true })
+  })
+
+  it('runs seed one-degree polish only after a strict refine improvement', async () => {
+    expect(await refinementScenario(90)).toEqual([
+      { stage: 'refine', improved: true },
+      { stage: 'seed', improved: true },
+    ])
+  })
+
+  it('stops finalist refinement after a non-improving refine stage', async () => {
+    expect(await refinementScenario(110)).toEqual([
+      { stage: 'refine', improved: false },
+    ])
+  })
+
+  it('rewards a repair operator only after its exact result becomes champion', async () => {
+    const sequence = await repairImprovementScenario()
+
+    expect(sequence.some((event) => event.startsWith('reward:'))).toBe(true)
+    expect(sequence.indexOf('exact:fixed')).toBeLessThan(
+      sequence.findIndex((event) => event.startsWith('reward:')),
+    )
+  })
+
+  it('refines a repair champion before evaluating another repair', async () => {
+    const sequence = await repairImprovementScenario()
+
+    expect(sequence.slice(0, 3)).toEqual([
+      'exact:fixed',
+      expect.stringMatching(/^reward:/),
+      'exact:refine',
+    ])
   })
 
   it('forwards attempt telemetry only from the initial BLF pass', () => {
@@ -321,6 +689,12 @@ describe('runAutomaticNest', () => {
       onEvaluation: (info) => {
         diagnostics.push(info)
         throw new Error('ignored diagnostic observer')
+      },
+      onExactReplay: () => {
+        throw new Error('ignored exact observer')
+      },
+      onBeamLayer: () => {
+        throw new Error('ignored beam observer')
       },
     })
 

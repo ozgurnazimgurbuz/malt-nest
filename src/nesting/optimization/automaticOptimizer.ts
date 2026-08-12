@@ -30,6 +30,7 @@ import {
   createRepairState,
   proposeRepair,
   rewardRepairOperator,
+  type RepairOperator,
 } from './destroyRepair'
 import {
   individualKey,
@@ -53,20 +54,34 @@ export type AutomaticOptions = {
     elapsedMs: number
     improved: boolean
   }) => void
+  onExactReplay?: (info: {
+    source: 'seed' | 'order' | 'beam' | 'finalist' | 'repair'
+    stage: 'fixed' | 'refine' | 'seed'
+    order: readonly string[]
+    improved: boolean
+  }) => void
+  onBeamLayer?: (info: { layer: number; stable: boolean }) => void
+  onRepairReward?: (operator: RepairOperator) => void
 }
 
 type ExactStage = 'fixed' | 'refine' | 'seed'
+type ExactSource = 'seed' | 'order' | 'beam' | 'finalist' | 'repair'
 
 function individualFromResult(
   result: NestingSuccess,
-  fallbackOrder: readonly string[],
+  candidateOrder: readonly string[],
+  preparedOrder: readonly string[],
 ): Individual {
   const rotations = new Map(
     result.placements.map(({ partId, rotation }) => [partId, rotation]),
   )
-  const placed = result.placements.map(({ partId }) => partId)
-  const seen = new Set(placed)
-  const order = [...placed, ...fallbackOrder.filter((id) => !seen.has(id))]
+  const known = new Set(preparedOrder)
+  const seen = new Set<string>()
+  const order = [...candidateOrder, ...preparedOrder].filter((id) => {
+    if (!known.has(id) || seen.has(id)) return false
+    seen.add(id)
+    return true
+  })
   return {
     order,
     rotations: order.map((id) => rotations.get(id) ?? 0),
@@ -112,6 +127,32 @@ export function runAutomaticNest(
       // Diagnostics must never alter nesting.
     }
   }
+  const notifyExactReplay = (
+    source: ExactSource,
+    stage: ExactStage,
+    order: readonly string[],
+    improved: boolean,
+  ): void => {
+    try {
+      options.onExactReplay?.({ source, stage, order: order.slice(), improved })
+    } catch {
+      // Diagnostics must never alter nesting.
+    }
+  }
+  const notifyBeamLayer = (layer: number, stable: boolean): void => {
+    try {
+      options.onBeamLayer?.({ layer, stable })
+    } catch {
+      // Diagnostics must never alter nesting.
+    }
+  }
+  const notifyRepairReward = (operator: RepairOperator): void => {
+    try {
+      options.onRepairReward?.(operator)
+    } catch {
+      // Diagnostics must never alter nesting.
+    }
+  }
   const timed = (result: NestingSuccess, engineId = result.engineId): NestingSuccess => ({
     ...result,
     calculationTimeMs: Math.max(0, now() - t0),
@@ -152,7 +193,7 @@ export function runAutomaticNest(
       first ? 'automatic-blf-v1' : 'automatic-anytime-v1',
     )
     champion = next
-    championGene = individualFromResult(next, source.order)
+    championGene = individualFromResult(next, source.order, preparedIds)
     if (first) recordFirstChampion(convergence, now())
     else recordChampion(convergence, now())
     emit({
@@ -208,7 +249,7 @@ export function runAutomaticNest(
     return seedResult.status === 'cancelled' ? cancelled() : seedResult
   }
 
-  const seedGene = individualFromResult(seedResult, preparedIds)
+  const seedGene = individualFromResult(seedResult, preparedIds, preparedIds)
   if (preparedParts.length === 0) {
     publish(seedResult, seedGene)
     return options.signal?.aborted ? cancelled() : finish()
@@ -225,6 +266,7 @@ export function runAutomaticNest(
   const evaluateExact = (
     individual: Individual,
     stage: ExactStage,
+    source: ExactSource,
     depth?: Extract<FreeAngleDepth, 'refine' | 'seed'>,
   ): ExactOutcome => {
     const key = `${stage}:${individualKey(individual, settingsKey)}`
@@ -232,7 +274,9 @@ export function runAutomaticNest(
       const result = exactCache.get(key) ?? null
       return {
         result,
-        gene: result ? individualFromResult(result, individual.order) : null,
+        gene: result
+          ? individualFromResult(result, individual.order, preparedIds)
+          : null,
         improved: false,
         cancelled: false,
         partial: null,
@@ -259,6 +303,7 @@ export function runAutomaticNest(
     }
     if (replay.status !== 'ok') {
       exactCache.set(key, null)
+      notifyExactReplay(source, stage, individual.order, false)
       notifyEvaluation('exact', elapsedMs, false)
       return {
         result: null,
@@ -275,23 +320,23 @@ export function runAutomaticNest(
     )
     const improved = publish(candidate, individual)
     exactCache.set(key, candidate)
+    notifyExactReplay(source, stage, individual.order, improved)
     notifyEvaluation('exact', elapsedMs, improved)
     return {
       result: candidate,
-      gene: individualFromResult(candidate, individual.order),
+      gene: individualFromResult(candidate, individual.order, preparedIds),
       improved,
       cancelled: false,
       partial: null,
     }
   }
 
-  const seedReplay = evaluateExact(seedGene, 'fixed')
+  const seedReplay = evaluateExact(seedGene, 'fixed', 'seed')
   if (seedReplay.cancelled) {
     if (seedReplay.partial) publish(seedReplay.partial, seedGene)
     return cancelled()
   }
   if (!champion || !championGene) return cancelled()
-  cheapThreshold = champion
   if (options.signal?.aborted) return cancelled()
 
   const cheapCache = new Map<string, RankedCandidate | null>()
@@ -331,18 +376,46 @@ export function runAutomaticNest(
     }
 
     const result = timed(placed, 'automatic-anytime-v1')
-    const actual = individualFromResult(result, individual.order)
+    const actual = individualFromResult(result, individual.order, preparedIds)
     const candidate = { individual: actual, result }
     const actualKey = individualKey(actual, settingsKey)
     cheapCache.set(key, candidate)
     cheapCache.set(actualKey, candidate)
     cheapEvaluatedKeys.add(actualKey)
-    // Rank diagnostics report a new canonical cheap-search threshold.
+    // Rank diagnostics compare like-for-like against the current champion.
     const improved = !cheapThreshold || isBetterNestingResult(result, cheapThreshold)
-    if (improved) cheapThreshold = result
     notifyEvaluation('rank', elapsedMs, improved)
     return { candidate, cancelled: false }
   }
+
+  const refreshCheapThreshold = (): boolean => {
+    if (!championGene) return false
+    const ranked = rank(championGene)
+    if (ranked.cancelled) return false
+    cheapThreshold = ranked.candidate?.result ?? null
+    return true
+  }
+  if (halted()) return haltResult()
+  if (!refreshCheapThreshold()) return cancelled()
+
+  const evaluateAndRefreshExact = (
+    individual: Individual,
+    stage: ExactStage,
+    source: ExactSource,
+    depth?: Extract<FreeAngleDepth, 'refine' | 'seed'>,
+  ): ExactOutcome => {
+    const outcome = evaluateExact(individual, stage, source, depth)
+    if (!outcome.improved || !championGene) return outcome
+    if (options.signal?.aborted) return { ...outcome, cancelled: true }
+    if (shouldStop(convergence, now(), false)) return outcome
+    return refreshCheapThreshold()
+      ? outcome
+      : { ...outcome, cancelled: true }
+  }
+
+  const improvesCheapChampion = (candidate: RankedCandidate): boolean =>
+    cheapThreshold != null &&
+    isBetterNestingResult(candidate.result, cheapThreshold)
 
   emit({ ratio: 0.25, phase: 'optimize', message: 'Trying orders' })
   const rankedCandidates: RankedCandidate[] = []
@@ -364,18 +437,24 @@ export function runAutomaticNest(
     })
     if (!outcome.candidate) continue
     rankedCandidates.push(outcome.candidate)
+    const previousBeamKeys = new Set(
+      beam.map(({ individual }) => individualKey(individual, settingsKey)),
+    )
     const nextBeam = selectBeam(rankedCandidates, 4, settingsKey)
     const candidateKey = individualKey(outcome.candidate.individual, settingsKey)
-    const enteredBeam = nextBeam.some(
-      ({ individual }) => individualKey(individual, settingsKey) === candidateKey,
-    )
+    const enteredBeam =
+      !previousBeamKeys.has(candidateKey) &&
+      nextBeam.some(
+        ({ individual }) => individualKey(individual, settingsKey) === candidateKey,
+      )
     beam = nextBeam
     if (halted()) return haltResult()
-    if (
-      enteredBeam ||
-      isBetterNestingResult(outcome.candidate.result, champion)
-    ) {
-      const exact = evaluateExact(outcome.candidate.individual, 'fixed')
+    if (enteredBeam || improvesCheapChampion(outcome.candidate)) {
+      const exact = evaluateAndRefreshExact(
+        outcome.candidate.individual,
+        'fixed',
+        'order',
+      )
       if (exact.cancelled || options.signal?.aborted) return cancelled()
     }
   }
@@ -413,12 +492,15 @@ export function runAutomaticNest(
         )
         const entersBeam = tentative.some(
           ({ individual }) => individualKey(individual, settingsKey) === rankedKey,
+        ) && !beam.some(
+          ({ individual }) => individualKey(individual, settingsKey) === rankedKey,
         )
-        if (
-          entersBeam ||
-          isBetterNestingResult(outcome.candidate.result, champion)
-        ) {
-          const exact = evaluateExact(outcome.candidate.individual, 'fixed')
+        if (entersBeam || improvesCheapChampion(outcome.candidate)) {
+          const exact = evaluateAndRefreshExact(
+            outcome.candidate.individual,
+            'fixed',
+            'beam',
+          )
           if (exact.cancelled || options.signal?.aborted) return cancelled()
         }
       }
@@ -428,16 +510,18 @@ export function runAutomaticNest(
       individualKey(individual, settingsKey),
     )
     beam = next
-    if (
+    const stable =
       previousKeys.length === nextKeys.length &&
       previousKeys.every((key, index) => key === nextKeys[index])
-    ) {
-      break
-    }
+    notifyBeamLayer(layer, stable)
+    if (stable) break
   }
 
   type RefinementState = 'done' | 'halted' | 'cancelled'
-  const refineFinalist = (individual: Individual): RefinementState => {
+  const refineFinalist = (
+    individual: Individual,
+    source: Extract<ExactSource, 'finalist' | 'repair'>,
+  ): RefinementState => {
     if (halted()) {
       return options.signal?.aborted ? 'cancelled' : 'halted'
     }
@@ -446,7 +530,12 @@ export function runAutomaticNest(
       phase: 'optimize',
       message: 'Improving layout · refining finalist',
     })
-    const refined = evaluateExact(individual, 'refine', 'refine')
+    const refined = evaluateAndRefreshExact(
+      individual,
+      'refine',
+      source,
+      'refine',
+    )
     if (refined.cancelled || options.signal?.aborted) return 'cancelled'
     if (!refined.improved || !refined.gene) return 'done'
     if (halted()) {
@@ -457,7 +546,12 @@ export function runAutomaticNest(
       phase: 'optimize',
       message: 'Improving layout · polishing finalist',
     })
-    const polished = evaluateExact(refined.gene, 'seed', 'seed')
+    const polished = evaluateAndRefreshExact(
+      refined.gene,
+      'seed',
+      source,
+      'seed',
+    )
     return polished.cancelled || options.signal?.aborted ? 'cancelled' : 'done'
   }
 
@@ -470,7 +564,7 @@ export function runAutomaticNest(
       return true
     })
   for (const finalist of finalists) {
-    const state = refineFinalist(finalist)
+    const state = refineFinalist(finalist, 'finalist')
     if (state === 'cancelled') return cancelled()
     if (state === 'halted') return finish()
   }
@@ -498,12 +592,17 @@ export function runAutomaticNest(
     if (ranked.cancelled) return cancelled()
     if (!ranked.candidate) continue
     if (halted()) return haltResult()
-    if (!isBetterNestingResult(ranked.candidate.result, champion)) continue
-    const exact = evaluateExact(ranked.candidate.individual, 'fixed')
+    if (!improvesCheapChampion(ranked.candidate)) continue
+    const exact = evaluateAndRefreshExact(
+      ranked.candidate.individual,
+      'fixed',
+      'repair',
+    )
     if (exact.cancelled || options.signal?.aborted) return cancelled()
     if (!exact.improved) continue
     rewardRepairOperator(repairState, proposal.operator)
-    const state = refineFinalist(championGene)
+    notifyRepairReward(proposal.operator)
+    const state = refineFinalist(championGene, 'repair')
     if (state === 'cancelled') return cancelled()
     if (state === 'halted') return finish()
   }
