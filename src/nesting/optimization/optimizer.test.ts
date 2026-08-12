@@ -218,6 +218,11 @@ describe('evolutionary optimizer primitives', () => {
     expect(individualKey(ind, 's')).not.toBe(
       individualKey({ ...ind, rotations: [0, 0, 0, 0] }, 's'),
     )
+    expect(
+      individualKey({ order: ['b', 'a', 'a,a'], rotations: [0, 0, 0] }, 's'),
+    ).not.toBe(
+      individualKey({ order: ['b', 'a,a', 'a'], rotations: [0, 0, 0] }, 's'),
+    )
   })
 
   it('13. termination by generation', () => {
