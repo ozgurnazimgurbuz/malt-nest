@@ -17,7 +17,12 @@ import type {
   NestingResult,
   NestingSuccess,
 } from '../types'
-import { expandOrder, selectBeam, type RankedCandidate } from './beamSearch'
+import {
+  expandOrder,
+  selectBeam,
+  selectNextBeam,
+  type RankedCandidate,
+} from './beamSearch'
 import {
   createConvergenceState,
   markRequiredOrdersComplete,
@@ -678,7 +683,7 @@ export function runAutomaticNest(
         if (!outcome.candidate) continue
         children.push(outcome.candidate)
         if (halted()) return haltResult()
-        const tentative = selectBeam([...beam, ...children], 4, runKey)
+        const tentative = selectNextBeam(beam, children, 4, runKey)
         const rankedKey = individualKey(
           outcome.candidate.individual,
           runKey,
@@ -698,7 +703,7 @@ export function runAutomaticNest(
         }
       }
     }
-    const next = selectBeam([...beam, ...children], 4, runKey)
+    const next = selectNextBeam(beam, children, 4, runKey)
     const nextKeys = next.map(({ individual }) =>
       individualKey(individual, runKey),
     )

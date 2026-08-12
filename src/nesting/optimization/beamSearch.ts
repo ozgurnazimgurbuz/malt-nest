@@ -16,7 +16,24 @@ export type RankedCandidate = {
 export function expandOrder(individual: Individual, rng: Rng): Individual[] {
   if (individual.order.length < 2) return []
   const seen = new Set<string>()
+  const adjacent = Array.from(
+    { length: individual.order.length - 1 },
+    (_, index) => {
+      const candidate = {
+        order: individual.order.slice(),
+        rotations: individual.rotations.slice(),
+      }
+      const id = candidate.order[index]!
+      candidate.order[index] = candidate.order[index + 1]!
+      candidate.order[index + 1] = id
+      const rotation = candidate.rotations[index]!
+      candidate.rotations[index] = candidate.rotations[index + 1]!
+      candidate.rotations[index + 1] = rotation
+      return candidate
+    },
+  )
   return [
+    ...adjacent,
     adjacentSwapMutation(individual, rng),
     swapMutation(individual, rng),
     insertionMutation(individual, rng),
@@ -49,4 +66,13 @@ export function selectBeam(
     .sort((a, b) => compareNestingResults(a.candidate.result, b.candidate.result) || a.index - b.index)
     .slice(0, width)
     .map(({ candidate }) => candidate)
+}
+
+export function selectNextBeam(
+  current: readonly RankedCandidate[],
+  children: readonly RankedCandidate[],
+  width: number,
+  settingsKey = '',
+): RankedCandidate[] {
+  return selectBeam([...children, ...current], width, settingsKey)
 }

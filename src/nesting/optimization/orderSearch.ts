@@ -88,16 +88,16 @@ export function buildOrderCandidates(
   }
 
   push('area_desc', orderBy(parts, (p) => p.area))
+  push('perimeter_desc', orderBy(parts, metricPerimeter))
+  push('hole_aware', holeAwareOrder(parts))
   push('area_asc', orderBy(parts, (p) => p.area, true))
   push('bbox_area_desc', orderBy(parts, metricBBoxArea))
   push('long_edge_desc', orderBy(parts, metricLongEdge))
   push('short_edge_desc', orderBy(parts, metricShortEdge))
-  push('perimeter_desc', orderBy(parts, metricPerimeter))
   push('width_desc', orderBy(parts, metricWidth))
   push('height_desc', orderBy(parts, metricHeight))
   push('complexity_desc', orderBy(parts, metricComplexity))
   push('compact_fill_desc', orderBy(parts, (p) => p.area / Math.max(1e-9, metricBBoxArea(p))))
-  push('hole_aware', holeAwareOrder(parts))
 
   if (options.includeRandom !== false) {
     const base = orderBy(parts, (p) => p.area)

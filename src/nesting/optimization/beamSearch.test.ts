@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { NestingSuccess } from '../types'
 import { isValidIndividual, type Individual } from './individual'
-import { expandOrder, selectBeam, type RankedCandidate } from './beamSearch'
+import {
+  expandOrder,
+  selectBeam,
+  selectNextBeam,
+  type RankedCandidate,
+} from './beamSearch'
 import { createRng } from './rng'
 
 function individual(order = ['a', 'b', 'c', 'd']): Individual {
@@ -64,7 +69,7 @@ describe('bounded order beam helpers', () => {
     const before = structuredClone(input)
     const neighbors = expandOrder(input, createRng(123))
 
-    expect(neighbors).toHaveLength(3)
+    expect(neighbors).toHaveLength(5)
     expect(input).toEqual(before)
     for (const neighbor of neighbors) {
       expect(isValidIndividual(neighbor, input.order, [0, 90, 180, 270])).toBe(true)
@@ -74,10 +79,12 @@ describe('bounded order beam helpers', () => {
     }
   })
 
-  it('includes adjacent, arbitrary swap, and insertion moves for a seeded RNG', () => {
+  it('includes every adjacent swap plus seeded arbitrary swap and insertion moves', () => {
     const neighbors = expandOrder(individual(), createRng(123))
 
     expect(neighbors.map((neighbor) => neighbor.order)).toEqual([
+      ['b', 'a', 'c', 'd'],
+      ['a', 'c', 'b', 'd'],
       ['a', 'b', 'd', 'c'],
       ['c', 'b', 'a', 'd'],
       ['b', 'c', 'a', 'd'],
@@ -134,6 +141,18 @@ describe('bounded order beam helpers', () => {
 
     expect(selectBeam(candidates, 3, 'settings')).toEqual([first, tied])
     expect(candidates).toEqual(before)
+  })
+
+  it('retains an equal child so a later layer can cross a neutral valley', () => {
+    const current = ['a', 'b', 'c', 'd'].map((name) => candidate(name))
+    const neutral = candidate('neutral')
+
+    const next = selectNextBeam(current, [neutral], 4)
+    expect(next.map(({ individual }) => individual.order[0])).toContain('neutral')
+
+    const improved = candidate('improved', result({ waste: 50 }))
+    const afterValley = selectNextBeam(next, [improved], 4)
+    expect(afterValley[0]).toBe(improved)
   })
 
   it('caps at width and rejects invalid widths', () => {
