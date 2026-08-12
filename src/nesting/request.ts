@@ -4,7 +4,7 @@ import { coarseFreeAngles } from './optimization/rotations'
 import type { NestInput, NestingRequest, NestingSettings, SheetDefinition } from './types'
 import { validateNestingRequest } from './core/validate'
 
-/** Map Stage 1 UI sheet + nest settings into an engine NestingRequest. */
+/** Map UI sheet and nest settings into an engine NestingRequest. */
 export function toNestingRequest(
   parts: GeometryPart[],
   sheet: UiSheetSettings,

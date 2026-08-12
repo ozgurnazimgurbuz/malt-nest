@@ -1,9 +1,7 @@
 import { geomEps } from '../../geometry'
 import { createVariant, type PreparedPart } from '../core/prepare'
-import { isBetterScore } from '../scoring/fitness'
 import type { NestingSuccess } from '../types'
 import { cloneIndividual, type Individual } from './individual'
-import type { EvaluateFn } from './localSearch'
 import type { Rng } from './rng'
 
 export type RepairOperator = 'random' | 'bounds' | 'sheet' | 'unplaced'
@@ -175,44 +173,4 @@ export function proposeRepair(
   // Rerotation is deliberately optional; preserving rotations keeps ID/rotation pairs aligned.
   void allowedRotations
   return { individual: repair(start, indices, operator !== 'random', rng), operator }
-}
-
-/** Compatibility wrapper for the existing genetic optimizer. */
-export function destroyRepairImprove(
-  start: Individual,
-  allowedRotations: number[],
-  rng: Rng,
-  evaluate: EvaluateFn,
-  deadlineMs: number,
-  now: () => number = () => performance.now(),
-): Individual {
-  let best = cloneIndividual(start)
-  let bestScore = evaluate(best).score
-  const n = best.order.length
-  if (n < 3) return best
-
-  const state = createRepairState()
-  const emptyResult = {
-    placements: [],
-    sheets: [],
-    unplacedPartIds: [],
-  } as unknown as NestingSuccess
-  const maxIter = Math.max(8, Math.min(40, n * 2))
-  for (let iter = 0; iter < maxIter && now() < deadlineMs; iter++) {
-    const proposal = proposeRepair(
-      best,
-      allowedRotations,
-      emptyResult,
-      new Map(),
-      rng,
-      state,
-    )
-    const score = evaluate(proposal.individual).score
-    if (isBetterScore(score, bestScore)) {
-      best = proposal.individual
-      bestScore = score
-      rewardRepairOperator(state, proposal.operator)
-    }
-  }
-  return best
 }

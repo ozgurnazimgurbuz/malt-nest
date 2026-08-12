@@ -62,7 +62,8 @@ export type OrderCandidateOptions = {
 }
 
 /**
- * Build every distinct deterministic placement order used by multi-start search.
+ * Build every distinct deterministic candidate order used to seed the
+ * automatic beam search.
  * An explicit limit remains available for profiling/diagnostic callers.
  */
 export function buildOrderCandidates(

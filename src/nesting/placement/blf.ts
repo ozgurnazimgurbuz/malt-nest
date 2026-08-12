@@ -83,12 +83,12 @@ export type BlfOptions = {
    * - refine: 5° window around a plan angle (no 1° final)
    * - seed: refine around a gene angle (final polish)
    * Default for free mode: coarse (avoid 1° on every eval).
-   * Production Stage 1 uses 'full'; Stage 2 uses 'coarse'/'seed'. 'medium' is opt-in.
+   * Automatic search selects orthogonal, quick, coarse, refine, and seed depths;
+   * 'medium' and 'full' remain opt-in diagnostic modes.
    */
   freeAngleDepth?: FreeAngleDepth
   /**
    * Alias for freeAngleDepth='seed' on plan placements.
-   * Off during GA evaluations; enable for final polish of top candidates.
    */
   polishFreeAngles?: boolean
   /** Exact for canonical discrete/full placement; simplified only for cheap ranking. */

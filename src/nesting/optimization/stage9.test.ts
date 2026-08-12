@@ -9,7 +9,6 @@ import {
 import type { GeometryPart } from '../../geometry'
 import { boundingBox, centroid } from '../../geometry'
 import { localSearchImprove } from './localSearch'
-import { destroyRepairImprove } from './destroyRepair'
 import { createRng } from './rng'
 import type { NestingRequest, NestingSettings } from '../types'
 import { runBottomLeftNest } from '../placement/blf'
@@ -90,27 +89,6 @@ describe('Stage 9 optimizer enhancements', () => {
     )
     expect(evalFn(out).score.total).toBeLessThanOrEqual(startTotal)
     expect(calls).toBeGreaterThan(1)
-  })
-
-  it('destroy/repair never worsens score', () => {
-    const ind = {
-      order: ['a', 'b', 'c', 'd', 'e'],
-      rotations: [0, 0, 90, 180, 270],
-    }
-    const evalFn = (x: typeof ind) => ({
-      score: {
-        total: x.order.map((id, i) => id.charCodeAt(0) * (i + 1)).reduce((a, b) => a + b, 0),
-      },
-    })
-    const start = evalFn(ind).score.total
-    const out = destroyRepairImprove(
-      ind,
-      [0, 90, 180, 270],
-      createRng(2),
-      evalFn,
-      performance.now() + 80,
-    )
-    expect(evalFn(out).score.total).toBeLessThanOrEqual(start)
   })
 
   it('spacing regression: larger spacing still valid (no overlap)', () => {

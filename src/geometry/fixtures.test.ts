@@ -1,6 +1,4 @@
 import { describe, expect, it } from 'vitest'
-import { writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { formatNestBench, runNestingFixtureSuite } from './fixtures'
 import { compareNestingResults } from '../nesting/scoring/fitness'
 import { runBottomLeftNest } from '../nesting/placement/blf'
@@ -28,22 +26,6 @@ describe('Stage 7 nesting fixture suite', () => {
       if (!pair.blf || !pair.automatic) continue
       expect(pair.automatic.canonicalVsSeed).not.toBeNull()
       expect(pair.automatic.canonicalVsSeed).toBeLessThanOrEqual(0)
-    }
-
-    if (process.env.UPDATE_BENCHMARK_DOCS === '1') {
-      writeFileSync(
-        resolve(__dirname, '../../docs/benchmarks/stage-9-fixtures-after.md'),
-        [
-          '# Stage 9 — Geometry fixture suite (after Stage 9 optimizer)',
-          '',
-          'Same fixtures/settings as `stage-9-baseline.md` (400×300, margin 5, spacing 2, seed=7).',
-          '',
-          '```',
-          formatNestBench(rows),
-          '```',
-          '',
-        ].join('\n'),
-      )
     }
   }, 120_000)
 

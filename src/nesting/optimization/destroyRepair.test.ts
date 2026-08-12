@@ -3,7 +3,6 @@ import type { PreparedPart } from '../core/prepare'
 import type { NestingSuccess, Placement, SheetResult } from '../types'
 import {
   createRepairState,
-  destroyRepairImprove,
   proposeRepair,
   rewardRepairOperator,
   type RepairOperator,
@@ -287,14 +286,5 @@ describe('repair proposals', () => {
     const state = createRepairState()
     rewardRepairOperator(state, 'bounds')
     expect(state.weights).toEqual({ random: 1, bounds: 2, sheet: 1, unplaced: 1 })
-  })
-
-  it('keeps the compatibility optimizer non-worsening', () => {
-    const start = individual()
-    const evaluate = (candidate: Individual) => ({
-      score: { total: candidate.order.reduce((sum, id, index) => sum + id.charCodeAt(0) * index, 0) },
-    })
-    const improved = destroyRepairImprove(start, [], operatorRng('random', 0.5), evaluate, Infinity)
-    expect(evaluate(improved).score.total).toBeLessThanOrEqual(evaluate(start).score.total)
   })
 })

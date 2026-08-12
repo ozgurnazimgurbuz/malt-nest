@@ -1,7 +1,7 @@
 import type { GeometryPart } from '../geometry'
 import type { NestSettings as UiNestSettings, SheetSettings as UiSheetSettings } from '../state'
 
-/** @deprecated Prefer NestingRequest — kept for Stage 1–2 façade compatibility. */
+/** @deprecated Prefer NestingRequest — kept for façade compatibility. */
 export type NestInput = {
   parts: GeometryPart[]
   sheet: UiSheetSettings

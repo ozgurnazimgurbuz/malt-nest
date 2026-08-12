@@ -27,7 +27,7 @@ export type SvgMeta = {
   width: number | null
   /** Document height in millimeters when resolvable. */
   height: number | null
-  /** Real parsed GeometryPart count (Stage 2). */
+  /** Real parsed GeometryPart count. */
   partCount: number
   parts: GeometryPart[]
   warnings: ParserWarning[]
