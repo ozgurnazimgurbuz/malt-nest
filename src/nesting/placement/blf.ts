@@ -86,7 +86,7 @@ export type BlfOptions = {
   /** Diagnostic observer used by tests/profiling. */
   onExactFallback?: (partId: string) => void
   /** Internal optimizer reuse; must correspond to this request. */
-  preparedParts?: PreparedPart[]
+  preparedParts?: readonly PreparedPart[]
 }
 
 /** Gene plan: placement order + per-part rotation (aligned with order). */
