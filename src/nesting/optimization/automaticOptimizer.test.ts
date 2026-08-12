@@ -528,6 +528,23 @@ describe('runAutomaticNest', () => {
     ])
   })
 
+  it('never introduces zero-degree genes when only ninety degrees is allowed', () => {
+    const req = request([rect('only', 0, 15, 5)], {
+      allowedRotationsExplicit: [90],
+    })
+    req.sheets = [{ widthMm: 15, heightMm: 5, marginMm: 0, quantity: 1 }]
+
+    const result = runAutomaticNest(req, {
+      deterministic: true,
+      now: () => 0,
+    })
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements.map(({ rotation }) => rotation)).not.toContain(0)
+    expect(result.unplacedPartIds).toEqual(['only'])
+  })
+
   it('is reproducible for the same deterministic seed and evaluation count', () => {
     const req = request([
       rect('a', 0, 30, 20),
@@ -553,6 +570,38 @@ describe('runAutomaticNest', () => {
     if (first.result.status !== 'ok' || second.result.status !== 'ok') return
     expect(second.result.placements).toEqual(first.result.placements)
     expect(second.evaluations).toEqual(first.evaluations)
+  })
+
+  it('uses compact run-local individual cache keys', async () => {
+    const settingsKeys: string[] = []
+    vi.resetModules()
+    vi.doMock('./individual', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./individual')>()
+      const individualKey: typeof actual.individualKey = (individual, key) => {
+        settingsKeys.push(key)
+        return actual.individualKey(individual, key)
+      }
+      return { ...actual, individualKey }
+    })
+
+    try {
+      const { runAutomaticNest: runMockedAutomaticNest } =
+        await import('./automaticOptimizer')
+      const result = runMockedAutomaticNest(
+        request([rect('a', 0, 20, 10), rect('b', 1, 10, 20)], {
+          allowRotation: true,
+          rotationStepDeg: 1,
+        }),
+        { deterministic: true, now: () => 0 },
+      )
+
+      expect(result.status).toBe('ok')
+      expect(settingsKeys.length).toBeGreaterThan(0)
+      expect(new Set(settingsKeys)).toEqual(new Set(['']))
+    } finally {
+      vi.doUnmock('./individual')
+      vi.resetModules()
+    }
   })
 
   it('returns the latest exact champion when aborted between evaluations', () => {
@@ -597,6 +646,71 @@ describe('runAutomaticNest', () => {
     expect(result.status).toBe('cancelled')
     if (result.status !== 'cancelled') return
     expect(compareNestingResults(result.bestSoFar!, seedChampion!)).toBe(0)
+  })
+
+  it('does not expose the live champion through progress', () => {
+    let clock = 0
+    const result = runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+      deterministic: false,
+      now: () => clock,
+      onProgress: ({ bestSoFar }) => {
+        if (!bestSoFar) return
+        bestSoFar.placements.length = 0
+        bestSoFar.sheets[0]!.placedCount = 0
+        bestSoFar.statistics.placedCount = 0
+        bestSoFar.unplacedPartIds.push('observer-corruption')
+        clock = 5_000
+      },
+    })
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements).toHaveLength(1)
+    expect(result.sheets[0]?.placedCount).toBe(1)
+    expect(result.statistics.placedCount).toBe(1)
+    expect(result.unplacedPartIds).toEqual([])
+  })
+
+  it('returns before progress or evaluations when already aborted', () => {
+    const controller = new AbortController()
+    controller.abort()
+    const progress: NestProgress[] = []
+    const evaluations: string[] = []
+    const attempts: unknown[] = []
+
+    const result = runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+      signal: controller.signal,
+      onProgress: (item) => progress.push(item),
+      onEvaluation: ({ kind }) => evaluations.push(kind),
+      onAttempt: (attempt) => attempts.push(attempt),
+    })
+
+    expect(result).toMatchObject({ status: 'cancelled', bestSoFar: null })
+    expect(progress).toEqual([])
+    expect(evaluations).toEqual([])
+    expect(attempts).toEqual([])
+  })
+
+  it('stops before preparation when its progress observer aborts', () => {
+    const controller = new AbortController()
+    const messages: Array<string | undefined> = []
+    const evaluations: string[] = []
+    const attempts: unknown[] = []
+
+    const result = runAutomaticNest(request([rect('a', 0, 20, 10)]), {
+      signal: controller.signal,
+      onProgress: ({ message }) => {
+        messages.push(message)
+        controller.abort()
+      },
+      onEvaluation: ({ kind }) => evaluations.push(kind),
+      onAttempt: (attempt) => attempts.push(attempt),
+    })
+
+    expect(result).toMatchObject({ status: 'cancelled', bestSoFar: null })
+    expect(messages).toEqual(['Preparing parts'])
+    expect(evaluations).toEqual([])
+    expect(attempts).toEqual([])
   })
 
   it('does not publish cheap or equal exact candidates', () => {

@@ -997,6 +997,63 @@ describe('runBottomLeftNest', () => {
     expect([...rotations].sort((a, b) => a - b)).toEqual([0, 90, 180, 270])
   })
 
+  it('bounds a one-degree rotation grid to orthogonal depth angles', () => {
+    const rotations = new Set<number>()
+    const result = placeWithOrder(
+      request([rectPart('stepped', 0, 0, 0, 20, 10)], {
+        settings: { allowRotation: true, rotationStepDeg: 1 },
+      }),
+      ['stepped'],
+      {
+        freeAngleDepth: 'orthogonal',
+        onAttempt: ({ rotation }) => rotations.add(rotation),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect([...rotations].sort((a, b) => a - b)).toEqual([0, 90, 180, 270])
+  })
+
+  it('bounds a one-degree rotation grid to quick depth angles', () => {
+    const rotations = new Set<number>()
+    const result = placeWithOrder(
+      request([rectPart('stepped', 0, 0, 0, 20, 10)], {
+        settings: { allowRotation: true, rotationStepDeg: 1 },
+      }),
+      ['stepped'],
+      {
+        freeAngleDepth: 'quick',
+        onAttempt: ({ rotation }) => rotations.add(rotation),
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    expect([...rotations].sort((a, b) => a - b)).toEqual([
+      0, 45, 90, 135, 180, 225, 270, 315,
+    ])
+  })
+
+  it('intersects bounded depth with explicit rotations and falls back when empty', () => {
+    const evaluate = (allowedRotationsExplicit: number[]) => {
+      const rotations = new Set<number>()
+      const result = placeWithOrder(
+        request([rectPart('explicit', 0, 0, 0, 20, 10)], {
+          settings: { allowRotation: true, allowedRotationsExplicit },
+        }),
+        ['explicit'],
+        {
+          freeAngleDepth: 'orthogonal',
+          onAttempt: ({ rotation }) => rotations.add(rotation),
+        },
+      )
+      expect(result.status).toBe('ok')
+      return [...rotations].sort((a, b) => a - b)
+    }
+
+    expect(evaluate([15, 90])).toEqual([90])
+    expect(evaluate([15])).toEqual([15])
+  })
+
   it('refine depth evaluates only the five-degree window around a plan rotation', () => {
     const rotations = new Set<number>()
     const result = placeWithPlan(

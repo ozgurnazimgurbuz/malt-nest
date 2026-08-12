@@ -512,7 +512,23 @@ function pickBestVariant(
   const exactNfp = opts.exactNfp
 
   if (!opts.freeCascade) {
-    const angles = part.rotations
+    const boundedGrid = opts.depth === 'orthogonal'
+      ? ORTHOGONAL_ANGLES
+      : opts.depth === 'quick'
+        ? BALANCED_ANGLES
+        : null
+    const boundedAngles = boundedGrid?.flatMap((gridAngle) => {
+      const allowed = part.rotations.find((rotation) => {
+        const difference = Math.abs(rotation - gridAngle) % 360
+        return Math.min(difference, 360 - difference) <= 1e-9
+      })
+      return allowed == null ? [] : [allowed]
+    })
+    const angles = boundedAngles?.length
+      ? boundedAngles
+      : boundedGrid
+        ? part.rotations.slice(0, 1)
+        : part.rotations
     const ok = evaluateAngles(
       part,
       angles,
@@ -699,11 +715,13 @@ function placeSequence(
     dayamaY: request.settings.dayamaY,
   })
   const freeCascade = usesFreeAngleCascade(request.settings)
-  const freeDepth: FreeAngleDepth = !freeCascade
+  const requestedDepth: FreeAngleDepth = options.polishFreeAngles
+    ? 'seed'
+    : (options.freeAngleDepth ?? 'coarse')
+  const freeDepth: FreeAngleDepth = !freeCascade &&
+    requestedDepth !== 'orthogonal' && requestedDepth !== 'quick'
     ? 'coarse'
-    : options.polishFreeAngles
-      ? 'seed'
-      : (options.freeAngleDepth ?? 'coarse')
+    : requestedDepth
   const exactNfp =
     options.nfpFidelity === 'exact' ||
     (options.nfpFidelity == null && (freeDepth === 'full' || !freeCascade))

@@ -31,11 +31,7 @@ import {
   proposeRepair,
   rewardRepairOperator,
 } from './destroyRepair'
-import {
-  individualKey,
-  settingsCacheKey,
-  type Individual,
-} from './individual'
+import { individualKey, type Individual } from './individual'
 import { buildOrderCandidates } from './orderSearch'
 import { BALANCED_ANGLES } from './rotations'
 import { createRng } from './rng'
@@ -59,22 +55,31 @@ type ExactStage = 'fixed' | 'refine' | 'seed'
 
 function individualFromResult(
   result: NestingSuccess,
-  candidateOrder: readonly string[],
-  preparedOrder: readonly string[],
+  source: Individual,
+  preparedParts: readonly PreparedPart[],
 ): Individual {
-  const rotations = new Map(
+  const placedRotations = new Map(
     result.placements.map(({ partId, rotation }) => [partId, rotation]),
   )
-  const known = new Set(preparedOrder)
+  const sourceRotations = new Map(
+    source.order.map((id, index) => [id, source.rotations[index]]),
+  )
+  const preparedById = new Map(preparedParts.map((part) => [part.partId, part]))
+  const preparedOrder = preparedParts.map(({ partId }) => partId)
   const seen = new Set<string>()
-  const order = [...candidateOrder, ...preparedOrder].filter((id) => {
-    if (!known.has(id) || seen.has(id)) return false
+  const order = [...source.order, ...preparedOrder].filter((id) => {
+    if (!preparedById.has(id) || seen.has(id)) return false
     seen.add(id)
     return true
   })
   return {
     order,
-    rotations: order.map((id) => rotations.get(id) ?? 0),
+    rotations: order.map(
+      (id) =>
+        placedRotations.get(id) ??
+        sourceRotations.get(id) ??
+        preparedById.get(id)!.rotations[0]!,
+    ),
   }
 }
 
@@ -87,6 +92,12 @@ export function runAutomaticNest(
   validateNestingRequest(request)
   const seed = options.seed ?? request.settings.seed ?? 1
   if (!Number.isFinite(seed)) throw new RangeError('seed must be finite')
+  const cancelledWithoutChampion = (): NestingResult => ({
+    status: 'cancelled',
+    message: 'Stopped — returning best so far',
+    bestSoFar: null,
+  })
+  if (options.signal?.aborted) return cancelledWithoutChampion()
 
   const deterministic =
     options.deterministic ?? request.settings.deterministic ?? false
@@ -101,7 +112,13 @@ export function runAutomaticNest(
     const ratio = Math.max(lastProgressRatio, progress.ratio)
     lastProgressRatio = ratio
     try {
-      options.onProgress?.({ ...progress, ratio })
+      options.onProgress?.({
+        ...progress,
+        ratio,
+        ...(progress.bestSoFar
+          ? { bestSoFar: structuredClone(progress.bestSoFar) }
+          : {}),
+      })
     } catch {
       // Observers must never alter nesting.
     }
@@ -124,6 +141,7 @@ export function runAutomaticNest(
   })
 
   emit({ ratio: 0.02, phase: 'prepare', message: 'Preparing parts' })
+  if (options.signal?.aborted) return cancelledWithoutChampion()
   const preparedParts: readonly PreparedPart[] = prepareParts(
     request.parts,
     request.settings,
@@ -132,15 +150,7 @@ export function runAutomaticNest(
   const preparedIds = preparedParts.map(({ partId }) => partId)
   const preparedById = new Map(preparedParts.map((part) => [part.partId, part]))
   const allowedRotations = resolveRotations(request.settings, request.parts)
-  const firstSheet = request.sheets[0]
-  const settingsKey = `${settingsCacheKey({
-    spacingMm: request.settings.spacingMm,
-    marginMm: firstSheet?.marginMm ?? 0,
-    sheetW: firstSheet?.widthMm ?? 0,
-    sheetH: firstSheet?.heightMm ?? 0,
-    quantity: firstSheet?.quantity ?? 0,
-    allowedRotations,
-  })};${JSON.stringify(request.sheets)}`
+  const runKey = ''
 
   let champion: NestingSuccess | null = null
   let championGene: Individual | null = null
@@ -157,7 +167,7 @@ export function runAutomaticNest(
       first ? 'automatic-blf-v1' : 'automatic-anytime-v1',
     )
     champion = next
-    championGene = individualFromResult(next, source.order, preparedIds)
+    championGene = individualFromResult(next, source, preparedParts)
     if (first) recordFirstChampion(convergence, now())
     else recordChampion(convergence, now())
     emit({
@@ -213,7 +223,15 @@ export function runAutomaticNest(
     return seedResult.status === 'cancelled' ? cancelled() : seedResult
   }
 
-  const seedGene = individualFromResult(seedResult, preparedIds, preparedIds)
+  const initialSeedGene: Individual = {
+    order: preparedIds.slice(),
+    rotations: preparedParts.map((part) => part.rotations[0]!),
+  }
+  const seedGene = individualFromResult(
+    seedResult,
+    initialSeedGene,
+    preparedParts,
+  )
   if (preparedParts.length === 0) {
     publish(seedResult, seedGene)
     return options.signal?.aborted ? cancelled() : finish()
@@ -232,13 +250,13 @@ export function runAutomaticNest(
     stage: ExactStage,
     depth?: Extract<FreeAngleDepth, 'refine' | 'seed'>,
   ): ExactOutcome => {
-    const key = `${stage}:${individualKey(individual, settingsKey)}`
+    const key = `${stage}:${individualKey(individual, runKey)}`
     if (exactCache.has(key)) {
       const result = exactCache.get(key) ?? null
       return {
         result,
         gene: result
-          ? individualFromResult(result, individual.order, preparedIds)
+          ? individualFromResult(result, individual, preparedParts)
           : null,
         improved: false,
         cancelled: false,
@@ -285,7 +303,7 @@ export function runAutomaticNest(
     notifyEvaluation('exact', elapsedMs, improved)
     return {
       result: candidate,
-      gene: individualFromResult(candidate, individual.order, preparedIds),
+      gene: individualFromResult(candidate, individual, preparedParts),
       improved,
       cancelled: false,
       partial: null,
@@ -307,7 +325,7 @@ export function runAutomaticNest(
     cancelled: boolean
   }
   const rank = (individual: Individual): RankOutcome => {
-    const key = individualKey(individual, settingsKey)
+    const key = individualKey(individual, runKey)
     if (cheapCache.has(key)) {
       return {
         candidate: cheapCache.get(key) ?? null,
@@ -337,9 +355,9 @@ export function runAutomaticNest(
     }
 
     const result = timed(placed, 'automatic-anytime-v1')
-    const actual = individualFromResult(result, individual.order, preparedIds)
+    const actual = individualFromResult(result, individual, preparedParts)
     const candidate = { individual: actual, result }
-    const actualKey = individualKey(actual, settingsKey)
+    const actualKey = individualKey(actual, runKey)
     cheapCache.set(key, candidate)
     cheapCache.set(actualKey, candidate)
     cheapEvaluatedKeys.add(actualKey)
@@ -387,7 +405,9 @@ export function runAutomaticNest(
     if (halted()) return haltResult()
     const outcome = rank({
       order: orderCandidate.order,
-      rotations: orderCandidate.order.map(() => BALANCED_ANGLES[0] ?? 0),
+      rotations: orderCandidate.order.map(
+        (id) => preparedById.get(id)?.rotations[0] ?? BALANCED_ANGLES[0]!,
+      ),
     })
     if (outcome.cancelled) return cancelled()
     emit({
@@ -398,14 +418,14 @@ export function runAutomaticNest(
     if (!outcome.candidate) continue
     rankedCandidates.push(outcome.candidate)
     const previousBeamKeys = new Set(
-      beam.map(({ individual }) => individualKey(individual, settingsKey)),
+      beam.map(({ individual }) => individualKey(individual, runKey)),
     )
-    const nextBeam = selectBeam(rankedCandidates, 4, settingsKey)
-    const candidateKey = individualKey(outcome.candidate.individual, settingsKey)
+    const nextBeam = selectBeam(rankedCandidates, 4, runKey)
+    const candidateKey = individualKey(outcome.candidate.individual, runKey)
     const enteredBeam =
       !previousBeamKeys.has(candidateKey) &&
       nextBeam.some(
-        ({ individual }) => individualKey(individual, settingsKey) === candidateKey,
+        ({ individual }) => individualKey(individual, runKey) === candidateKey,
       )
     beam = nextBeam
     if (halted()) return haltResult()
@@ -431,28 +451,28 @@ export function runAutomaticNest(
       message: `Improving layout · layer ${layer}`,
     })
     const previousKeys = beam.map(({ individual }) =>
-      individualKey(individual, settingsKey),
+      individualKey(individual, runKey),
     )
     const children: RankedCandidate[] = []
     for (const member of beam) {
       for (const child of expandOrder(member.individual, rng)) {
         if (halted()) return haltResult()
-        const childKey = individualKey(child, settingsKey)
+        const childKey = individualKey(child, runKey)
         if (cheapEvaluatedKeys.has(childKey)) continue
         const outcome = rank(child)
         if (outcome.cancelled) return cancelled()
         if (!outcome.candidate) continue
         children.push(outcome.candidate)
         if (halted()) return haltResult()
-        const tentative = selectBeam([...beam, ...children], 4, settingsKey)
+        const tentative = selectBeam([...beam, ...children], 4, runKey)
         const rankedKey = individualKey(
           outcome.candidate.individual,
-          settingsKey,
+          runKey,
         )
         const entersBeam = tentative.some(
-          ({ individual }) => individualKey(individual, settingsKey) === rankedKey,
+          ({ individual }) => individualKey(individual, runKey) === rankedKey,
         ) && !beam.some(
-          ({ individual }) => individualKey(individual, settingsKey) === rankedKey,
+          ({ individual }) => individualKey(individual, runKey) === rankedKey,
         )
         if (entersBeam || improvesCheapChampion(outcome.candidate)) {
           const exact = evaluateAndRefreshExact(
@@ -463,9 +483,9 @@ export function runAutomaticNest(
         }
       }
     }
-    const next = selectBeam([...beam, ...children], 4, settingsKey)
+    const next = selectBeam([...beam, ...children], 4, runKey)
     const nextKeys = next.map(({ individual }) =>
-      individualKey(individual, settingsKey),
+      individualKey(individual, runKey),
     )
     beam = next
     const stable =
@@ -524,7 +544,7 @@ export function runAutomaticNest(
   const finalistKeys = new Set<string>()
   const finalists = [championGene, ...beam.map(({ individual }) => individual)]
     .filter((individual) => {
-      const key = individualKey(individual, settingsKey)
+      const key = individualKey(individual, runKey)
       if (finalistKeys.has(key)) return false
       finalistKeys.add(key)
       return true
@@ -547,7 +567,7 @@ export function runAutomaticNest(
       rng,
       repairState,
     )
-    const proposalKey = individualKey(proposal.individual, settingsKey)
+    const proposalKey = individualKey(proposal.individual, runKey)
     if (cheapEvaluatedKeys.has(proposalKey)) {
       // ponytail: duplicates count toward convergence; no alternate search needed.
       recordEvaluation(convergence)
