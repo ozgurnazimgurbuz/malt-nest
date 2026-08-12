@@ -21,6 +21,9 @@ export function createConvergenceState({
   if (!Number.isSafeInteger(partCount) || partCount < 0) {
     throw new RangeError('Part count must be a nonnegative safe integer')
   }
+  if (!Number.isFinite(startedAtMs)) {
+    throw new RangeError('Start time must be finite')
+  }
 
   return {
     deterministic,

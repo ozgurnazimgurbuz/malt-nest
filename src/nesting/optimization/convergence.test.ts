@@ -37,6 +37,14 @@ describe('convergence policy', () => {
     }
   })
 
+  it('rejects non-finite start times', () => {
+    for (const startedAtMs of [NaN, Infinity, -Infinity]) {
+      expect(() =>
+        createConvergenceState({ partCount: 0, deterministic: true, startedAtMs }),
+      ).toThrow(RangeError)
+    }
+  })
+
   it('stops immediately when aborted', () => {
     const state = createConvergenceState({
       partCount: 10,
