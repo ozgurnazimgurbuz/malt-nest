@@ -10,6 +10,8 @@ import {
   swapMutation,
 } from './mutation'
 import { createRng } from './rng'
+import { compareBlfVsAutomatic } from './benchmark'
+import { buildFixture } from '../../geometry/fixtures'
 
 function individual(): Individual {
   return {
@@ -19,6 +21,24 @@ function individual(): Individual {
 }
 
 describe('optimization primitives', () => {
+  it('reports automatic first-champion and final wall timings', () => {
+    const result = compareBlfVsAutomatic({
+      parts: buildFixture('rectangles').slice(0, 1),
+      sheets: [{ widthMm: 400, heightMm: 300, marginMm: 5, quantity: 1 }],
+      settings: {
+        spacingMm: 2,
+        allowedRotations: [0, 90, 180, 270],
+        allowArbitraryRotation: false,
+        seed: 7,
+      },
+    })
+
+    expect(result.automatic.firstChampionMs).toBeGreaterThanOrEqual(0)
+    expect(result.automatic.finalMs).toBeGreaterThanOrEqual(
+      result.automatic.firstChampionMs,
+    )
+  })
+
   it('validates aligned order and rotation genes', () => {
     expect(
       isValidIndividual(

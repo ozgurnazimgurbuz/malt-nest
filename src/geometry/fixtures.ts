@@ -240,7 +240,8 @@ export type NestBenchRow = {
   waste: number
   compactness: number
   score: number
-  ms: number
+  firstChampionMs: number
+  finalMs: number
   canonicalVsSeed: number | null
 }
 
@@ -306,19 +307,24 @@ export function runNestingFixtureSuite(): NestBenchRow[] {
         waste: blf.wasteMm2,
         compactness: compactness(blf),
         score: sc.total,
-        ms: blfMs,
+        firstChampionMs: blfMs,
+        finalMs: blfMs,
         canonicalVsSeed: null,
       })
     }
 
     const t1 = performance.now()
+    let firstChampionMs: number | null = null
     let exactSeed: NestingSuccess | null = null
     const automatic = runAutomaticNest(req, {
       seed: 7,
       deterministic: true,
       now: () => 0,
       onProgress: ({ bestSoFar }) => {
-        if (exactSeed == null && bestSoFar) exactSeed = bestSoFar
+        if (exactSeed == null && bestSoFar) {
+          firstChampionMs = performance.now() - t1
+          exactSeed = bestSoFar
+        }
       },
     })
     const automaticMs = performance.now() - t1
@@ -334,7 +340,8 @@ export function runNestingFixtureSuite(): NestBenchRow[] {
         waste: automatic.wasteMm2,
         compactness: compactness(automatic),
         score: sc.total,
-        ms: automaticMs,
+        firstChampionMs: firstChampionMs ?? automaticMs,
+        finalMs: automaticMs,
         canonicalVsSeed: exactSeed == null
           ? null
           : compareNestingResults(automatic, exactSeed),
@@ -348,7 +355,7 @@ export function formatNestBench(rows: NestBenchRow[]): string {
   const lines = ['Nesting fixture benchmark', '-------------------------']
   for (const r of rows) {
     lines.push(
-      `${r.fixture.padEnd(16)} ${r.engine.padEnd(12)} placed=${r.placed}/${r.placed + r.unplaced} sheets=${r.sheets} util=${(r.utilization * 100).toFixed(1)}% score=${r.score.toFixed(1)} ${r.ms.toFixed(1)}ms`,
+      `${r.fixture.padEnd(16)} ${r.engine.padEnd(12)} placed=${r.placed}/${r.placed + r.unplaced} sheets=${r.sheets} util=${(r.utilization * 100).toFixed(1)}% score=${r.score.toFixed(1)} first=${r.firstChampionMs.toFixed(1)}ms final=${r.finalMs.toFixed(1)}ms`,
     )
   }
   return lines.join('\n')

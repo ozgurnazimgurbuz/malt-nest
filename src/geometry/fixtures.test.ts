@@ -26,6 +26,10 @@ describe('Stage 7 nesting fixture suite', () => {
       if (!pair.blf || !pair.automatic) continue
       expect(pair.automatic.canonicalVsSeed).not.toBeNull()
       expect(pair.automatic.canonicalVsSeed).toBeLessThanOrEqual(0)
+      expect(pair.automatic.firstChampionMs).toBeGreaterThanOrEqual(0)
+      expect(pair.automatic.finalMs).toBeGreaterThanOrEqual(
+        pair.automatic.firstChampionMs,
+      )
     }
   }, 120_000)
 

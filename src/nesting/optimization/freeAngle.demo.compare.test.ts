@@ -1,9 +1,9 @@
 /**
  * Opt-in Demo.svg automatic free-angle benchmark.
  *
- * Run: RUN_DEMO_COMPARE=1 npx vitest run src/nesting/optimization/freeAngle.demo.compare.test.ts
+ * Run: DEMO_SVG=/path/to/Demo.svg npm test -- --run src/nesting/optimization/freeAngle.demo.compare.test.ts
  */
-import { readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import { parseSvgGeometry } from '../../svg/parseGeometry'
 import {
@@ -14,11 +14,19 @@ import type { NestingRequest, NestingSuccess } from '../types'
 import { runAutomaticNest } from './automaticOptimizer'
 import { coarseFreeAngles } from './rotations'
 
-const DEMO = '/Users/ozgurnazimgurbuz/Desktop/Demo.svg'
+const DEMO = process.env.DEMO_SVG ?? ''
 const OUT = '/tmp/malt-nest-automatic-demo-bench.json'
+const hasDemo = (() => {
+  if (!DEMO || !existsSync(DEMO)) return false
+  try {
+    return statSync(DEMO).isFile()
+  } catch {
+    return false
+  }
+})()
 
-describe.skipIf(process.env.RUN_DEMO_COMPARE !== '1')(
-  'Demo.svg automatic free-angle search',
+describe.skipIf(!hasDemo)(
+  'Demo.svg automatic search (DEMO_SVG=/path npm test -- --run freeAngle.demo.compare.test.ts)',
   () => {
     it('keeps its published exact seed while searching', () => {
       const geometry = parseSvgGeometry(readFileSync(DEMO, 'utf8'))

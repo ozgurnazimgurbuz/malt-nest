@@ -13,11 +13,17 @@ export type BenchmarkRow = {
   wasteMm2: number
   placed: number
   unplaced: number
-  timeMs: number
+  firstChampionMs: number
+  finalMs: number
   fitness: number
 }
 
-function row(label: string, result: NestingSuccess): BenchmarkRow {
+function row(
+  label: string,
+  result: NestingSuccess,
+  firstChampionMs: number,
+  finalMs: number,
+): BenchmarkRow {
   const score = scoreNestingResult(result)
   return {
     engine: label,
@@ -26,7 +32,8 @@ function row(label: string, result: NestingSuccess): BenchmarkRow {
     wasteMm2: result.wasteMm2,
     placed: result.statistics.placedCount,
     unplaced: result.statistics.unplacedCount,
-    timeMs: result.calculationTimeMs,
+    firstChampionMs,
+    finalMs,
     fitness: score.total,
   }
 }
@@ -37,15 +44,30 @@ export function compareBlfVsAutomatic(request: NestingRequest): {
   automatic: BenchmarkRow
   improved: boolean
 } {
+  const blfStartedAt = performance.now()
   const blfRaw = runBottomLeftNest(request)
+  const blfFinalMs = performance.now() - blfStartedAt
+  const automaticStartedAt = performance.now()
+  let automaticFirstChampionMs: number | null = null
   const automaticRaw = runAutomaticNest(request, {
     seed: request.settings.seed,
+    onProgress: ({ bestSoFar }) => {
+      if (automaticFirstChampionMs == null && bestSoFar) {
+        automaticFirstChampionMs = performance.now() - automaticStartedAt
+      }
+    },
   })
+  const automaticFinalMs = performance.now() - automaticStartedAt
   if (blfRaw.status !== 'ok' || automaticRaw.status !== 'ok') {
     throw new Error('Benchmark requires successful nests')
   }
-  const blf = row('blf', blfRaw)
-  const automatic = row('automatic', automaticRaw)
+  const blf = row('blf', blfRaw, blfFinalMs, blfFinalMs)
+  const automatic = row(
+    'automatic',
+    automaticRaw,
+    automaticFirstChampionMs ?? automaticFinalMs,
+    automaticFinalMs,
+  )
   return {
     blf,
     automatic,
