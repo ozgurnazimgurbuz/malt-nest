@@ -41,8 +41,14 @@ export function Workspace({
   nestDebug = false,
   calculating = false,
   nestProgress = null,
+  liveTrace = null,
 }: Props) {
-  const showNest = previewMode === 'nest' && nestResult != null
+  const showLiveNest = calculating && nestDebug && liveTrace != null
+  const showNest = showLiveNest || (previewMode === 'nest' && nestResult != null)
+  const displayedSheet = showLiveNest ? liveTrace.sheetIndex : nestSheetIndex
+  const placements = showLiveNest
+    ? (liveTrace.committed?.placements ?? [])
+    : (nestResult?.placements ?? [])
   const showLiveCard =
     nestProgress?.visible &&
     (calculating ||
@@ -85,14 +91,14 @@ export function Workspace({
               </button>
             </div>
           )}
-          {showNest && nestResult.sheets.length > 1 && (
+          {!showLiveNest && showNest && nestResult!.sheets.length > 1 && (
             <label className="sheet-picker">
               Sheet
               <select
                 value={nestSheetIndex}
                 onChange={(e) => onNestSheetIndex(Number(e.target.value))}
               >
-                {nestResult.sheets.map((s) => (
+                {nestResult!.sheets.map((s) => (
                   <option key={s.sheetIndex} value={s.sheetIndex}>
                     {s.sheetIndex + 1} / {nestResult.sheets.length}
                   </option>
@@ -131,7 +137,7 @@ export function Workspace({
               </span>
               <span className="sheet-frame__sep">·</span>
               <span className="sheet-frame__dim">
-                Nest sheet {nestSheetIndex + 1}
+                Nest sheet {displayedSheet + 1}
               </span>
             </div>
             <div className="sheet-frame__fit">
@@ -139,8 +145,10 @@ export function Workspace({
                 sheet={sheet}
                 marginMm={nest.marginMm}
                 parts={svg?.parts ?? []}
-                result={nestResult}
-                sheetIndex={nestSheetIndex}
+                placements={placements}
+                sheetIndex={displayedSheet}
+                attempts={showLiveNest ? liveTrace.trail : []}
+                current={showLiveNest ? liveTrace.current : null}
                 debug={nestDebug}
               />
             </div>

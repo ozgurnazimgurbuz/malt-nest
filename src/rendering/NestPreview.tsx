@@ -1,15 +1,19 @@
 import type { CSSProperties } from 'react'
 import type { GeometryPart } from '../geometry'
-import type { NestingSuccess } from '../nesting'
+import type { Placement } from '../nesting'
 import { applyPlacement, placementBounds } from '../nesting/placement/worldGeometry'
 import type { SheetSettings } from '../state'
+import type { TimedNestAttempt } from '../ui/liveNestTrace'
+import { NestAttemptTrail } from './NestAttemptTrail'
 
 type Props = {
   sheet: SheetSettings
   marginMm: number
   parts: GeometryPart[]
-  result: NestingSuccess
+  placements: Placement[]
   sheetIndex: number
+  attempts?: TimedNestAttempt[]
+  current?: TimedNestAttempt | null
   debug?: boolean
 }
 
@@ -26,15 +30,32 @@ export function NestPreview({
   sheet,
   marginMm,
   parts,
-  result,
+  placements,
   sheetIndex,
+  attempts = [],
+  current = null,
   debug = false,
 }: Props) {
   const w = Math.max(1, sheet.widthMm)
   const h = Math.max(1, sheet.heightMm)
   const m = Math.max(0, marginMm)
-  const placements = result.placements.filter((p) => p.sheetIndex === sheetIndex)
+  const sheetPlacements = placements.filter((p) => p.sheetIndex === sheetIndex)
+  const sheetAttempts = attempts.filter(
+    (attempt) => attempt.sheetIndex === sheetIndex,
+  )
   const partMap = new Map(parts.map((p) => [p.id, p]))
+  const currentPart =
+    current?.sheetIndex === sheetIndex ? partMap.get(current.partId) : undefined
+  const currentGeometry =
+    currentPart && current
+      ? applyPlacement(currentPart, {
+          partId: current.partId,
+          sheetIndex: current.sheetIndex,
+          x: current.x,
+          y: current.y,
+          rotation: current.rotation,
+        })
+      : null
 
   return (
     <div
@@ -63,7 +84,7 @@ export function NestPreview({
           />
         )}
 
-        {placements.map((pl) => {
+        {sheetPlacements.map((pl) => {
           const part = partMap.get(pl.partId)
           if (!part) return null
           const { outer, holes } = applyPlacement(part, pl)
@@ -91,6 +112,28 @@ export function NestPreview({
           )
         })}
       </svg>
+      <NestAttemptTrail
+        attempts={sheetAttempts}
+        parts={parts}
+        sheetWidth={w}
+        sheetHeight={h}
+      />
+      {currentGeometry ? (
+        <svg
+          className="nest-preview__attempt-svg"
+          viewBox={`0 0 ${w} ${h}`}
+          preserveAspectRatio="none"
+          aria-hidden="true"
+        >
+          <path
+            className="nest-preview__attempt-ghost"
+            d={[currentGeometry.outer, ...currentGeometry.holes]
+              .map(ringPath)
+              .join(' ')}
+            fillRule="evenodd"
+          />
+        </svg>
+      ) : null}
     </div>
   )
 }
