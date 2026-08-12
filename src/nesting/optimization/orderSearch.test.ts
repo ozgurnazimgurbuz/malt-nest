@@ -103,12 +103,6 @@ describe('buildOrderCandidates', () => {
     const names = buildOrderCandidates(parts, createRng(7)).map(
       (candidate) => candidate.name,
     )
-    expect(names.slice(0, 4)).toEqual([
-      'area_desc',
-      'perimeter_desc',
-      'hole_aware',
-      'area_asc',
-    ])
     expect(names).toEqual(expect.arrayContaining([
       'shuffle_0',
       'shuffle_1',

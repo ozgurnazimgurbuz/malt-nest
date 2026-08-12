@@ -17,12 +17,7 @@ import type {
   NestingResult,
   NestingSuccess,
 } from '../types'
-import {
-  expandOrder,
-  selectBeam,
-  selectNextBeam,
-  type RankedCandidate,
-} from './beamSearch'
+import { expandOrder, selectBeam, type RankedCandidate } from './beamSearch'
 import {
   createConvergenceState,
   markRequiredOrdersComplete,
@@ -37,13 +32,6 @@ import {
   rewardRepairOperator,
 } from './destroyRepair'
 import { individualKey, type Individual } from './individual'
-import { localSearchImprove } from './localSearch'
-import {
-  adjacentSwapMutation,
-  insertionMutation,
-  rotationMutation,
-  swapMutation,
-} from './mutation'
 import { buildOrderCandidates } from './orderSearch'
 import { BALANCED_ANGLES } from './rotations'
 import { createRng } from './rng'
@@ -360,9 +348,11 @@ export function runAutomaticNest(
   const rank = (
     individual: Individual,
     depth: RankDepth = 'quick',
+    searchRotations = depth === 'coarse',
   ): RankOutcome => {
     const individualCacheKey = individualKey(individual, runKey)
-    const key = `${depth}:${individualCacheKey}`
+    const semantics = searchRotations ? 'order' : 'plan'
+    const key = `${depth}:${semantics}:${individualCacheKey}`
     if (cheapCache.has(key)) {
       return {
         candidate: cheapCache.get(key) ?? null,
@@ -378,7 +368,7 @@ export function runAutomaticNest(
       preparedParts,
       engineId: 'automatic-anytime-v1',
     }
-    const placed = depth === 'coarse'
+    const placed = searchRotations
       ? placeWithOrderUnchecked(request, individual.order, rankOptions)
       : placeWithPlanUnchecked(request, individual, rankOptions)
     const elapsedMs = Math.max(0, now() - started)
@@ -387,7 +377,9 @@ export function runAutomaticNest(
     }
 
     recordEvaluation(convergence)
-    if (depth === 'quick') cheapEvaluatedKeys.add(individualCacheKey)
+    if (depth === 'quick' && !searchRotations) {
+      cheapEvaluatedKeys.add(individualCacheKey)
+    }
     if (placed.status !== 'ok') {
       cheapCache.set(key, null)
       notifyEvaluation('rank', elapsedMs, false)
@@ -399,8 +391,10 @@ export function runAutomaticNest(
     const candidate = { individual: actual, result }
     const actualKey = individualKey(actual, runKey)
     cheapCache.set(key, candidate)
-    cheapCache.set(`${depth}:${actualKey}`, candidate)
-    if (depth === 'quick') cheapEvaluatedKeys.add(actualKey)
+    cheapCache.set(`${depth}:${semantics}:${actualKey}`, candidate)
+    if (depth === 'quick' && !searchRotations) {
+      cheapEvaluatedKeys.add(actualKey)
+    }
     // Rank diagnostics compare like-for-like against the current champion.
     const improved = !cheapThreshold || isBetterNestingResult(result, cheapThreshold)
     notifyEvaluation('rank', elapsedMs, improved)
@@ -436,31 +430,6 @@ export function runAutomaticNest(
     cheapThreshold != null &&
     isBetterNestingResult(candidate.result, cheapThreshold)
 
-  if (preparedParts.length >= 64) {
-    const areaOrder = buildOrderCandidates(preparedParts.slice(), rng, {
-      includeRandom: false,
-    })[0]?.order ?? preparedIds
-    const outcome = rank({
-      order: areaOrder,
-      rotations: areaOrder.map(
-        (id) => preparedById.get(id)?.tallestRotation ?? BALANCED_ANGLES[0]!,
-      ),
-    })
-    if (outcome.cancelled) return cancelled()
-    if (
-      outcome.candidate &&
-      improvesCheapChampion(outcome.candidate)
-    ) {
-      const exact = evaluateAndRefreshExact(
-        outcome.candidate.individual,
-        'fixed',
-        'beam',
-      )
-      if (exact.cancelled || options.signal?.aborted) return cancelled()
-    }
-  }
-  if (halted()) return haltResult()
-
   emit({
     ratio: 0.25,
     phase: 'optimize',
@@ -474,12 +443,16 @@ export function runAutomaticNest(
   })
   for (const orderCandidate of requiredOrders) {
     if (halted()) return haltResult()
-    const outcome = rank({
-      order: orderCandidate.order,
-      rotations: orderCandidate.order.map(
-        (id) => preparedById.get(id)?.rotations[0] ?? BALANCED_ANGLES[0]!,
-      ),
-    })
+    const outcome = rank(
+      {
+        order: orderCandidate.order,
+        rotations: orderCandidate.order.map(
+          (id) => preparedById.get(id)?.rotations[0] ?? BALANCED_ANGLES[0]!,
+        ),
+      },
+      'quick',
+      true,
+    )
     if (outcome.cancelled) return cancelled()
     emit({
       ratio: 0.25,
@@ -510,159 +483,7 @@ export function runAutomaticNest(
       if (exact.cancelled || options.signal?.aborted) return cancelled()
     }
   }
-  const compactOrder = requiredOrders.find(
-    ({ name }) => name === 'compact_fill_desc')?.order
-  if (compactOrder) {
-    const widest: Individual = {
-      order: compactOrder,
-      rotations: compactOrder.map(
-        (id) => preparedById.get(id)?.widestRotation ?? BALANCED_ANGLES[0]!,
-      ),
-    }
-    if (!cheapEvaluatedKeys.has(individualKey(widest, runKey))) {
-      const outcome = rank(widest)
-      if (outcome.cancelled) return cancelled()
-      if (outcome.candidate) {
-        const exact = evaluateAndRefreshExact(
-          outcome.candidate.individual, 'fixed', 'orders')
-        if (exact.cancelled || options.signal?.aborted) return cancelled()
-      }
-    }
-  }
-  if (!cheapThreshold) return cancelled()
-  const restartRng = createRng(seed)
-  let restartLeader: NestingSuccess = cheapThreshold
-  for (let index = 0; index < 32 && !halted(); index++) {
-    const order = restartRng.shuffle(preparedIds)
-    const individual: Individual = {
-      order,
-      rotations: order.map(() => restartRng.pick(allowedRotations)),
-    }
-    if (cheapEvaluatedKeys.has(individualKey(individual, runKey))) {
-      recordEvaluation(convergence)
-      continue
-    }
-    const outcome = rank(individual)
-    if (outcome.cancelled) return cancelled()
-    if (
-      !outcome.candidate ||
-      !isBetterNestingResult(outcome.candidate.result, restartLeader)
-    ) continue
-    restartLeader = outcome.candidate.result
-    const exact = evaluateAndRefreshExact(
-      outcome.candidate.individual,
-      'fixed',
-      'beam',
-    )
-    if (exact.cancelled || options.signal?.aborted) return cancelled()
-  }
   markRequiredOrdersComplete(convergence)
-
-  let localLeader: NestingSuccess = cheapThreshold
-  let localCancelled = false
-  let localEvaluations = 0
-  const localLimit = Math.min(120, preparedParts.length * 4)
-  localSearchImprove(
-    championGene,
-    allowedRotations,
-    createRng(seed),
-    (individual) => {
-      localEvaluations++
-      const key = individualKey(individual, runKey)
-      if (cheapEvaluatedKeys.has(key)) recordEvaluation(convergence)
-      const outcome = rank(individual)
-      if (outcome.cancelled) localCancelled = true
-      if (
-        outcome.candidate &&
-        isBetterNestingResult(outcome.candidate.result, localLeader)
-      ) {
-        localLeader = outcome.candidate.result
-        const exact = evaluateAndRefreshExact(
-          outcome.candidate.individual,
-          'fixed',
-          'beam',
-        )
-        if (exact.cancelled) localCancelled = true
-      }
-      return { score: scoreNestingResult(outcome.candidate?.result ?? localLeader) }
-    },
-    1,
-    () => localEvaluations >= localLimit || localCancelled || halted() ? 1 : 0,
-  )
-  if (localCancelled || options.signal?.aborted) return cancelled()
-  if (halted()) return haltResult()
-  if (!cheapThreshold) return cancelled()
-
-  let searchGene: Individual = championGene
-  let searchResult: NestingSuccess = cheapThreshold
-  let simplifiedLeader: NestingSuccess = cheapThreshold
-  let randomRestart = false
-  const mixedRng = createRng(seed)
-  const mixedEvaluationLimit = Math.min(
-    64,
-    Math.max(8, preparedParts.length * 2),
-  )
-  let mixedEvaluations = 0
-  while (
-    (preparedParts.length >= 2 || allowedRotations.length >= 2) &&
-    mixedEvaluations < mixedEvaluationLimit &&
-    !halted()
-  ) {
-    mixedEvaluations++
-    let individual: Individual
-    if (randomRestart) {
-      const order = mixedRng.shuffle(preparedIds)
-      individual = {
-        order,
-        rotations: order.map(() => mixedRng.pick(allowedRotations)),
-      }
-    } else {
-      switch (mixedRng.int(4)) {
-        case 0:
-          individual = swapMutation(searchGene, mixedRng)
-          break
-        case 1:
-          individual = insertionMutation(searchGene, mixedRng)
-          break
-        case 2:
-          individual = adjacentSwapMutation(searchGene, mixedRng)
-          break
-        default:
-          individual = rotationMutation(
-            searchGene,
-            mixedRng,
-            allowedRotations,
-          )
-      }
-    }
-    randomRestart = !randomRestart
-    if (cheapEvaluatedKeys.has(individualKey(individual, runKey))) {
-      recordEvaluation(convergence)
-      continue
-    }
-    const outcome = rank(individual)
-    if (outcome.cancelled) return cancelled()
-    if (!outcome.candidate) continue
-    if (isBetterNestingResult(outcome.candidate.result, searchResult)) {
-      searchGene = outcome.candidate.individual
-      searchResult = outcome.candidate.result
-    }
-    if (!isBetterNestingResult(outcome.candidate.result, simplifiedLeader)) {
-      continue
-    }
-    simplifiedLeader = outcome.candidate.result
-    const exact = evaluateAndRefreshExact(
-      outcome.candidate.individual,
-      'fixed',
-      'beam',
-    )
-    if (exact.cancelled || options.signal?.aborted) return cancelled()
-    if (exact.improved && championGene && cheapThreshold) {
-      searchGene = championGene
-      searchResult = cheapThreshold
-    }
-  }
-  if (halted()) return haltResult()
 
   if (beam.length === 0) {
     beam = [{ individual: championGene, result: champion }]
@@ -690,7 +511,7 @@ export function runAutomaticNest(
         if (!outcome.candidate) continue
         children.push(outcome.candidate)
         if (halted()) return haltResult()
-        const tentative = selectNextBeam(beam, children, 4, runKey)
+        const tentative = selectBeam([...beam, ...children], 4, runKey)
         const rankedKey = individualKey(
           outcome.candidate.individual,
           runKey,
@@ -710,7 +531,7 @@ export function runAutomaticNest(
         }
       }
     }
-    const next = selectNextBeam(beam, children, 4, runKey)
+    const next = selectBeam([...beam, ...children], 4, runKey)
     const nextKeys = next.map(({ individual }) =>
       individualKey(individual, runKey),
     )

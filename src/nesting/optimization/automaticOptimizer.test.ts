@@ -454,368 +454,6 @@ async function repairImprovementScenario(repairExactWaste = 50) {
   }
 }
 
-async function mixedNeighborhoodScenario() {
-  const req = request([
-    rect('a', 0, 40, 10),
-    rect('b', 1, 35, 12),
-    rect('c', 2, 30, 14),
-    rect('d', 3, 25, 16),
-  ])
-  let mixedStarted = false
-  let valleyRanked = false
-  let targetPending = false
-  let clock = 0
-  const events: string[] = []
-  const localEvaluationCounts: number[] = []
-  const rngSeeds: number[] = []
-  const valley = {
-    order: ['d', 'c', 'b', 'a'],
-    rotations: [90, 0, 0, 0],
-  }
-
-  vi.resetModules()
-  vi.doMock('../placement/blf', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../placement/blf')>()
-    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
-      (nestRequest, options) => scoredResult(
-        nestRequest,
-        options.preparedParts?.map(({ partId }) => partId) ?? [],
-        100,
-      )
-    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
-      (nestRequest, plan, options) => {
-        if (options.nfpFidelity === 'simplified' && mixedStarted) {
-          if (!valleyRanked) {
-            valleyRanked = true
-            events.push('local:worse')
-            return scoredResult(nestRequest, plan.order, 120)
-          }
-          targetPending = true
-          events.push('restart:leader')
-          return scoredResult(nestRequest, plan.order, 50)
-        }
-        if (options.nfpFidelity === 'exact' && targetPending) {
-          targetPending = false
-          events.push('exact:improved')
-          return scoredResult(nestRequest, plan.order, 50)
-        }
-        return scoredResult(nestRequest, plan.order, 100)
-      }
-    return { ...actual, runBottomLeftNestUnchecked, placeWithPlanUnchecked }
-  })
-  vi.doMock('./mutation', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('./mutation')>()
-    const controlled = () => {
-      mixedStarted = true
-      return valley
-    }
-    return {
-      ...actual,
-      adjacentSwapMutation: controlled,
-      insertionMutation: controlled,
-      rotationMutation: controlled,
-      swapMutation: controlled,
-    }
-  })
-  vi.doMock('./localSearch', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('./localSearch')>()
-    const localSearchImprove: typeof actual.localSearchImprove = (
-      start,
-      allowedRotations,
-      rng,
-      evaluate,
-      deadlineMs,
-      now,
-    ) => {
-      events.push('local')
-      let evaluations = 0
-      const result = actual.localSearchImprove(
-        start,
-        allowedRotations,
-        rng,
-        (individual) => {
-          evaluations++
-          return evaluate(individual)
-        },
-        deadlineMs,
-        now,
-      )
-      localEvaluationCounts.push(evaluations)
-      return result
-    }
-    return { ...actual, localSearchImprove }
-  })
-  vi.doMock('./rng', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('./rng')>()
-    const createRng: typeof actual.createRng = (seed) => {
-      rngSeeds.push(seed)
-      return actual.createRng(seed)
-    }
-    return { ...actual, createRng }
-  })
-
-  try {
-    const { runAutomaticNest: runMockedAutomaticNest } =
-      await import('./automaticOptimizer')
-    const result = runMockedAutomaticNest(req, {
-      deterministic: false,
-      now: () => clock,
-      onProgress: ({ bestSoFar, message }) => {
-        if (message?.startsWith('Trying orders')) events.push('orders')
-        if (bestSoFar?.wasteMm2 === 50) clock = 7_000
-      },
-    })
-    return { events, localEvaluationCounts, result, rngSeeds }
-  } finally {
-    vi.doUnmock('../placement/blf')
-    vi.doUnmock('./localSearch')
-    vi.doUnmock('./mutation')
-    vi.doUnmock('./rng')
-    vi.resetModules()
-  }
-}
-
-async function largeExtremeSeedScenario() {
-  const req = request(
-    Array.from({ length: 64 }, (_, index) =>
-      rect(`large-${index}`, index, 20, 10),
-    ),
-    {
-      allowedRotations: [0, 90],
-      allowedRotationsExplicit: [0, 90],
-      allowArbitraryRotation: false,
-      rotationMode: 'orthogonal',
-    },
-  )
-  req.sheets = [{ widthMm: 500, heightMm: 400, marginMm: 0, quantity: 2 }]
-  let clock = 0
-  const events: string[] = []
-
-  vi.resetModules()
-  vi.doMock('../placement/blf', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../placement/blf')>()
-    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
-      (nestRequest, options) => scoredResult(
-        nestRequest,
-        options.preparedParts?.map(({ partId }) => partId) ?? [],
-        100,
-      )
-    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
-      (nestRequest, plan, options) => {
-        const tallest = plan.rotations.every((rotation) => rotation === 90)
-        if (tallest) {
-          events.push(`${options.nfpFidelity}:tallest`)
-          if (options.nfpFidelity === 'exact') clock = 7_000
-          const result = scoredResult(nestRequest, plan.order, 50)
-          return {
-            ...result,
-            placements: result.placements.map((placement, index) => ({
-              ...placement,
-              rotation: plan.rotations[index]!,
-            })),
-          }
-        }
-        return scoredResult(nestRequest, plan.order, 100)
-      }
-    return { ...actual, runBottomLeftNestUnchecked, placeWithPlanUnchecked }
-  })
-  vi.doMock('./mutation', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('./mutation')>()
-    const observed = (individual: Parameters<typeof actual.swapMutation>[0]) => {
-      events.push('mixed')
-      return individual
-    }
-    return {
-      ...actual,
-      adjacentSwapMutation: observed,
-      insertionMutation: observed,
-      rotationMutation: observed,
-      swapMutation: observed,
-    }
-  })
-
-  try {
-    const { runAutomaticNest: runMockedAutomaticNest } =
-      await import('./automaticOptimizer')
-    const result = runMockedAutomaticNest(req, {
-      deterministic: false,
-      now: () => clock,
-    })
-    return { events, result }
-  } finally {
-    vi.doUnmock('../placement/blf')
-    vi.doUnmock('./mutation')
-    vi.resetModules()
-  }
-}
-
-async function compactWidestScenario() {
-  const req = request([
-    rect('a', 0, 20, 20),
-    rect('b', 1, 50, 10),
-    rect('c', 2, 15, 30),
-    rect('d', 3, 10, 10),
-  ], {
-    allowedRotations: [0, 90],
-    allowedRotationsExplicit: [0, 90],
-    allowArbitraryRotation: false,
-    rotationMode: 'orthogonal',
-  })
-  const prepared = prepareParts(req.parts, req.settings, { sortByArea: true })
-  const byId = new Map(prepared.map((part) => [part.partId, part]))
-  const compactOrder = buildOrderCandidates(prepared, createRng(7), {
-    includeRandom: false,
-  }).find(({ name }) => name === 'compact_fill_desc')!.order
-  const compactRotations = compactOrder.map((id) => byId.get(id)!.widestRotation)
-  const events: string[] = []
-  let clock = 0
-
-  vi.resetModules()
-  vi.doMock('../placement/blf', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../placement/blf')>()
-    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
-      (nestRequest, options) => scoredResult(
-        nestRequest,
-        options.preparedParts?.map(({ partId }) => partId) ?? [],
-        100,
-      )
-    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
-      (nestRequest, plan, options) => {
-        const target = plan.order.join() === compactOrder.join() &&
-          plan.rotations.join() === compactRotations.join()
-        if (!target) return scoredResult(nestRequest, plan.order, 100)
-        events.push(`compact:${options.nfpFidelity}`)
-        if (options.nfpFidelity === 'exact') clock = 7_000
-        const result = scoredResult(nestRequest, plan.order, 50)
-        return {
-          ...result,
-          placements: result.placements.map((placement, index) => ({
-            ...placement,
-            rotation: plan.rotations[index]!,
-          })),
-        }
-      }
-    return { ...actual, runBottomLeftNestUnchecked, placeWithPlanUnchecked }
-  })
-
-  try {
-    const { runAutomaticNest: runMockedAutomaticNest } =
-      await import('./automaticOptimizer')
-    const result = runMockedAutomaticNest(req, {
-      deterministic: false,
-      now: () => clock,
-      onProgress: ({ message }) => {
-        if (message?.startsWith('Trying orders')) events.push('orders')
-      },
-    })
-    return { events, result }
-  } finally {
-    vi.doUnmock('../placement/blf')
-    vi.resetModules()
-  }
-}
-
-async function postOrderRestartScenario() {
-  const req = request([
-    rect('a', 0, 20, 20),
-    rect('b', 1, 50, 10),
-    rect('c', 2, 15, 30),
-    rect('d', 3, 10, 10),
-  ], {
-    allowedRotations: [0, 90],
-    allowedRotationsExplicit: [0, 90],
-    allowArbitraryRotation: false,
-    rotationMode: 'orthogonal',
-  })
-  const prepared = prepareParts(req.parts, req.settings, { sortByArea: true })
-  const preparedIds = prepared.map(({ partId }) => partId)
-  const preparedById = new Map(prepared.map((part) => [part.partId, part]))
-  const compactOrder = buildOrderCandidates(prepared, createRng(7), {
-    includeRandom: false,
-  }).find(({ name }) => name === 'compact_fill_desc')!.order
-  const compactKey = `${compactOrder.join(',')}:${compactOrder
-    .map((id) => preparedById.get(id)!.widestRotation).join(',')}`
-  const expectedRestartRng = createRng(7)
-  const restartOrder = expectedRestartRng.shuffle(preparedIds)
-  const restartKey = `${restartOrder.join(',')}:${restartOrder
-    .map(() => expectedRestartRng.pick([0, 90])).join(',')}`
-  const expectedMainNext = createRng(7).next()
-  const events: string[] = []
-  let clock = 0
-  let readMainNext: (() => number) | null = null
-
-  vi.resetModules()
-  vi.doMock('../placement/blf', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('../placement/blf')>()
-    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
-      (nestRequest, options) => scoredResult(
-        nestRequest,
-        options.preparedParts?.map(({ partId }) => partId) ?? [],
-        100,
-      )
-    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
-      (nestRequest, plan, options) => {
-        const key = `${plan.order.join(',')}:${plan.rotations.join(',')}`
-        if (key === compactKey) events.push(`compact:${options.nfpFidelity}`)
-        if (key === restartKey) events.push(`restart:${options.nfpFidelity}`)
-        const result = scoredResult(
-          nestRequest,
-          plan.order,
-          key === restartKey ? 50 : 100,
-        )
-        return {
-          ...result,
-          placements: result.placements.map((placement, index) => ({
-            ...placement,
-            rotation: plan.rotations[index]!,
-          })),
-        }
-      }
-    return { ...actual, runBottomLeftNestUnchecked, placeWithPlanUnchecked }
-  })
-  vi.doMock('./localSearch', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('./localSearch')>()
-    const localSearchImprove: typeof actual.localSearchImprove = (start) => {
-      events.push('local')
-      clock = 7_000
-      return start
-    }
-    return { ...actual, localSearchImprove }
-  })
-  vi.doMock('./rng', async (importOriginal) => {
-    const actual = await importOriginal<typeof import('./rng')>()
-    let creations = 0
-    const createRng: typeof actual.createRng = (seed) => {
-      const rng = actual.createRng(seed)
-      if (creations++ === 0) readMainNext = () => rng.next()
-      return rng
-    }
-    return { ...actual, createRng }
-  })
-
-  try {
-    const { runAutomaticNest: runMockedAutomaticNest } =
-      await import('./automaticOptimizer')
-    const result = runMockedAutomaticNest(req, {
-      deterministic: false,
-      now: () => clock,
-      onProgress: ({ message }) => {
-        if (message?.startsWith('Trying orders')) events.push('orders')
-      },
-    })
-    return {
-      events,
-      expectedMainNext,
-      mainNext: readMainNext ? readMainNext() : Number.NaN,
-      result,
-    }
-  } finally {
-    vi.doUnmock('../placement/blf')
-    vi.doUnmock('./localSearch')
-    vi.doUnmock('./rng')
-    vi.resetModules()
-  }
-}
 
 describe('runAutomaticNest', () => {
   it('exports exactly the approved automatic options', () => {
@@ -1217,35 +855,35 @@ describe('runAutomaticNest', () => {
       .toBe(90)
     expect(isBetterNestingResult(suppliedResult, rerotatedResult)).toBe(true)
 
+    let suppliedExpanded = false
+    let suppliedPlanRanks = 0
     vi.resetModules()
-    vi.doMock('./localSearch', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('./localSearch')>()
-      const localSearchImprove: typeof actual.localSearchImprove = (
-        _start,
-        _allowed,
-        _rng,
-        evaluate,
+    vi.doMock('../placement/blf', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../placement/blf')>()
+      const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked = (
+        nestRequest,
+        plan,
+        options,
       ) => {
-        evaluate(supplied)
-        return supplied
+        if (
+          options.freeAngleDepth === 'quick' &&
+          plan.order.join() === supplied.order.join() &&
+          plan.rotations.join() === supplied.rotations.join()
+        ) {
+          suppliedPlanRanks++
+        }
+        return actual.placeWithPlanUnchecked(nestRequest, plan, options)
       }
-      return { ...actual, localSearchImprove }
+      return { ...actual, placeWithPlanUnchecked }
     })
-    vi.doMock('./rng', async (importOriginal) => {
-      const actual = await importOriginal<typeof import('./rng')>()
-      let created = 0
-      const createRng: typeof actual.createRng = (seed) => {
-        created++
-        const rng = actual.createRng(seed)
-        return created === 2
-          ? {
-              ...rng,
-              shuffle: (items) => items.slice(),
-              pick: (items) => items[0]!,
-            }
-          : rng
+    vi.doMock('./beamSearch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./beamSearch')>()
+      const expandOrder: typeof actual.expandOrder = () => {
+        if (suppliedExpanded) return []
+        suppliedExpanded = true
+        return [supplied]
       }
-      return { ...actual, createRng }
+      return { ...actual, expandOrder }
     })
 
     try {
@@ -1262,6 +900,8 @@ describe('runAutomaticNest', () => {
 
       expect(result.status).toBe('ok')
       if (result.status !== 'ok') return
+      expect(suppliedExpanded).toBe(true)
+      expect(suppliedPlanRanks).toBeGreaterThan(0)
       expect(published.some((candidate) =>
         compareNestingResults(candidate, suppliedResult) === 0 &&
         candidate.placements.map(({ rotation }) => rotation).join(',') ===
@@ -1269,29 +909,10 @@ describe('runAutomaticNest', () => {
       )).toBe(true)
       expect(compareNestingResults(result, suppliedResult)).toBeLessThanOrEqual(0)
     } finally {
-      vi.doUnmock('./localSearch')
-      vi.doUnmock('./rng')
+      vi.doUnmock('../placement/blf')
+      vi.doUnmock('./beamSearch')
       vi.resetModules()
     }
-  })
-
-  it('continues past a non-improving local move to exact-gate a restart leader', async () => {
-    const { events, localEvaluationCounts, result, rngSeeds } =
-      await mixedNeighborhoodScenario()
-
-    const requiredOrdersEnd = events.lastIndexOf('orders')
-    const local = events.indexOf('local')
-    const mixed = events.indexOf('local:worse')
-    expect(requiredOrdersEnd).toBeGreaterThan(-1)
-    expect(local).toBeGreaterThan(requiredOrdersEnd)
-    expect(mixed).toBeGreaterThan(local)
-    expect(events.slice(mixed, mixed + 3)).toEqual([
-      'local:worse', 'restart:leader', 'exact:improved',
-    ])
-    expect(localEvaluationCounts).toEqual([16])
-    expect(rngSeeds).toEqual([7, 7, 7, 7])
-    expect(result.status).toBe('ok')
-    if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
   })
 
   it('reserves convergence budget for beam and finalist refinement', () => {
@@ -1315,64 +936,12 @@ describe('runAutomaticNest', () => {
     expect(messages).toContain('Improving layout · refining finalist')
   })
 
-  it('exact-gates the large-part area-tallest seed before mixed evaluations', async () => {
-    const { events, result } = await largeExtremeSeedScenario()
-
-    expect(events.slice(0, 2)).toEqual([
-      'simplified:tallest',
-      'exact:tallest',
-    ])
-    expect(events).not.toContain('mixed')
-    expect(result.status).toBe('ok')
-    if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
-  })
-
-  it('exact-gates the distinct compact-fill widest plan after required orders', async () => {
-    const { events, result } = await compactWidestScenario()
-    const lastOrder = events.lastIndexOf('orders')
-    const simplified = events.indexOf('compact:simplified')
-    const exact = events.indexOf('compact:exact')
-
-    expect(lastOrder).toBeGreaterThan(-1)
-    expect(simplified).toBeGreaterThan(lastOrder)
-    expect(exact).toBeGreaterThan(simplified)
-    expect(result.status).toBe('ok')
-    if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
-  })
-
-  it('runs isolated exact-gated restarts between compact orders and local search', async () => {
-    const { events, expectedMainNext, mainNext, result } =
-      await postOrderRestartScenario()
-    const compact = events.indexOf('compact:simplified')
-    const restartRank = events.indexOf('restart:simplified')
-    const restartExact = events.indexOf('restart:exact')
-
-    expect(compact).toBeGreaterThan(events.lastIndexOf('orders'))
-    expect(restartRank).toBeGreaterThan(compact)
-    expect(restartExact).toBeGreaterThan(restartRank)
-    expect(events.indexOf('local')).toBeGreaterThan(restartExact)
-    expect(mainNext).toBe(expectedMainNext)
-    expect(result.status).toBe('ok')
-    if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
-  })
-
   it('preserves the champion when an exact replay rejects a cheap improvement', async () => {
     const { defaultTargetExactCalls, publishedChampions } =
       await fidelityPromotionScenario(45)
 
     expect(defaultTargetExactCalls).toBe(1)
     expect(publishedChampions).toBe(1)
-  })
-
-  it('hands off from bounded mixed search to beam exploration', async () => {
-    const { beamLayers, stableBeamLayers } = await fidelityPromotionScenario(75, {
-      stopAtFirstLayer: false,
-      childWaste: 1,
-    })
-
-    expect(beamLayers[0]).toBe(1)
-    expect(beamLayers.length).toBeGreaterThan(1)
-    expect(stableBeamLayers).toEqual([])
   })
 
   it('runs seed one-degree polish only after a strict refine improvement', async () => {
@@ -1434,6 +1003,74 @@ describe('runAutomaticNest', () => {
       (stage === 'search' || stage === 'coarse') && kind === 'exact' && improved,
     )).toBe(true)
     expect(evaluations.length).toBeLessThan(50)
+  })
+
+  it('searches allowed rotations for required quick-order candidates', async () => {
+    const req = request([rect('bar', 0, 100, 10)], {
+      allowedRotations: [0, 90],
+      allowedRotationsExplicit: [0, 90],
+      allowArbitraryRotation: false,
+      rotationMode: 'orthogonal',
+    })
+    req.sheets = [{
+      widthMm: 20,
+      heightMm: 110,
+      marginMm: 0,
+      quantity: 1,
+    }]
+    const fixed = placeWithPlan(req, {
+      order: ['bar'],
+      rotations: [0],
+    }, {
+      freeAngleDepth: 'quick',
+      nfpFidelity: 'simplified',
+    })
+    const searched = placeWithOrder(req, ['bar'], {
+      freeAngleDepth: 'quick',
+      nfpFidelity: 'simplified',
+    })
+
+    expect(fixed.status).toBe('ok')
+    expect(searched.status).toBe('ok')
+    if (fixed.status !== 'ok' || searched.status !== 'ok') return
+    expect(fixed.statistics.placedCount).toBe(0)
+    expect(searched.statistics.placedCount).toBe(1)
+    expect(searched.placements[0]?.rotation).toBe(90)
+
+    const controller = new AbortController()
+    let quickOrderCalls = 0
+    vi.resetModules()
+    vi.doMock('../placement/blf', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../placement/blf')>()
+      const placeWithOrderUnchecked: typeof actual.placeWithOrderUnchecked =
+        (nestRequest, order, options) => {
+          const result = actual.placeWithOrderUnchecked(
+            nestRequest,
+            order,
+            options,
+          )
+          if (options.freeAngleDepth === 'quick') {
+            quickOrderCalls++
+            controller.abort()
+          }
+          return result
+        }
+      return { ...actual, placeWithOrderUnchecked }
+    })
+
+    try {
+      const { runAutomaticNest: runMockedAutomaticNest } =
+        await import('./automaticOptimizer')
+      runMockedAutomaticNest(req, {
+        deterministic: true,
+        now: () => 0,
+        signal: controller.signal,
+      })
+      expect(quickOrderCalls).toBe(1)
+    } finally {
+      vi.doUnmock('../placement/blf')
+      vi.resetModules()
+    }
   })
 
   it('refines a repair champion before evaluating another repair', async () => {
@@ -1503,39 +1140,24 @@ describe('runAutomaticNest', () => {
     expect(automaticAttempts).toEqual(seedAttempts)
   })
 
-  it('uses the first-champion safety ceiling without the old stagnation stop', () => {
+  it('uses the request-start safety ceiling before ranking orders', () => {
     const req = request([rect('a', 0, 20, 10), rect('b', 1, 10, 20)])
 
-    let safetyClock = 0
-    let safetyRanks = 0
-    const safety = runAutomaticNest(req, {
+    let clock = 0
+    let ranks = 0
+    const result = runAutomaticNest(req, {
       deterministic: false,
-      now: () => safetyClock,
+      now: () => clock,
       onProgress: ({ bestSoFar }) => {
-        if (bestSoFar) safetyClock = 7_000
+        if (bestSoFar) clock = 5_000
       },
       onEvaluation: ({ kind }) => {
-        if (kind === 'rank') safetyRanks++
+        if (kind === 'rank') ranks++
       },
     })
 
-    let stagnationClock = 0
-    let stagnationRanks = 0
-    const stagnation = runAutomaticNest(req, {
-      deterministic: false,
-      now: () => stagnationClock,
-      onEvaluation: ({ kind }) => {
-        if (kind === 'rank') {
-          stagnationRanks++
-          stagnationClock = 100
-        }
-      },
-    })
-
-    expect(safety.status).toBe('ok')
-    expect(safetyRanks).toBe(0)
-    expect(stagnation.status).toBe('ok')
-    expect(stagnationRanks).toBeGreaterThan(1)
+    expect(result.status).toBe('ok')
+    expect(ranks).toBe(0)
   })
 
   it('evaluates every required deterministic order before beam search', () => {

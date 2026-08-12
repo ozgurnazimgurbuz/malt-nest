@@ -32,7 +32,7 @@ export function createConvergenceState({
     lastImprovementMs: null,
     evaluations: 0,
     evaluationsSinceImprovement: 0,
-    evaluationLimit: Math.max(640, partCount * 4),
+    evaluationLimit: Math.max(64, partCount * 4),
     requiredOrdersComplete: false,
   }
 }
@@ -72,10 +72,21 @@ export function shouldStop(
     )
   }
 
-  if (state.firstChampionMs === null) return false
+  if (nowMs - state.startedAtMs >= 5_000) return true
+
+  if (state.firstChampionMs === null || state.lastImprovementMs === null) {
+    return false
+  }
+
+  if (
+    nowMs - state.lastImprovementMs >=
+    Math.max(100, 2 * (state.firstChampionMs - state.startedAtMs))
+  ) {
+    return true
+  }
+
   return (
-    nowMs - state.firstChampionMs >= 7_000 ||
-    (state.requiredOrdersComplete &&
-      state.evaluationsSinceImprovement >= state.evaluationLimit)
+    state.requiredOrdersComplete &&
+    state.evaluationsSinceImprovement >= state.evaluationLimit
   )
 }

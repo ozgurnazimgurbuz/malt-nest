@@ -9,24 +9,24 @@ import {
 } from './convergence'
 
 describe('convergence policy', () => {
-  it('sets a benchmark-derived minimum evaluation limit of 640', () => {
+  it('sets a minimum evaluation limit of 64', () => {
     expect(
       createConvergenceState({
         partCount: 10,
         deterministic: true,
         startedAtMs: 0,
       }).evaluationLimit,
-    ).toBe(640)
+    ).toBe(64)
   })
 
   it('scales the evaluation limit with part count', () => {
     expect(
       createConvergenceState({
-        partCount: 200,
+        partCount: 20,
         deterministic: true,
         startedAtMs: 0,
       }).evaluationLimit,
-    ).toBe(800)
+    ).toBe(80)
   })
 
   it('rejects invalid part counts', () => {
@@ -67,7 +67,7 @@ describe('convergence policy', () => {
     expect(shouldStop(state, 5_000, false)).toBe(false)
   })
 
-  it('stops deterministically at the post-order non-improvement limit without a clock', () => {
+  it('stops deterministically only after required orders and the non-improvement limit', () => {
     const state = createConvergenceState({
       partCount: 10,
       deterministic: true,
@@ -76,12 +76,16 @@ describe('convergence policy', () => {
     for (let i = 0; i < state.evaluationLimit; i++) recordEvaluation(state)
 
     expect(shouldStop(state, 0, false)).toBe(false)
+
     markRequiredOrdersComplete(state)
-    for (let i = 0; i < state.evaluationLimit; i++) recordEvaluation(state)
+    for (let i = 0; i < state.evaluationLimit - 1; i++) recordEvaluation(state)
+    expect(shouldStop(state, 0, false)).toBe(false)
+
+    recordEvaluation(state)
     expect(shouldStop(state, 0, false)).toBe(true)
   })
 
-  it('does not stop for champion-relative stagnation gaps', () => {
+  it('stops non-deterministic stagnation at the 100ms floor boundary', () => {
     const state = createConvergenceState({
       partCount: 10,
       deterministic: false,
@@ -89,18 +93,33 @@ describe('convergence policy', () => {
     })
     recordFirstChampion(state, 40)
 
-    expect(shouldStop(state, 6_999, false)).toBe(false)
+    expect(shouldStop(state, 139, false)).toBe(false)
+    expect(shouldStop(state, 140, false)).toBe(true)
   })
 
-  it('applies the seven-second ceiling after the first champion', () => {
+  it('applies non-deterministic stagnation after required orders complete', () => {
     const state = createConvergenceState({
       partCount: 10,
       deterministic: false,
       startedAtMs: 0,
     })
     recordFirstChampion(state, 40)
-    expect(shouldStop(state, 7_039, false)).toBe(false)
-    expect(shouldStop(state, 7_040, false)).toBe(true)
+    markRequiredOrdersComplete(state)
+
+    expect(shouldStop(state, 139, false)).toBe(false)
+    expect(shouldStop(state, 140, false)).toBe(true)
+  })
+
+  it('uses twice the seed duration when it exceeds the floor', () => {
+    const state = createConvergenceState({
+      partCount: 10,
+      deterministic: false,
+      startedAtMs: 0,
+    })
+    recordFirstChampion(state, 80)
+
+    expect(shouldStop(state, 239, false)).toBe(false)
+    expect(shouldStop(state, 240, false)).toBe(true)
   })
 
   it('records improvements without replacing the seed timestamp or total evaluations', () => {
@@ -135,14 +154,27 @@ describe('convergence policy', () => {
     expect(state.evaluationsSinceImprovement).toBe(0)
   })
 
-  it('does not start the safety ceiling before a champion exists', () => {
+  it('applies the safety ceiling before mandatory orders complete', () => {
     const state = createConvergenceState({
       partCount: 10,
       deterministic: false,
       startedAtMs: 100,
     })
 
-    expect(shouldStop(state, 100_000, false)).toBe(false)
+    expect(shouldStop(state, 5_099, false)).toBe(false)
+    expect(shouldStop(state, 5_100, false)).toBe(true)
+  })
+
+  it('applies the safety ceiling after required orders complete', () => {
+    const state = createConvergenceState({
+      partCount: 10,
+      deterministic: false,
+      startedAtMs: 100,
+    })
+    markRequiredOrdersComplete(state)
+
+    expect(shouldStop(state, 5_099, false)).toBe(false)
+    expect(shouldStop(state, 5_100, false)).toBe(true)
   })
 
   it('stops non-deterministically at the post-order count limit boundary', () => {
@@ -161,14 +193,15 @@ describe('convergence policy', () => {
     expect(shouldStop(state, 0, false)).toBe(true)
   })
 
-  it('does not time-stop without a champion', () => {
+  it('does not time-stop without a champion except at the safety ceiling', () => {
     const state = createConvergenceState({
       partCount: 10,
       deterministic: false,
       startedAtMs: 0,
     })
 
-    expect(shouldStop(state, 100_000, false)).toBe(false)
+    expect(shouldStop(state, 4_999, false)).toBe(false)
+    expect(shouldStop(state, 5_000, false)).toBe(true)
   })
 
   it('does not stop on the count limit without a champion', () => {
