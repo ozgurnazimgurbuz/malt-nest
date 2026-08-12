@@ -524,9 +524,35 @@ export function runAutomaticNest(
       }
     }
   }
+  if (!cheapThreshold) return cancelled()
+  const restartRng = createRng(seed)
+  let restartLeader: NestingSuccess = cheapThreshold
+  for (let index = 0; index < 32 && !halted(); index++) {
+    const order = restartRng.shuffle(preparedIds)
+    const individual: Individual = {
+      order,
+      rotations: order.map(() => restartRng.pick(allowedRotations)),
+    }
+    if (cheapEvaluatedKeys.has(individualKey(individual, runKey))) {
+      recordEvaluation(convergence)
+      continue
+    }
+    const outcome = rank(individual)
+    if (outcome.cancelled) return cancelled()
+    if (
+      !outcome.candidate ||
+      !isBetterNestingResult(outcome.candidate.result, restartLeader)
+    ) continue
+    restartLeader = outcome.candidate.result
+    const exact = evaluateAndRefreshExact(
+      outcome.candidate.individual,
+      'fixed',
+      'beam',
+    )
+    if (exact.cancelled || options.signal?.aborted) return cancelled()
+  }
   markRequiredOrdersComplete(convergence)
 
-  if (!cheapThreshold) return cancelled()
   let localLeader: NestingSuccess = cheapThreshold
   let localCancelled = false
   let localEvaluations = 0

@@ -715,6 +715,108 @@ async function compactWidestScenario() {
   }
 }
 
+async function postOrderRestartScenario() {
+  const req = request([
+    rect('a', 0, 20, 20),
+    rect('b', 1, 50, 10),
+    rect('c', 2, 15, 30),
+    rect('d', 3, 10, 10),
+  ], {
+    allowedRotations: [0, 90],
+    allowedRotationsExplicit: [0, 90],
+    allowArbitraryRotation: false,
+    rotationMode: 'orthogonal',
+  })
+  const prepared = prepareParts(req.parts, req.settings, { sortByArea: true })
+  const preparedIds = prepared.map(({ partId }) => partId)
+  const preparedById = new Map(prepared.map((part) => [part.partId, part]))
+  const compactOrder = buildOrderCandidates(prepared, createRng(7), {
+    includeRandom: false,
+  }).find(({ name }) => name === 'compact_fill_desc')!.order
+  const compactKey = `${compactOrder.join(',')}:${compactOrder
+    .map((id) => preparedById.get(id)!.widestRotation).join(',')}`
+  const expectedRestartRng = createRng(7)
+  const restartOrder = expectedRestartRng.shuffle(preparedIds)
+  const restartKey = `${restartOrder.join(',')}:${restartOrder
+    .map(() => expectedRestartRng.pick([0, 90])).join(',')}`
+  const expectedMainNext = createRng(7).next()
+  const events: string[] = []
+  let clock = 0
+  let readMainNext: (() => number) | null = null
+
+  vi.resetModules()
+  vi.doMock('../placement/blf', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../placement/blf')>()
+    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
+      (nestRequest, options) => scoredResult(
+        nestRequest,
+        options.preparedParts?.map(({ partId }) => partId) ?? [],
+        100,
+      )
+    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
+      (nestRequest, plan, options) => {
+        const key = `${plan.order.join(',')}:${plan.rotations.join(',')}`
+        if (key === compactKey) events.push(`compact:${options.nfpFidelity}`)
+        if (key === restartKey) events.push(`restart:${options.nfpFidelity}`)
+        const result = scoredResult(
+          nestRequest,
+          plan.order,
+          key === restartKey ? 50 : 100,
+        )
+        return {
+          ...result,
+          placements: result.placements.map((placement, index) => ({
+            ...placement,
+            rotation: plan.rotations[index]!,
+          })),
+        }
+      }
+    return { ...actual, runBottomLeftNestUnchecked, placeWithPlanUnchecked }
+  })
+  vi.doMock('./localSearch', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./localSearch')>()
+    const localSearchImprove: typeof actual.localSearchImprove = (start) => {
+      events.push('local')
+      clock = 7_000
+      return start
+    }
+    return { ...actual, localSearchImprove }
+  })
+  vi.doMock('./rng', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./rng')>()
+    let creations = 0
+    const createRng: typeof actual.createRng = (seed) => {
+      const rng = actual.createRng(seed)
+      if (creations++ === 0) readMainNext = () => rng.next()
+      return rng
+    }
+    return { ...actual, createRng }
+  })
+
+  try {
+    const { runAutomaticNest: runMockedAutomaticNest } =
+      await import('./automaticOptimizer')
+    const result = runMockedAutomaticNest(req, {
+      deterministic: false,
+      now: () => clock,
+      onProgress: ({ message }) => {
+        if (message?.startsWith('Trying orders')) events.push('orders')
+      },
+    })
+    return {
+      events,
+      expectedMainNext,
+      mainNext: readMainNext ? readMainNext() : Number.NaN,
+      result,
+    }
+  } finally {
+    vi.doUnmock('../placement/blf')
+    vi.doUnmock('./localSearch')
+    vi.doUnmock('./rng')
+    vi.resetModules()
+  }
+}
+
 describe('runAutomaticNest', () => {
   it('exports exactly the approved automatic options', () => {
     expect(automaticOptionsHaveExactKeys).toBe(true)
@@ -1129,6 +1231,22 @@ describe('runAutomaticNest', () => {
       }
       return { ...actual, localSearchImprove }
     })
+    vi.doMock('./rng', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./rng')>()
+      let created = 0
+      const createRng: typeof actual.createRng = (seed) => {
+        created++
+        const rng = actual.createRng(seed)
+        return created === 2
+          ? {
+              ...rng,
+              shuffle: (items) => items.slice(),
+              pick: (items) => items[0]!,
+            }
+          : rng
+      }
+      return { ...actual, createRng }
+    })
 
     try {
       const { runAutomaticNest: runMockedAutomaticNest } =
@@ -1152,6 +1270,7 @@ describe('runAutomaticNest', () => {
       expect(compareNestingResults(result, suppliedResult)).toBeLessThanOrEqual(0)
     } finally {
       vi.doUnmock('./localSearch')
+      vi.doUnmock('./rng')
       vi.resetModules()
     }
   })
@@ -1170,7 +1289,7 @@ describe('runAutomaticNest', () => {
       'local:worse', 'restart:leader', 'exact:improved',
     ])
     expect(localEvaluationCounts).toEqual([16])
-    expect(rngSeeds).toEqual([7, 7, 7])
+    expect(rngSeeds).toEqual([7, 7, 7, 7])
     expect(result.status).toBe('ok')
     if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
   })
@@ -1196,6 +1315,22 @@ describe('runAutomaticNest', () => {
     expect(lastOrder).toBeGreaterThan(-1)
     expect(simplified).toBeGreaterThan(lastOrder)
     expect(exact).toBeGreaterThan(simplified)
+    expect(result.status).toBe('ok')
+    if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
+  })
+
+  it('runs isolated exact-gated restarts between compact orders and local search', async () => {
+    const { events, expectedMainNext, mainNext, result } =
+      await postOrderRestartScenario()
+    const compact = events.indexOf('compact:simplified')
+    const restartRank = events.indexOf('restart:simplified')
+    const restartExact = events.indexOf('restart:exact')
+
+    expect(compact).toBeGreaterThan(events.lastIndexOf('orders'))
+    expect(restartRank).toBeGreaterThan(compact)
+    expect(restartExact).toBeGreaterThan(restartRank)
+    expect(events.indexOf('local')).toBeGreaterThan(restartExact)
+    expect(mainNext).toBe(expectedMainNext)
     expect(result.status).toBe('ok')
     if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
   })
