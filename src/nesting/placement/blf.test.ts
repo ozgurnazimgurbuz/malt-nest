@@ -975,6 +975,73 @@ describe('runBottomLeftNest', () => {
     expect(prepared[0]!.rotations).toBe(prepared[1]!.rotations)
   })
 
+  it('bounds dense stepped rotations during explicit coarse depth', () => {
+    const req = request([rectPart('dense-coarse', 0, 0, 0, 10, 2)], {
+      settings: { allowRotation: true, rotationStepDeg: 0.01 },
+    })
+    const allowed = new Set(prepareParts(req.parts, req.settings)[0]!.rotations)
+    const attempts: NestAttempt[] = []
+
+    const result = placeWithOrder(req, ['dense-coarse'], {
+      freeAngleDepth: 'coarse',
+      onAttempt: (attempt) => attempts.push(attempt),
+    })
+
+    expect(result.status).toBe('ok')
+    expect(attempts.length).toBeLessThanOrEqual(24)
+    expect(new Set(attempts.map(({ rotation }) => rotation)).size)
+      .toBe(attempts.length)
+    expect(attempts.some(({ rotation }) => rotation === 0)).toBe(true)
+    expect(attempts.every(({ rotation }) => allowed.has(rotation))).toBe(true)
+  })
+
+  it('samples only allowed large coarse sets and preserves small sets', () => {
+    const evaluate = (allowedRotationsExplicit: number[]) => {
+      const attempts: NestAttempt[] = []
+      const result = placeWithOrder(
+        request([rectPart('explicit-coarse', 0, 0, 0, 10, 2)], {
+          settings: { allowRotation: true, allowedRotationsExplicit },
+        }),
+        ['explicit-coarse'],
+        {
+          freeAngleDepth: 'coarse',
+          onAttempt: (attempt) => attempts.push(attempt),
+        },
+      )
+      expect(result.status).toBe('ok')
+      return attempts.map(({ rotation }) => rotation)
+    }
+    const large = Array.from({ length: 60 }, (_, index) => index * 6 + 1)
+
+    const sampled = evaluate(large)
+
+    expect(sampled.length).toBeLessThanOrEqual(24)
+    expect(new Set(sampled).size).toBe(sampled.length)
+    expect(sampled).toContain(large[0])
+    expect(sampled.every((rotation) => large.includes(rotation))).toBe(true)
+    expect(evaluate([15, 30, 75])).toEqual([15, 30, 75])
+  })
+
+  it('keeps canonical non-free rotation evaluation when coarse is implicit', () => {
+    const allowedRotationsExplicit = Array.from(
+      { length: 30 },
+      (_, index) => index * 12,
+    )
+    const attempts: NestAttempt[] = []
+
+    const result = placeWithOrder(
+      request([rectPart('implicit-coarse', 0, 0, 0, 10, 2)], {
+        settings: { allowRotation: true, allowedRotationsExplicit },
+      }),
+      ['implicit-coarse'],
+      { onAttempt: (attempt) => attempts.push(attempt) },
+    )
+
+    expect(result.status).toBe('ok')
+    expect(attempts.map(({ rotation }) => rotation))
+      .toEqual(allowedRotationsExplicit)
+  })
+
   it('orthogonal depth evaluates exactly the four orthogonal angles', () => {
     const rotations = new Set<number>()
     const result = placeWithOrder(

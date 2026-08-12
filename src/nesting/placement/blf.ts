@@ -25,6 +25,7 @@ import {
   ORTHOGONAL_ANGLES,
   coarseFreeAngles,
   freeAngleCascadeStages,
+  normDeg,
   usesFreeAngleCascade,
 } from '../optimization/rotations'
 import { validateNestingRequest } from '../core/validate'
@@ -489,6 +490,83 @@ function evaluateAngles(
   return ok
 }
 
+const MAX_BOUNDED_COARSE_ANGLES = 24
+
+function boundedAllowedCoarseAngles(
+  rotations: readonly number[],
+): number[] {
+  if (rotations.length <= MAX_BOUNDED_COARSE_ANGLES) {
+    return rotations.slice()
+  }
+
+  const uniqueByAngle = new Map<number, { rotation: number; index: number }>()
+  rotations.forEach((rotation, index) => {
+    const normalized = normDeg(rotation)
+    if (!uniqueByAngle.has(normalized)) {
+      uniqueByAngle.set(normalized, { rotation, index })
+    }
+  })
+  const allowed = [...uniqueByAngle.entries()]
+    .map(([normalized, value]) => ({ normalized, ...value }))
+    .sort((a, b) => a.normalized - b.normalized || a.index - b.index)
+  if (allowed.length <= MAX_BOUNDED_COARSE_ANGLES) {
+    return allowed.map(({ rotation }) => rotation)
+  }
+
+  const angularDistance = (a: number, b: number): number => {
+    const difference = Math.abs(a - b)
+    return Math.min(difference, 360 - difference)
+  }
+  const nearestAllowed = (target: number) => {
+    let low = 0
+    let high = allowed.length
+    while (low < high) {
+      const middle = (low + high) >>> 1
+      if (allowed[middle]!.normalized < target) low = middle + 1
+      else high = middle
+    }
+    const after = allowed[low % allowed.length]!
+    const before = allowed[(low - 1 + allowed.length) % allowed.length]!
+    const beforeDistance = angularDistance(before.normalized, target)
+    const afterDistance = angularDistance(after.normalized, target)
+    return beforeDistance < afterDistance ||
+      (beforeDistance === afterDistance && before.normalized < after.normalized)
+      ? before
+      : after
+  }
+
+  const selected = new Map<number, (typeof allowed)[number]>()
+  for (const target of coarseFreeAngles()) {
+    const candidate = nearestAllowed(target)
+    selected.set(candidate.normalized, candidate)
+  }
+
+  const fallback = uniqueByAngle.get(normDeg(rotations[0]!))!
+  const fallbackAngle = normDeg(fallback.rotation)
+  if (!selected.has(fallbackAngle)) {
+    if (selected.size >= MAX_BOUNDED_COARSE_ANGLES) {
+      let nearestKey: number | null = null
+      let nearestDistance = Infinity
+      for (const key of selected.keys()) {
+        const distance = angularDistance(key, fallbackAngle)
+        if (distance < nearestDistance) {
+          nearestKey = key
+          nearestDistance = distance
+        }
+      }
+      if (nearestKey != null) selected.delete(nearestKey)
+    }
+    selected.set(fallbackAngle, {
+      normalized: fallbackAngle,
+      ...fallback,
+    })
+  }
+
+  return [...selected.values()]
+    .sort((a, b) => a.normalized - b.normalized || a.index - b.index)
+    .map(({ rotation }) => rotation)
+}
+
 /**
  * Pick rotation + translation for a part.
  * Free depths: coarse (15°) / full (exhaustive 1°) / seed (refine around gene).
@@ -503,6 +581,7 @@ function pickBestVariant(
   opts: {
     freeCascade: boolean
     depth: FreeAngleDepth
+    boundedCoarse?: boolean
     seedRotation?: number
     exactNfp: boolean
     onAttempt?: (attempt: Omit<NestAttempt, 'sequence'>) => void
@@ -524,11 +603,13 @@ function pickBestVariant(
       })
       return allowed == null ? [] : [allowed]
     })
-    const angles = boundedAngles?.length
-      ? boundedAngles
-      : boundedGrid
-        ? part.rotations.slice(0, 1)
-        : part.rotations
+    const angles = opts.depth === 'coarse' && opts.boundedCoarse
+      ? boundedAllowedCoarseAngles(part.rotations)
+      : boundedAngles?.length
+        ? boundedAngles
+        : boundedGrid
+          ? part.rotations.slice(0, 1)
+          : part.rotations
     const ok = evaluateAngles(
       part,
       angles,
@@ -822,6 +903,7 @@ function placeSequence(
           {
             freeCascade,
             depth: depthForBest,
+            boundedCoarse: options.freeAngleDepth === 'coarse',
             exactNfp: useExactNfp,
             onAttempt,
           },
