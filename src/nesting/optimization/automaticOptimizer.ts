@@ -505,6 +505,25 @@ export function runAutomaticNest(
       if (exact.cancelled || options.signal?.aborted) return cancelled()
     }
   }
+  const compactOrder = requiredOrders.find(
+    ({ name }) => name === 'compact_fill_desc')?.order
+  if (compactOrder) {
+    const widest: Individual = {
+      order: compactOrder,
+      rotations: compactOrder.map(
+        (id) => preparedById.get(id)?.widestRotation ?? BALANCED_ANGLES[0]!,
+      ),
+    }
+    if (!cheapEvaluatedKeys.has(individualKey(widest, runKey))) {
+      const outcome = rank(widest)
+      if (outcome.cancelled) return cancelled()
+      if (outcome.candidate) {
+        const exact = evaluateAndRefreshExact(
+          outcome.candidate.individual, 'fixed', 'orders')
+        if (exact.cancelled || options.signal?.aborted) return cancelled()
+      }
+    }
+  }
   markRequiredOrdersComplete(convergence)
 
   if (!cheapThreshold) return cancelled()

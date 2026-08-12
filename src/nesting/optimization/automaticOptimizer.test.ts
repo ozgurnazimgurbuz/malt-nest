@@ -171,6 +171,11 @@ async function fidelityPromotionScenario(
   if (alternatives.length < 5) throw new Error('fixture needs five alternative orders')
   const target = alternatives[4]!
   const targetOrder = target.order
+  const preparedById = new Map(prepared.map((part) => [part.partId, part]))
+  const targetDefaultRotations = targetOrder.map(
+    (id) => preparedById.get(id)!.rotations[0]!,
+  )
+  let defaultTargetExactCalls = 0
   const requiredKeys = new Set(required.map(({ order }) => order.join(',')))
   const cheapWaste = new Map<string, number>([
     [seedKey, 50],
@@ -197,16 +202,30 @@ async function fidelityPromotionScenario(
           (requiredKeys.has(order.join(',')) ? 200 : (options.childWaste ?? 200)),
       )
     const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
-      (nestRequest, plan, placementOptions) => scoredResult(
-        nestRequest,
-        plan.order,
-        placementOptions.nfpFidelity === 'simplified'
+      (nestRequest, plan, placementOptions) => {
+        if (
+          placementOptions.nfpFidelity === 'exact' &&
+          plan.order.join() === targetOrder.join() &&
+          plan.rotations.join() === targetDefaultRotations.join()
+        ) defaultTargetExactCalls++
+        const result = scoredResult(
+          nestRequest,
+          plan.order,
+          placementOptions.nfpFidelity === 'simplified'
           ? cheapWaste.get(plan.order.join(',')) ??
             (requiredKeys.has(plan.order.join(','))
               ? 200
               : (options.childWaste ?? 200))
           : 100,
-      )
+        )
+        return {
+          ...result,
+          placements: result.placements.map((placement, index) => ({
+            ...placement,
+            rotation: plan.rotations[index]!,
+          })),
+        }
+      }
     return {
       ...actual,
       runBottomLeftNestUnchecked,
@@ -218,31 +237,17 @@ async function fidelityPromotionScenario(
   try {
     const { runAutomaticNest: runMockedAutomaticNest } =
       await import('./automaticOptimizer')
-    const exactOrderNames: string[] = []
-    const exactEvents: Array<{ orderName: string | null; improved: boolean }> = []
     const beamLayers: number[] = []
     const stableBeamLayers: number[] = []
     let publishedChampions = 0
-    let currentOrderName: string | null = null
     let clock = 0
     runMockedAutomaticNest(req, {
       deterministic: options.stopAtFirstLayer === false,
       now: () => clock,
-      onEvaluation: ({ kind, improved }) => {
-        if (kind === 'exact') {
-          exactEvents.push({ orderName: currentOrderName, improved })
-          if (currentOrderName) exactOrderNames.push(currentOrderName)
-        }
-      },
       onProgress: ({ bestSoFar, message }) => {
         if (bestSoFar) publishedChampions++
-        const orderPrefix = 'Trying orders · '
-        if (message?.startsWith(orderPrefix)) {
-          currentOrderName = message.slice(orderPrefix.length)
-        }
         const layerMatch = message?.match(/^Improving layout · layer (\d+)$/)
         if (layerMatch) {
-          currentOrderName = null
           beamLayers.push(Number(layerMatch[1]))
           if (options.stopAtFirstLayer !== false) clock = 5_000
         }
@@ -254,11 +259,9 @@ async function fidelityPromotionScenario(
     })
     return {
       beamLayers,
-      exactEvents,
-      exactOrderNames,
+      defaultTargetExactCalls,
       publishedChampions,
       stableBeamLayers,
-      targetName: target.name,
     }
   } finally {
     vi.doUnmock('../placement/blf')
@@ -646,6 +649,72 @@ async function largeExtremeSeedScenario() {
   }
 }
 
+async function compactWidestScenario() {
+  const req = request([
+    rect('a', 0, 20, 20),
+    rect('b', 1, 50, 10),
+    rect('c', 2, 15, 30),
+    rect('d', 3, 10, 10),
+  ], {
+    allowedRotations: [0, 90],
+    allowedRotationsExplicit: [0, 90],
+    allowArbitraryRotation: false,
+    rotationMode: 'orthogonal',
+  })
+  const prepared = prepareParts(req.parts, req.settings, { sortByArea: true })
+  const byId = new Map(prepared.map((part) => [part.partId, part]))
+  const compactOrder = buildOrderCandidates(prepared, createRng(7), {
+    includeRandom: false,
+  }).find(({ name }) => name === 'compact_fill_desc')!.order
+  const compactRotations = compactOrder.map((id) => byId.get(id)!.widestRotation)
+  const events: string[] = []
+  let clock = 0
+
+  vi.resetModules()
+  vi.doMock('../placement/blf', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../placement/blf')>()
+    const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
+      (nestRequest, options) => scoredResult(
+        nestRequest,
+        options.preparedParts?.map(({ partId }) => partId) ?? [],
+        100,
+      )
+    const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
+      (nestRequest, plan, options) => {
+        const target = plan.order.join() === compactOrder.join() &&
+          plan.rotations.join() === compactRotations.join()
+        if (!target) return scoredResult(nestRequest, plan.order, 100)
+        events.push(`compact:${options.nfpFidelity}`)
+        if (options.nfpFidelity === 'exact') clock = 7_000
+        const result = scoredResult(nestRequest, plan.order, 50)
+        return {
+          ...result,
+          placements: result.placements.map((placement, index) => ({
+            ...placement,
+            rotation: plan.rotations[index]!,
+          })),
+        }
+      }
+    return { ...actual, runBottomLeftNestUnchecked, placeWithPlanUnchecked }
+  })
+
+  try {
+    const { runAutomaticNest: runMockedAutomaticNest } =
+      await import('./automaticOptimizer')
+    const result = runMockedAutomaticNest(req, {
+      deterministic: false,
+      now: () => clock,
+      onProgress: ({ message }) => {
+        if (message?.startsWith('Trying orders')) events.push('orders')
+      },
+    })
+    return { events, result }
+  } finally {
+    vi.doUnmock('../placement/blf')
+    vi.resetModules()
+  }
+}
+
 describe('runAutomaticNest', () => {
   it('exports exactly the approved automatic options', () => {
     expect(automaticOptionsHaveExactKeys).toBe(true)
@@ -1004,15 +1073,15 @@ describe('runAutomaticNest', () => {
   })
 
   it('does not replay a non-beam candidate that only beats the exact champion', async () => {
-    const { exactOrderNames, targetName } = await fidelityPromotionScenario(75)
+    const { defaultTargetExactCalls } = await fidelityPromotionScenario(75)
 
-    expect(exactOrderNames).not.toContain(targetName)
+    expect(defaultTargetExactCalls).toBe(0)
   })
 
   it('replays a non-beam candidate that improves the champion cheap result', async () => {
-    const { exactOrderNames, targetName } = await fidelityPromotionScenario(45)
+    const { defaultTargetExactCalls } = await fidelityPromotionScenario(45)
 
-    expect(exactOrderNames).toContain(targetName)
+    expect(defaultTargetExactCalls).toBe(1)
   })
 
   it('preserves a supplied non-default rotation when ranking an exact candidate', async () => {
@@ -1118,11 +1187,24 @@ describe('runAutomaticNest', () => {
     if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
   })
 
+  it('exact-gates the distinct compact-fill widest plan after required orders', async () => {
+    const { events, result } = await compactWidestScenario()
+    const lastOrder = events.lastIndexOf('orders')
+    const simplified = events.indexOf('compact:simplified')
+    const exact = events.indexOf('compact:exact')
+
+    expect(lastOrder).toBeGreaterThan(-1)
+    expect(simplified).toBeGreaterThan(lastOrder)
+    expect(exact).toBeGreaterThan(simplified)
+    expect(result.status).toBe('ok')
+    if (result.status === 'ok') expect(result.wasteMm2).toBe(50)
+  })
+
   it('preserves the champion when an exact replay rejects a cheap improvement', async () => {
-    const { exactEvents, publishedChampions, targetName } =
+    const { defaultTargetExactCalls, publishedChampions } =
       await fidelityPromotionScenario(45)
 
-    expect(exactEvents).toContainEqual({ orderName: targetName, improved: false })
+    expect(defaultTargetExactCalls).toBe(1)
     expect(publishedChampions).toBe(1)
   })
 
