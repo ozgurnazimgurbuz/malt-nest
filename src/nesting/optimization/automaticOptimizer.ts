@@ -220,10 +220,8 @@ export function runAutomaticNest(
     })
     return timed(champion)
   }
-  const halted = (): boolean =>
-    !!options.signal?.aborted || shouldStop(convergence, now(), false)
-  const haltResult = (): NestingResult =>
-    options.signal?.aborted ? cancelled() : finish()
+  const aborted = (): boolean => options.signal?.aborted === true
+  const converged = (): boolean => shouldStop(convergence, now(), false)
 
   emit({
     ratio: 0.1,
@@ -342,7 +340,7 @@ export function runAutomaticNest(
     return cancelled()
   }
   if (!champion || !championGene) return cancelled()
-  if (options.signal?.aborted) return cancelled()
+  if (aborted()) return cancelled()
 
   const cheapCache = new Map<string, RankedCandidate | null>()
   const cheapEvaluatedKeys = new Set<string>()
@@ -414,9 +412,6 @@ export function runAutomaticNest(
     cheapThreshold = ranked.candidate?.result ?? null
     return true
   }
-  if (halted()) return haltResult()
-  if (!refreshCheapThreshold()) return cancelled()
-
   const evaluateAndRefreshExact = (
     individual: Individual,
     stage: ExactStage,
@@ -425,8 +420,8 @@ export function runAutomaticNest(
   ): ExactOutcome => {
     const outcome = evaluateExact(individual, stage, activity, depth)
     if (!outcome.improved || !championGene) return outcome
-    if (options.signal?.aborted) return { ...outcome, cancelled: true }
-    if (shouldStop(convergence, now(), false)) return outcome
+    if (aborted()) return { ...outcome, cancelled: true }
+    if (converged()) return outcome
     return refreshCheapThreshold()
       ? outcome
       : { ...outcome, cancelled: true }
@@ -436,127 +431,138 @@ export function runAutomaticNest(
     cheapThreshold != null &&
     isBetterNestingResult(candidate.result, cheapThreshold)
 
-  emit({
-    ratio: 0.25,
-    phase: 'optimize',
-    activity: 'orders',
-    message: 'Trying orders',
-  })
-  const rankedCandidates: RankedCandidate[] = []
   let beam: RankedCandidate[] = []
-  const requiredOrders = buildOrderCandidates(preparedParts.slice(), rng, {
-    includeRandom: false,
-  })
-  for (const orderCandidate of requiredOrders) {
-    if (halted()) return haltResult()
-    const outcome = rank(
-      {
-        order: orderCandidate.order,
-        rotations: orderCandidate.order.map(
-          (id) => preparedById.get(id)?.rotations[0] ?? BALANCED_ANGLES[0]!,
-        ),
-      },
-      'quick',
-      true,
-    )
-    if (outcome.cancelled) return cancelled()
+  discovery: {
+    if (aborted()) return cancelled()
+    if (converged()) break discovery
+    if (!refreshCheapThreshold()) return cancelled()
+
     emit({
       ratio: 0.25,
       phase: 'optimize',
       activity: 'orders',
-      message: `Trying orders · ${orderCandidate.name}`,
+      message: 'Trying orders',
     })
-    if (!outcome.candidate) continue
-    rankedCandidates.push(outcome.candidate)
-    const previousBeamKeys = new Set(
-      beam.map(({ individual }) => individualKey(individual, runKey)),
-    )
-    const nextBeam = selectBeam(rankedCandidates, 4, runKey)
-    const candidateKey = individualKey(outcome.candidate.individual, runKey)
-    const enteredBeam =
-      !previousBeamKeys.has(candidateKey) &&
-      nextBeam.some(
-        ({ individual }) => individualKey(individual, runKey) === candidateKey,
-      )
-    beam = nextBeam
-    if (halted()) return haltResult()
-    if (enteredBeam || improvesCheapChampion(outcome.candidate)) {
-      const exact = evaluateAndRefreshExact(
-        outcome.candidate.individual,
-        'fixed',
-        'orders',
-      )
-      if (exact.cancelled || options.signal?.aborted) return cancelled()
-    }
-  }
-  markRequiredOrdersComplete(convergence)
-
-  if (beam.length === 0) {
-    beam = [{ individual: championGene, result: champion }]
-  }
-  let layer = 0
-  for (;;) {
-    layer++
-    emit({
-      ratio: 0.65,
-      phase: 'optimize',
-      activity: 'beam',
-      message: `Improving layout · layer ${layer}`,
+    const rankedCandidates: RankedCandidate[] = []
+    const requiredOrders = buildOrderCandidates(preparedParts.slice(), rng, {
+      includeRandom: false,
     })
-    const previousKeys = beam.map(({ individual }) =>
-      individualKey(individual, runKey),
-    )
-    const children: RankedCandidate[] = []
-    for (const member of beam) {
-      for (const child of expandOrder(member.individual, rng)) {
-        if (halted()) return haltResult()
-        const childKey = individualKey(child, runKey)
-        if (cheapEvaluatedKeys.has(childKey)) continue
-        const outcome = rank(child)
-        if (outcome.cancelled) return cancelled()
-        if (!outcome.candidate) continue
-        children.push(outcome.candidate)
-        if (halted()) return haltResult()
-        const tentative = selectBeam([...beam, ...children], 4, runKey)
-        const rankedKey = individualKey(
+    for (const orderCandidate of requiredOrders) {
+      if (aborted()) return cancelled()
+      if (converged()) break discovery
+      const outcome = rank(
+        {
+          order: orderCandidate.order,
+          rotations: orderCandidate.order.map(
+            (id) => preparedById.get(id)?.rotations[0] ?? BALANCED_ANGLES[0]!,
+          ),
+        },
+        'quick',
+        true,
+      )
+      if (outcome.cancelled) return cancelled()
+      emit({
+        ratio: 0.25,
+        phase: 'optimize',
+        activity: 'orders',
+        message: `Trying orders · ${orderCandidate.name}`,
+      })
+      if (!outcome.candidate) continue
+      rankedCandidates.push(outcome.candidate)
+      const previousBeamKeys = new Set(
+        beam.map(({ individual }) => individualKey(individual, runKey)),
+      )
+      const nextBeam = selectBeam(rankedCandidates, 4, runKey)
+      const candidateKey = individualKey(outcome.candidate.individual, runKey)
+      const enteredBeam =
+        !previousBeamKeys.has(candidateKey) &&
+        nextBeam.some(
+          ({ individual }) => individualKey(individual, runKey) === candidateKey,
+        )
+      beam = nextBeam
+      if (aborted()) return cancelled()
+      if (converged()) break discovery
+      if (enteredBeam || improvesCheapChampion(outcome.candidate)) {
+        const exact = evaluateAndRefreshExact(
           outcome.candidate.individual,
-          runKey,
+          'fixed',
+          'orders',
         )
-        const entersBeam = tentative.some(
-          ({ individual }) => individualKey(individual, runKey) === rankedKey,
-        ) && !beam.some(
-          ({ individual }) => individualKey(individual, runKey) === rankedKey,
-        )
-        if (entersBeam || improvesCheapChampion(outcome.candidate)) {
-          const exact = evaluateAndRefreshExact(
-            outcome.candidate.individual,
-            'fixed',
-            'beam',
-          )
-          if (exact.cancelled || options.signal?.aborted) return cancelled()
-        }
+        if (exact.cancelled || aborted()) return cancelled()
       }
     }
-    const next = selectBeam([...beam, ...children], 4, runKey)
-    const nextKeys = next.map(({ individual }) =>
-      individualKey(individual, runKey),
-    )
-    beam = next
-    const stable =
-      previousKeys.length === nextKeys.length &&
-      previousKeys.every((key, index) => key === nextKeys[index])
-    if (stable) {
+    markRequiredOrdersComplete(convergence)
+
+    let layer = 0
+    for (;;) {
+      layer++
       emit({
         ratio: 0.65,
         phase: 'optimize',
         activity: 'beam',
-        message: `Improving layout · layer ${layer} stable`,
+        message: `Improving layout · layer ${layer}`,
       })
-      break
+      const previousKeys = beam.map(({ individual }) =>
+        individualKey(individual, runKey),
+      )
+      const children: RankedCandidate[] = []
+      for (const member of beam) {
+        for (const child of expandOrder(member.individual, rng)) {
+          if (aborted()) return cancelled()
+          if (converged()) break discovery
+          const childKey = individualKey(child, runKey)
+          if (cheapEvaluatedKeys.has(childKey)) continue
+          const outcome = rank(child)
+          if (outcome.cancelled) return cancelled()
+          if (!outcome.candidate) continue
+          children.push(outcome.candidate)
+          if (aborted()) return cancelled()
+          if (converged()) break discovery
+          const tentative = selectBeam([...beam, ...children], 4, runKey)
+          const rankedKey = individualKey(
+            outcome.candidate.individual,
+            runKey,
+          )
+          const entersBeam = tentative.some(
+            ({ individual }) => individualKey(individual, runKey) === rankedKey,
+          ) && !beam.some(
+            ({ individual }) => individualKey(individual, runKey) === rankedKey,
+          )
+          if (entersBeam || improvesCheapChampion(outcome.candidate)) {
+            const exact = evaluateAndRefreshExact(
+              outcome.candidate.individual,
+              'fixed',
+              'beam',
+            )
+            if (exact.cancelled || aborted()) return cancelled()
+          }
+        }
+      }
+      const next = selectBeam([...beam, ...children], 4, runKey)
+      const nextKeys = next.map(({ individual }) =>
+        individualKey(individual, runKey),
+      )
+      beam = next
+      const stable =
+        previousKeys.length === nextKeys.length &&
+        previousKeys.every((key, index) => key === nextKeys[index])
+      if (stable) {
+        emit({
+          ratio: 0.65,
+          phase: 'optimize',
+          activity: 'beam',
+          message: `Improving layout · layer ${layer} stable`,
+        })
+        break
+      }
     }
   }
 
-  type RefinementState = 'done' | 'halted' | 'cancelled'
+  if (beam.length === 0) {
+    beam = [{ individual: championGene, result: champion }]
+  }
+
+  type RefinementState = 'done' | 'full-improved' | 'cancelled'
   const runFullFinalist = (
     individual: Individual,
     source: 'finalist' | 'repair',
@@ -571,7 +577,8 @@ export function runAutomaticNest(
         : 'Improving layout · full-circle finalist',
     })
     const full = evaluateExact(individual, 'full', activity, 'full')
-    return full.cancelled || options.signal?.aborted ? 'cancelled' : 'done'
+    if (full.cancelled || aborted()) return 'cancelled'
+    return full.improved ? 'full-improved' : 'done'
   }
   const refineFinalist = (
     individual: Individual,
@@ -579,9 +586,8 @@ export function runAutomaticNest(
   ): RefinementState => {
     const activity: ProgressActivity =
       source === 'repair' ? 'repair' : 'refine'
-    if (halted()) {
-      return options.signal?.aborted ? 'cancelled' : 'halted'
-    }
+    if (aborted()) return 'cancelled'
+    if (converged()) return runFullFinalist(individual, source, activity)
     emit({
       ratio: 0.65,
       phase: 'optimize',
@@ -591,10 +597,8 @@ export function runAutomaticNest(
         : 'Improving layout · coarse finalist',
     })
     const coarsened = rank(individual, 'coarse')
-    if (coarsened.cancelled || options.signal?.aborted) return 'cancelled'
-    if (halted()) {
-      return options.signal?.aborted ? 'cancelled' : 'halted'
-    }
+    if (coarsened.cancelled || aborted()) return 'cancelled'
+    if (converged()) return runFullFinalist(individual, source, activity)
     let refinementGene = individual
     if (
       coarsened.candidate &&
@@ -605,10 +609,10 @@ export function runAutomaticNest(
         'coarse',
         activity,
       )
-      if (exact.cancelled || options.signal?.aborted) return 'cancelled'
+      if (exact.cancelled || aborted()) return 'cancelled'
       if (exact.improved && exact.gene) refinementGene = exact.gene
-      if (halted()) {
-        return options.signal?.aborted ? 'cancelled' : 'halted'
+      if (converged()) {
+        return runFullFinalist(refinementGene, source, activity)
       }
     }
     emit({
@@ -625,12 +629,13 @@ export function runAutomaticNest(
       activity,
       'refine',
     )
-    if (refined.cancelled || options.signal?.aborted) return 'cancelled'
+    if (refined.cancelled || aborted()) return 'cancelled'
     if (!refined.improved || !refined.gene) {
       return runFullFinalist(refinementGene, source, activity)
     }
-    if (halted()) {
-      return options.signal?.aborted ? 'cancelled' : 'halted'
+    refinementGene = refined.gene
+    if (converged()) {
+      return runFullFinalist(refinementGene, source, activity)
     }
     emit({
       ratio: 0.65,
@@ -641,13 +646,13 @@ export function runAutomaticNest(
         : 'Improving layout · polishing finalist',
     })
     const polished = evaluateAndRefreshExact(
-      refined.gene,
+      refinementGene,
       'seed',
       activity,
       'seed',
     )
-    if (polished.cancelled || options.signal?.aborted) return 'cancelled'
-    return runFullFinalist(polished.gene ?? refined.gene, source, activity)
+    if (polished.cancelled || aborted()) return 'cancelled'
+    return runFullFinalist(polished.gene ?? refinementGene, source, activity)
   }
 
   const finalistKeys = new Set<string>()
@@ -661,8 +666,9 @@ export function runAutomaticNest(
   for (const finalist of finalists) {
     const state = refineFinalist(finalist, 'finalist')
     if (state === 'cancelled') return cancelled()
-    if (state === 'halted') return finish()
   }
+  if (aborted()) return cancelled()
+  if (converged()) return finish()
   if (!refreshCheapThreshold()) return cancelled()
 
   emit({
@@ -673,7 +679,8 @@ export function runAutomaticNest(
   })
   const repairState = createRepairState()
   for (;;) {
-    if (halted()) return haltResult()
+    if (aborted()) return cancelled()
+    if (converged()) return finish()
     const proposal = proposeRepair(
       championGene,
       allowedRotations,
@@ -692,18 +699,21 @@ export function runAutomaticNest(
     const ranked = rank(proposal.individual)
     if (ranked.cancelled) return cancelled()
     if (!ranked.candidate) continue
-    if (halted()) return haltResult()
+    if (aborted()) return cancelled()
+    if (converged()) return finish()
     if (!improvesCheapChampion(ranked.candidate)) continue
     const exact = evaluateAndRefreshExact(
       ranked.candidate.individual,
       'fixed',
       'repair',
     )
-    if (exact.cancelled || options.signal?.aborted) return cancelled()
+    if (exact.cancelled || aborted()) return cancelled()
     if (!exact.improved) continue
     rewardRepairOperator(repairState, proposal.operator)
     const state = refineFinalist(championGene, 'repair')
     if (state === 'cancelled') return cancelled()
-    if (state === 'halted') return finish()
+    if (aborted()) return cancelled()
+    if (converged()) return finish()
+    if (state === 'full-improved' && !refreshCheapThreshold()) return cancelled()
   }
 }

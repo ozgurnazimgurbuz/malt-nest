@@ -175,7 +175,10 @@ async function fidelityPromotionScenario(
   const targetDefaultRotations = targetOrder.map(
     (id) => preparedById.get(id)!.rotations[0]!,
   )
+  let championOrderKey = JSON.stringify(seedOrder)
   let defaultTargetExactCalls = 0
+  const fullOrderKeys: string[] = []
+  let terminalBeamOrderKeys: string[] = []
   const requiredKeys = new Set(required.map(({ order }) => order.join(',')))
   const cheapWaste = new Map<string, number>([
     [seedKey, 50],
@@ -203,6 +206,12 @@ async function fidelityPromotionScenario(
       )
     const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
       (nestRequest, plan, placementOptions) => {
+        if (
+          placementOptions.nfpFidelity === 'exact' &&
+          placementOptions.freeAngleDepth === 'full'
+        ) {
+          fullOrderKeys.push(JSON.stringify(plan.order))
+        }
         if (
           placementOptions.nfpFidelity === 'exact' &&
           plan.order.join() === targetOrder.join() &&
@@ -233,6 +242,17 @@ async function fidelityPromotionScenario(
       placeWithPlanUnchecked,
     }
   })
+  vi.doMock('./beamSearch', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./beamSearch')>()
+    const selectBeam: typeof actual.selectBeam = (candidates, width, runKey) => {
+      const selected = actual.selectBeam(candidates, width, runKey)
+      terminalBeamOrderKeys = selected.map(({ individual }) =>
+        JSON.stringify(individual.order),
+      )
+      return selected
+    }
+    return { ...actual, selectBeam }
+  })
 
   try {
     const { runAutomaticNest: runMockedAutomaticNest } =
@@ -245,7 +265,13 @@ async function fidelityPromotionScenario(
       deterministic: options.stopAtFirstLayer === false,
       now: () => clock,
       onProgress: ({ bestSoFar, message }) => {
-        if (bestSoFar) publishedChampions++
+        if (bestSoFar) {
+          publishedChampions++
+          championOrderKey = JSON.stringify([
+            ...bestSoFar.placements.map(({ partId }) => partId),
+            ...bestSoFar.unplacedPartIds,
+          ])
+        }
         const layerMatch = message?.match(/^Improving layout · layer (\d+)$/)
         if (layerMatch) {
           beamLayers.push(Number(layerMatch[1]))
@@ -259,12 +285,16 @@ async function fidelityPromotionScenario(
     })
     return {
       beamLayers,
+      championOrderKey,
       defaultTargetExactCalls,
+      fullOrderKeys,
       publishedChampions,
       stableBeamLayers,
+      terminalBeamOrderKeys,
     }
   } finally {
     vi.doUnmock('../placement/blf')
+    vi.doUnmock('./beamSearch')
     vi.resetModules()
   }
 }
@@ -336,8 +366,15 @@ async function refinementScenario(refineWaste: number) {
 }
 
 async function repairImprovementScenario(repairExactWaste = 50) {
-  const req = request([rect('a', 0, 83, 65)], { allowRotation: false })
+  const req = request([
+    rect('a', 0, 83, 65),
+    rect('b', 1, 40, 30),
+  ], { allowRotation: false })
   req.sheets = [{ widthMm: 500, heightMm: 500, marginMm: 0, quantity: 1 }]
+  const seedOrder = prepareParts(req.parts, req.settings, {
+    sortByArea: true,
+  }).map(({ partId }) => partId)
+  const repairOrder = seedOrder.slice().reverse()
   let phase: 'search' | 'repair' = 'search'
   let latestProposalOperator: RepairOperator | null = null
   const proposedOperators: RepairOperator[] = []
@@ -366,7 +403,11 @@ async function repairImprovementScenario(repairExactWaste = 50) {
           options.nfpFidelity === 'simplified'
           ? phase === 'repair' ? 50 : 100
           : phase === 'repair'
-            ? options.freeAngleDepth === 'refine' ? 40 : repairExactWaste
+            ? options.freeAngleDepth === 'refine'
+              ? 40
+              : options.freeAngleDepth === 'full'
+                ? 30
+                : repairExactWaste
           : options.freeAngleDepth === 'refine' ? 110 : 100,
         )
         return {
@@ -384,11 +425,26 @@ async function repairImprovementScenario(repairExactWaste = 50) {
       placeWithPlanUnchecked,
     }
   })
+  vi.doMock('./beamSearch', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('./beamSearch')>()
+    const selectBeam: typeof actual.selectBeam = (candidates, width, runKey) => {
+      const selected = actual.selectBeam(candidates, width, runKey)
+      const seed = selected.find(({ individual }) =>
+        JSON.stringify(individual.order) === JSON.stringify(seedOrder),
+      )
+      return seed ? [seed] : selected.slice(0, 1)
+    }
+    const expandOrder: typeof actual.expandOrder = () => []
+    return { ...actual, expandOrder, selectBeam }
+  })
   vi.doMock('./destroyRepair', async (importOriginal) => {
     const actual = await importOriginal<typeof import('./destroyRepair')>()
     const proposeRepair: typeof actual.proposeRepair = () => {
       const proposal = {
-        individual: { order: ['a'], rotations: [90] },
+        individual: {
+          order: repairOrder,
+          rotations: repairOrder.map(() => 90),
+        },
         operator: 'rotation' as const,
       }
       latestProposalOperator = proposal.operator
@@ -413,11 +469,13 @@ async function repairImprovementScenario(repairExactWaste = 50) {
     const repairModule = await import('./destroyRepair')
     const rewardSpy = vi.mocked(repairModule.rewardRepairOperator)
     const controller = new AbortController()
+    let clock = 0
     let inRepair = false
-    let repairStage: 'candidate' | 'coarse' | 'refine' | 'seed' = 'candidate'
+    let repairStage: 'candidate' | 'coarse' | 'refine' | 'seed' | 'full' =
+      'candidate'
     const result = runMockedAutomaticNest(req, {
-      deterministic: true,
-      now: () => 0,
+      deterministic: false,
+      now: () => clock,
       signal: controller.signal,
       onProgress: ({ bestSoFar, message }) => {
         if (message === 'Improving layout' && !inRepair) {
@@ -426,7 +484,11 @@ async function repairImprovementScenario(repairExactWaste = 50) {
           sequence.push('repair:start')
         }
         if (!inRepair) return
-        if (bestSoFar) sequence.push('repair:champion')
+        if (bestSoFar) {
+          sequence.push('repair:champion')
+          clock = 5_000
+        }
+        if (message === 'Verifying result') sequence.push('finish')
         if (message === 'Improving layout · coarse repair champion') {
           repairStage = 'coarse'
           sequence.push('repair:coarse:start')
@@ -436,12 +498,15 @@ async function repairImprovementScenario(repairExactWaste = 50) {
         } else if (message === 'Improving layout · polishing repair champion') {
           repairStage = 'seed'
           sequence.push('repair:seed:start')
+        } else if (message === 'Improving layout · full-circle repair champion') {
+          repairStage = 'full'
+          sequence.push('repair:full:start')
         }
       },
       onEvaluation: ({ kind, improved }) => {
         if (!inRepair) return
         sequence.push(`${kind}:${repairStage}:${improved}`)
-        if (kind === 'exact' && repairStage === 'refine') controller.abort()
+        if (kind === 'exact' && repairStage === 'full') controller.abort()
         if (kind === 'exact') repairStage = 'candidate'
       },
     })
@@ -454,6 +519,7 @@ async function repairImprovementScenario(repairExactWaste = 50) {
     }
   } finally {
     vi.doUnmock('../placement/blf')
+    vi.doUnmock('./beamSearch')
     vi.doUnmock('./destroyRepair')
     vi.resetModules()
   }
@@ -680,6 +746,71 @@ describe('runAutomaticNest', () => {
     expect(result.status).toBe('cancelled')
     if (result.status !== 'cancelled') return
     expect(compareNestingResults(result.bestSoFar!, seedChampion!)).toBe(0)
+  })
+
+  it('cancels a full replay without publishing its partial result', async () => {
+    const req = request([rect('a', 0, 20, 10)], { allowRotation: false })
+    const controller = new AbortController()
+    let fullCalls = 0
+    vi.resetModules()
+    vi.doMock('../placement/blf', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../placement/blf')>()
+      const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
+        (nestRequest, options) => scoredResult(
+          nestRequest,
+          options.preparedParts?.map(({ partId }) => partId) ?? [],
+          120,
+        )
+      const placeWithOrderUnchecked: typeof actual.placeWithOrderUnchecked =
+        (nestRequest, order) => scoredResult(nestRequest, order, 100)
+      const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
+        (nestRequest, plan, options) => {
+          if (options.freeAngleDepth === 'full') {
+            fullCalls++
+            controller.abort()
+            return {
+              status: 'cancelled',
+              message: 'Cancelled',
+              bestSoFar: scoredResult(nestRequest, plan.order, 0),
+            }
+          }
+          return scoredResult(nestRequest, plan.order, 100)
+        }
+      return {
+        ...actual,
+        runBottomLeftNestUnchecked,
+        placeWithOrderUnchecked,
+        placeWithPlanUnchecked,
+      }
+    })
+
+    try {
+      const { runAutomaticNest: runMockedAutomaticNest } =
+        await import('./automaticOptimizer')
+      let clock = 0
+      let lastPublished: NestingSuccess | undefined
+      const result = runMockedAutomaticNest(req, {
+        deterministic: false,
+        now: () => clock,
+        signal: controller.signal,
+        onProgress: ({ bestSoFar }) => {
+          if (!bestSoFar) return
+          lastPublished = bestSoFar
+          clock = 5_000
+        },
+      })
+
+      expect(fullCalls).toBe(1)
+      expect(result.status).toBe('cancelled')
+      if (result.status !== 'cancelled') return
+      expect(result.bestSoFar).toBeTruthy()
+      expect(lastPublished?.wasteMm2).not.toBe(0)
+      expect(compareNestingResults(result.bestSoFar!, lastPublished!)).toBe(0)
+      expect(result.bestSoFar?.wasteMm2).not.toBe(0)
+    } finally {
+      vi.doUnmock('../placement/blf')
+      vi.resetModules()
+    }
   })
 
   it('does not expose the live champion through progress', () => {
@@ -949,6 +1080,18 @@ describe('runAutomaticNest', () => {
     expect(publishedChampions).toBe(1)
   })
 
+  it('preserves convergence terminal orders through full finalists', async () => {
+    const {
+      championOrderKey,
+      fullOrderKeys,
+      terminalBeamOrderKeys,
+    } = await fidelityPromotionScenario(75, { stopAtFirstLayer: true })
+
+    expect(new Set(fullOrderKeys)).toEqual(
+      new Set([championOrderKey, ...terminalBeamOrderKeys]),
+    )
+  })
+
   it('runs seed one-degree polish only after a strict refine improvement', async () => {
     expect(await refinementScenario(90)).toEqual([
       { stage: 'refine', improved: true },
@@ -1159,27 +1302,27 @@ describe('runAutomaticNest', () => {
     }
   })
 
-  it('refines a repair champion before evaluating another repair', async () => {
+  it('preserves a repair champion through full before another repair', async () => {
     const { sequence } = await repairImprovementScenario()
     const repairRank = sequence.indexOf('rank:candidate:true')
     const repairChampion = sequence.indexOf('repair:champion')
     const repairExact = sequence.indexOf('exact:candidate:true')
-    const coarseStart = sequence.indexOf('repair:coarse:start')
-    const coarseRank = sequence.indexOf('rank:coarse:false')
-    const refineStart = sequence.indexOf('repair:refine:start')
-    const refineExact = sequence.indexOf('exact:refine:true')
-    const nextRepairRank = sequence.findIndex(
-      (event, index) => index > repairExact && event.startsWith('rank:candidate:'),
+    const repairFullStart = sequence.indexOf('repair:full:start')
+    const repairFull = sequence.indexOf('exact:full:true')
+    const nextRepairRankOrFinish = sequence.findIndex(
+      (event, index) =>
+        index > repairExact &&
+        (event.startsWith('rank:candidate:') || event === 'finish'),
     )
 
     expect(repairRank).toBeGreaterThan(-1)
     expect(repairChampion).toBeGreaterThan(repairRank)
     expect(repairExact).toBeGreaterThan(repairChampion)
-    expect(coarseStart).toBeGreaterThan(repairExact)
-    expect(coarseRank).toBeGreaterThan(coarseStart)
-    expect(refineStart).toBeGreaterThan(coarseRank)
-    expect(refineExact).toBeGreaterThan(refineStart)
-    expect(nextRepairRank === -1 || nextRepairRank > refineExact).toBe(true)
+    expect(repairFullStart).toBeGreaterThan(repairExact)
+    expect(repairFull).toBeGreaterThan(repairFullStart)
+    expect(
+      nextRepairRankOrFinish === -1 || nextRepairRankOrFinish > repairFull,
+    ).toBe(true)
   })
 
   it('rewards the applied repair operator only after exact champion promotion', async () => {
