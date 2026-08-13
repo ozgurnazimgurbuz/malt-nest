@@ -3,12 +3,23 @@ import {
   anglesAround,
   coarseFreeAngles,
   freeAngleCascadeStages,
+  fullFreeAngles,
   resolveAllowedAngles,
   usesFreeAngleCascade,
 } from './rotations'
 import type { NestingSettings } from '../types'
 
 describe('free-angle cascade helpers', () => {
+  it('builds the canonical 0.1° full-circle grid', () => {
+    const angles = fullFreeAngles()
+    expect(angles).toHaveLength(3_600)
+    expect(new Set(angles).size).toBe(3_600)
+    expect(angles[0]).toBe(0)
+    expect(angles.at(-1)).toBe(359.9)
+    expect(angles.every((angle) => angle === Number(angle.toFixed(1))))
+      .toBe(true)
+  })
+
   it('coarse grid is 0..345 step 15 (24 angles)', () => {
     const a = coarseFreeAngles()
     expect(a).toHaveLength(24)

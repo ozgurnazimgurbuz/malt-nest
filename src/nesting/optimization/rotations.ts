@@ -15,6 +15,13 @@ export const FREE_ANGLE_REFINE_STEP = 5
 /** Final 1° polish around the mid winner. */
 export const FREE_ANGLE_FINAL_RADIUS = 5
 export const FREE_ANGLE_FINAL_STEP = 1
+export const FREE_ANGLE_FULL_STEP = 0.1
+
+/** Exact finalist grid: 0.0°, 0.1°, …, 359.9°. */
+export function fullFreeAngles(): number[] {
+  const scale = 1 / FREE_ANGLE_FULL_STEP
+  return Array.from({ length: 360 * scale }, (_, index) => index / scale)
+}
 
 export function normDeg(a: number): number {
   const normalized = a % 360
