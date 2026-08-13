@@ -355,14 +355,25 @@ describe('parseSvgGeometry', () => {
     expectClose(inheritedEvenodd.parts[0]!.area, 1200, 5)
   })
 
-  it('does not classify a partially contained subpath from its centroid alone', () => {
+  it('resolves valid self-intersecting SVG fills into simple nesting parts', () => {
+    const points = Array.from({ length: 5 }, (_, i) => {
+      const angle = ((-90 + i * 144) * Math.PI) / 180
+      return `${50 + Math.cos(angle) * 40},${50 + Math.sin(angle) * 40}`
+    }).join(' ')
+    const doc = parseSvgGeometry(svg(`<polygon points="${points}"/>`))
+
+    expect(doc.partCount).toBe(1)
+    expect(() => validateGeometryPart(doc.parts[0]!)).not.toThrow()
+  })
+
+  it('unions partially overlapping filled subpaths instead of treating one as a hole', () => {
     const doc = parseSvgGeometry(
       svg(
         '<path d="M0 0 H10 V10 H0 Z M-5 5 L5 4 L5 6 Z"/>',
       ),
     )
 
-    expect(doc.partCount).toBe(2)
+    expect(doc.partCount).toBe(1)
     expect(doc.totalArea).toBeGreaterThan(100)
   })
 
