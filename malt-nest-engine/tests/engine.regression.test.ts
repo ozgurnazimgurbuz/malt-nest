@@ -262,7 +262,7 @@ describe('nest regression coverage', () => {
     ).toBe(true)
   })
 
-  it('does not revalidate dense source topology for every free angle', () => {
+  it('handles dense source topology during free-angle search', () => {
     const part = makeShape(
       'dense-convex',
       Array.from({ length: 256 }, (_, index) => {
