@@ -35,7 +35,7 @@ export const DEFAULT_FREE_ANGLE: Required<
 > & { precision: AnglePrecision } = {
   coarseStepDeg: 15,
   refineStepDeg: 5,
-  finalStepDeg: 1,
+  finalStepDeg: 0.1,
   coarseTopK: 3,
   baselineAnglesDeg: [0],
   diversityCount: 2,
@@ -49,6 +49,6 @@ export type RotationPolicy =
   | { readonly kind: 'orthogonal' }
   | { readonly kind: 'free'; readonly free?: FreeAngleConfig }
 
-export const DEFAULT_ROTATION: RotationPolicy = { kind: 'orthogonal' }
+export const DEFAULT_ROTATION: RotationPolicy = { kind: 'free' }
 
 export const ORTHOGONAL_ANGLES = [0, 90, 180, 270] as const

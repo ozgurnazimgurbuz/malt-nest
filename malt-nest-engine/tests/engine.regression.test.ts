@@ -241,10 +241,10 @@ describe('nest regression coverage', () => {
     }
   })
 
-  it('checks the full circle at final-step precision', () => {
+  it('uses free tenth-degree search when rotation is omitted', () => {
     const length = 100
     const height = 1
-    const radians = (37 * Math.PI) / 180
+    const radians = (37.1 * Math.PI) / 180
     const sheet = createSheet(
       length * Math.cos(radians) + height * Math.sin(radians),
       length * Math.sin(radians) + height * Math.cos(radians),
@@ -252,11 +252,14 @@ describe('nest regression coverage', () => {
     const result = nest([rect('bar', length, height)], sheet, {
       gap: 0,
       maxSheets: 1,
-      rotation: { kind: 'free', free: { baselineFloor: false } },
     })
 
+    expect(result.config.rotation).toEqual({ kind: 'free' })
     expect(result.placements).toHaveLength(1)
-    expect([37, 217]).toContain(result.placements[0]!.rotationDeg)
+    expect([37.1, 217.1]).toContain(result.placements[0]!.rotationDeg)
+    expect(
+      validatePlacement(result.placements[0]!, sheet, [], { gap: 0 }).valid,
+    ).toBe(true)
   })
 
   it('does not revalidate dense source topology for every free angle', () => {

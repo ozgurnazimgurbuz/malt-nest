@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { makeShape } from '../src/geometry'
 import { createSheet, validatePlacement } from '../src/placement'
 import { nest } from '../src/nest'
-import { searchFreeAngle, canonicalizeAngle, type AngleEval } from '../src/rotation'
+import {
+  searchFreeAngle,
+  canonicalizeAngle,
+  resolveFreeConfig,
+  type AngleEval,
+} from '../src/rotation'
 
 function rect(id: string, w: number, h: number) {
   return makeShape(id, [
@@ -156,6 +161,28 @@ describe('free-angle fixtures', () => {
     })
     expect(full.best?.angleDeg).toBe(14)
     expect(full.best!.position!.y).toBe(3)
+  })
+
+  it('searches the default circle at 0.1° resolution', () => {
+    const config = resolveFreeConfig()
+    const result = searchFreeAngle((angleDeg) => ({
+      angleDeg,
+      ok: angleDeg === 37.1,
+      ...(angleDeg === 37.1
+        ? {
+            position: { x: 0, y: 0 },
+            bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 },
+            packedBoundsMm2: 1,
+          }
+        : {}),
+    }))
+
+    expect(config.finalStepDeg).toBe(0.1)
+    expect(result.evalCount).toBe(3_600)
+    expect(new Set(result.anglesEvaluated).size).toBe(3_600)
+    expect(result.anglesEvaluated[0]).toBe(0)
+    expect(result.anglesEvaluated.at(-1)).toBe(359.9)
+    expect(result.best?.angleDeg).toBe(37.1)
   })
 
   it('streams a caller-requested 0.01° final grid within its resource bound', () => {
