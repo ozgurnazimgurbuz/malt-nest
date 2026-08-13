@@ -32,3 +32,4 @@ dist-ssr
 
 # Local git worktrees
 .worktrees/
+.superpowers/
