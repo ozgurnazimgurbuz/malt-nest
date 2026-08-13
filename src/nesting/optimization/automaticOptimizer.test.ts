@@ -472,7 +472,7 @@ describe('runAutomaticNest', () => {
       rect('m2', 2, 40, 25),
       rect('s1', 3, 20, 20),
       rect('s2', 4, 18, 22),
-    ])
+    ], { allowRotation: false })
     const progress: NestProgress[] = []
 
     const result = runAutomaticNest(req, {
@@ -504,7 +504,7 @@ describe('runAutomaticNest', () => {
         expect(compareNestingResults(replay, champion)).toBe(0)
       }
     }
-  }, 30_000)
+  })
 
   it('preserves the selected seed order when result placements are grouped by sheet', async () => {
     const req = request([
@@ -582,7 +582,7 @@ describe('runAutomaticNest', () => {
       rect('a', 0, 30, 20),
       rect('b', 1, 25, 25),
       rect('c', 2, 15, 40),
-    ])
+    ], { allowRotation: false })
     const run = () => {
       const evaluations: string[] = []
       const result = runAutomaticNest(req, {
@@ -602,7 +602,7 @@ describe('runAutomaticNest', () => {
     if (first.result.status !== 'ok' || second.result.status !== 'ok') return
     expect(second.result.placements).toEqual(first.result.placements)
     expect(second.evaluations).toEqual(first.evaluations)
-  }, 30_000)
+  })
 
   it('uses compact run-local individual cache keys', async () => {
     const settingsKeys: string[] = []
@@ -966,6 +966,7 @@ describe('runAutomaticNest', () => {
 
   it('deduplicates full finalists by order', async () => {
     const req = request([rect('a', 0, 20, 10)], { allowRotation: false })
+    let finalistRefinements = 0
     const fullOrders: string[] = []
     vi.resetModules()
     vi.doMock('../placement/blf', async (importOriginal) => {
@@ -1023,8 +1024,17 @@ describe('runAutomaticNest', () => {
     try {
       const { runAutomaticNest: runMockedAutomaticNest } =
         await import('./automaticOptimizer')
-      runMockedAutomaticNest(req, { deterministic: true, now: () => 0 })
+      runMockedAutomaticNest(req, {
+        deterministic: true,
+        now: () => 0,
+        onProgress: ({ message }) => {
+          if (message === 'Improving layout · refining finalist') {
+            finalistRefinements++
+          }
+        },
+      })
 
+      expect(finalistRefinements).toBe(1)
       expect(fullOrders).toEqual([JSON.stringify(['a'])])
     } finally {
       vi.doUnmock('../placement/blf')
@@ -1242,7 +1252,7 @@ describe('runAutomaticNest', () => {
       rect('b', 1, 20, 20),
       rect('c', 2, 10, 30),
       rect('d', 3, 15, 15),
-    ])
+    ], { allowRotation: false })
     const prepared = prepareParts(req.parts, req.settings, { sortByArea: true })
     const required = buildOrderCandidates(prepared, createRng(7), {
       includeRandom: false,
@@ -1259,7 +1269,7 @@ describe('runAutomaticNest', () => {
 
     expect(result.status).toBe('ok')
     expect(tried).toEqual(required)
-  }, 30_000)
+  })
 
   it('iterates beam layers, refines finalists, and terminates duplicate repair', () => {
     const messages: string[] = []
