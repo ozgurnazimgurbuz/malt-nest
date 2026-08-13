@@ -59,7 +59,6 @@ describe('Demo.svg orthogonal vs free-angle', () => {
           baselineFloor: true,
           coarseStepDeg: 15,
           refineStepDeg: 5,
-          finalStepDeg: 1,
           coarseTopK: 3,
         },
       },

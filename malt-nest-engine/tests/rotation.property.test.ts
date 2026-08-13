@@ -131,7 +131,7 @@ describe('nest free-angle properties', () => {
       gap: 1,
       rotation: {
         kind: 'free' as const,
-        free: { baselineFloor: false, coarseTopK: 2 },
+        free: { baselineFloor: false, coarseTopK: 2, finalStepDeg: 1 },
       },
     }
     const r1 = nest(parts, sheet, cfg)
@@ -155,7 +155,10 @@ describe('nest free-angle properties', () => {
     const sheet = createSheet(30, 30, 0)
     const r = nest(parts, sheet, {
       gap: 0,
-      rotation: { kind: 'free', free: { baselineFloor: true } },
+      rotation: {
+        kind: 'free',
+        free: { baselineFloor: true, finalStepDeg: 1 },
+      },
     })
     expect(r.diagnostics.baselineFloorApplied).toBe(true)
     expect(r.placements.length).toBe(1)

@@ -31,7 +31,7 @@ function L(id: string) {
 
 const freeNoFloor = {
   kind: 'free' as const,
-  free: { baselineFloor: false as const },
+  free: { baselineFloor: false as const, finalStepDeg: 1 },
 }
 
 describe('free-angle fixtures', () => {

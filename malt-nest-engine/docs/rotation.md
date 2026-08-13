@@ -26,7 +26,7 @@ RotationPolicy =
 |-------|---------|------|
 | Coarse | step **15°** | Full-circle sample + baselines |
 | Refine | **±15° @ 5°** around seeds | Local densify |
-| Final | full circle @ **1°** | Exhaustive configured-resolution coverage |
+| Final | full circle @ **0.1°** | Exhaustive configured-resolution coverage (3,600 normalized samples) |
 
 ### Top-K / safety (anti legacy bias)
 
@@ -87,7 +87,7 @@ Engine accepts `rotation: { kind: 'free' }` with **no UI**. UI may later send th
 
 ## Limitations
 
-- Discrete 1° default (configurable `finalStepDeg`; finer grids cost more)
+- Discrete 0.1° default (3,600 normalized samples; configurable `finalStepDeg`; finer grids cost more)
 - Candidate vertices may miss continuous optima  
 - Demo oversized AABB parts still need geometry/sheet changes or denser angles  
 - Baseline floor doubles work when enabled  

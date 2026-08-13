@@ -72,13 +72,12 @@ describe('rotation microbench', () => {
           baselineFloor: false,
           coarseStepDeg: 15,
           refineStepDeg: 5,
-          finalStepDeg: 1,
           coarseTopK: 3,
         },
       },
       maxSheets: 8,
     })
-    rows.push(row('free-full-1deg', full))
+    rows.push(row('free-full-default-0.1deg', full))
 
     console.log(JSON.stringify(rows, null, 2))
     expect(rows.length).toBe(4)

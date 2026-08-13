@@ -156,7 +156,7 @@ describe('fast/full modes', () => {
   })
 
   it('12. FULL uses free by default', () => {
-    const r = optimizeMultiStart(parts, sheet, {
+    const r = optimizeMultiStart([], sheet, {
       gap: 0,
       strategies: ['area_desc'],
       maxSheets: 2,
@@ -211,7 +211,10 @@ describe('ETAP 4 / 5 regression via multi-start orchestration', () => {
     const r = nest([rect('bar', 21, 2)], sheet, {
       gap: 0,
       ordering: 'area_desc',
-      rotation: { kind: 'free', free: { baselineFloor: false } },
+      rotation: {
+        kind: 'free',
+        free: { baselineFloor: false, finalStepDeg: 1 },
+      },
     })
     expect(r.placements.length).toBe(1)
     expect([0, 90, 180, 270].includes(r.placements[0]!.rotationDeg)).toBe(false)

@@ -15,7 +15,7 @@ nest(parts: Shape[], sheet: Sheet, config: NestConfig): NestResult
 |-------|---------|---------|
 | `gap` | required | Clearance (mm) — same semantics as Placement |
 | `ordering` | `area_desc` | Deterministic sort strategy |
-| `rotation` | `orthogonal` | Angle policy (not a search) |
+| `rotation` | `free` | Angle policy; explicit restrictive policies remain authoritative |
 | `maxSheets` | `parts.length` | Multi-sheet cap |
 | `debug` | `false` | Per-part candidate diagnostics |
 | `tolerance` | `DEFAULT_TOLERANCE` | Geometry/NFP/placement tolerance |

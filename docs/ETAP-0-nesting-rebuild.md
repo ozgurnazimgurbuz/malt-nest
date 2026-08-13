@@ -44,7 +44,7 @@ Fallback without `Worker`: the same evolutionary engine runs on the main thread.
 | Prepare | `src/nesting/core/prepare.ts` | Rotation variants, metrics, lazy `getOrCreateVariant`, optional area sort |
 | BLF placer | `src/nesting/placement/blf.ts` | Bottom-left + free-angle depths; `runBottomLeftNest` / `placeWithOrder` / `placeWithPlan` |
 | NFP candidates | `src/nesting/nfp/candidates.ts` | Exact/fallback contact translations, hole symmetry, local-frame LRU |
-| Rotations | `src/nesting/optimization/rotations.ts` | exhaustive 1° full search + refinement helpers |
+| Rotations | `src/nesting/optimization/rotations.ts` | exhaustive 0.1° full search + refinement helpers |
 | Order search | `src/nesting/optimization/orderSearch.ts` | Distinct deterministic and seeded heuristic orders |
 | Optimizer | `src/nesting/optimization/geneticOptimizer.ts` | Stage1 full floor + cheap order/GA search + deadline-bound exhaustive polish |
 | Scoring | `src/nesting/scoring/{fitness,weights}.ts` | Canonical feasibility-first lexicographic order; weighted diagnostics |
@@ -57,7 +57,7 @@ Fallback without `Worker`: the same evolutionary engine runs on the main thread.
 | `quick` | 45° grid |
 | `coarse` | 15° (24 angles) |
 | `medium` | 15° → top-3 refine @ 5° (no 1°) — profiling only |
-| `full` | exhaustive 0°..359° at 1° |
+| `full` | exhaustive 0.0°..359.9° at 0.1° (3,600 angles) |
 | `seed` | Refine around gene angle → 1° |
 
 ### A.4 Architecture strengths

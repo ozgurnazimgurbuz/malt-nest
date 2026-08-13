@@ -43,7 +43,8 @@ optimizeMultiStart(parts, sheet, { gap, maxSheets? }): MultiStartResult
 Every configured strategy is evaluated, deduplicated in stable order;
 `area_desc` is injected as the baseline if absent.
 
-`rotation: free` (cascade from ETAP 5; nest-level ortho floor off — FAST already measured orthogonal).
+`rotation: free` inherited at the default 0.1° resolution (cascade from ETAP 5;
+nest-level ortho floor off — FAST already measured orthogonal).
 
 ### Baseline invariant
 
