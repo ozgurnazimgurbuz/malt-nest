@@ -87,9 +87,9 @@ export type BlfOptions = {
    * - full: exhaustive 0°..359.9° at 0.1°, with exact NFP geometry
    * - refine: 5° window around a plan angle (no 1° final)
    * - seed: refine around a gene angle (final polish)
-   * Default for free mode: coarse (avoid 1° on every eval).
-   * Automatic search selects orthogonal, quick, coarse, refine, and seed depths;
-   * 'medium' and 'full' remain opt-in diagnostic modes.
+   * Default for free mode: coarse (avoid exhaustive search on every eval).
+   * Automatic search uses full for terminal and repair finalists;
+   * 'medium' remains an opt-in diagnostic mode.
    */
   freeAngleDepth?: FreeAngleDepth
   /**
