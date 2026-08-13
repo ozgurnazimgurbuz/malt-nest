@@ -541,9 +541,9 @@ describe('runBottomLeftNest', () => {
     expect(dikey.placements).not.toEqual(off.placements)
   })
 
-  it('15. full free-angle search finds an exact 37° fit outside coarse windows', () => {
+  it('15. full free-angle search finds an exact 37.1° fit outside coarse windows', () => {
     const part = rectPart('bar', 0, 0, 0, 100, 1)
-    const radians = (37 * Math.PI) / 180
+    const radians = (37.1 * Math.PI) / 180
     const width = 100 * Math.cos(radians) + Math.sin(radians)
     const height = 100 * Math.sin(radians) + Math.cos(radians)
     const result = runBottomLeftNest(
@@ -566,7 +566,42 @@ describe('runBottomLeftNest', () => {
     expect(result.status).toBe('ok')
     if (result.status !== 'ok') return
     expect(result.placements).toHaveLength(1)
-    expect([37, 143, 217, 323]).toContain(result.placements[0]?.rotation)
+    expect([37.1, 142.9, 217.1, 322.9]).toContain(
+      result.placements[0]?.rotation,
+    )
+  })
+
+  it('full free-angle search overrides a fixed plan rotation for an exact 37.1° fit', () => {
+    const part = rectPart('bar', 0, 0, 0, 100, 1)
+    const radians = (37.1 * Math.PI) / 180
+    const width = 100 * Math.cos(radians) + Math.sin(radians)
+    const height = 100 * Math.sin(radians) + Math.cos(radians)
+    const req = request([part], {
+      sheet: {
+        widthMm: width + 1e-6,
+        heightMm: height + 1e-6,
+        marginMm: 0,
+        quantity: 1,
+      },
+      settings: {
+        rotationMode: 'free',
+        allowRotation: true,
+        allowArbitraryRotation: true,
+      },
+    })
+
+    const result = placeWithPlan(
+      req,
+      { order: ['bar'], rotations: [0] },
+      { freeAngleDepth: 'full', nfpFidelity: 'exact' },
+    )
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements).toHaveLength(1)
+    expect([37.1, 142.9, 217.1, 322.9]).toContain(
+      result.placements[0]?.rotation,
+    )
   })
 
   it('honors explicit rotations even when rotationMode is free', () => {
@@ -721,7 +756,7 @@ describe('runBottomLeftNest', () => {
     const bar = rectPart('bar', 1, 0, 0, 100, 1)
     const rotated = rotatePoints(
       bar.outer.points,
-      37,
+      37.1,
       partRotationOrigin(bar.outer.points),
     )
     const exact = boundingBox(rotated)
@@ -744,19 +779,28 @@ describe('runBottomLeftNest', () => {
         },
       })
       req.sheets = sheets
-      const result = placeWithOrder(req, ['flexible', 'bar'], {
-        freeAngleDepth: 'full',
-      })
+      const results = [
+        placeWithOrder(req, ['flexible', 'bar'], {
+          freeAngleDepth: 'full',
+        }),
+        placeWithPlan(
+          req,
+          { order: ['flexible', 'bar'], rotations: [0, 0] },
+          { freeAngleDepth: 'full' },
+        ),
+      ]
 
-      expect(result.status).toBe('ok')
-      if (result.status !== 'ok') continue
-      expect(result.statistics.placedCount).toBe(2)
-      expect(result.sheets[0]).toMatchObject({ widthMm: 71, heightMm: 71 })
-      const placement = result.placements.find(
-        (candidate) => candidate.partId === 'bar',
-      )
-      expect(placement?.sheetIndex).toBe(1)
-      expect([37, 143, 217, 323]).toContain(placement?.rotation)
+      for (const result of results) {
+        expect(result.status).toBe('ok')
+        if (result.status !== 'ok') continue
+        expect(result.statistics.placedCount).toBe(2)
+        expect(result.sheets[0]).toMatchObject({ widthMm: 71, heightMm: 71 })
+        const placement = result.placements.find(
+          (candidate) => candidate.partId === 'bar',
+        )
+        expect(placement?.sheetIndex).toBe(1)
+        expect([37.1, 142.9, 217.1, 322.9]).toContain(placement?.rotation)
+      }
     }
   })
 

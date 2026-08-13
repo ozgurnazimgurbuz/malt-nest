@@ -26,6 +26,7 @@ import {
   ORTHOGONAL_ANGLES,
   coarseFreeAngles,
   freeAngleCascadeStages,
+  fullFreeAngles,
   normDeg,
   usesFreeAngleCascade,
 } from '../optimization/rotations'
@@ -83,7 +84,7 @@ export type BlfOptions = {
    * - quick: 45° grid (order ranking)
    * - coarse: 15° grid
    * - medium: coarse → top-3 refine @5° (no 1° final; profiling / cheap proxy)
-   * - full: exhaustive 0°..359° at 1°, with exact NFP geometry
+   * - full: exhaustive 0°..359.9° at 0.1°, with exact NFP geometry
    * - refine: 5° window around a plan angle (no 1° final)
    * - seed: refine around a gene angle (final polish)
    * Default for free mode: coarse (avoid 1° on every eval).
@@ -257,8 +258,11 @@ function hasMaterialCapacity(entry: SequenceEntry, sheet: SheetState): boolean {
   return lowerTotal <= admittedArea + roundoffMm2
 }
 
-function freeAngleDimensions(part: PreparedPart): FitDimensions[] {
-  return coarseFreeAngles(1).map((angle) => rotationDimensions(part, angle))
+function freeAngleDimensions(
+  part: PreparedPart,
+  angles: readonly number[] = coarseFreeAngles(1),
+): FitDimensions[] {
+  return angles.map((angle) => rotationDimensions(part, angle))
 }
 
 function entryFitsEmptyStock(
@@ -665,7 +669,7 @@ function boundedAllowedCoarseAngles(
 
 /**
  * Pick rotation + translation for a part.
- * Free depths: coarse (15°) / full (exhaustive 1°) / seed (refine around gene).
+ * Free depths: coarse (15°) / full (exhaustive 0.1°) / seed (refine around gene).
  */
 function pickBestVariant(
   part: PreparedPart,
@@ -723,7 +727,7 @@ function pickBestVariant(
   if (opts.depth === 'full') {
     const ok = evaluateAngles(
       part,
-      coarseFreeAngles(1),
+      fullFreeAngles(),
       sheet,
       spacingMm,
       allowPartInPart,
@@ -833,7 +837,7 @@ function pickBestVariant(
 
   if (!ok.length) return null
 
-  // medium stops after 5° refine — experiment proxy for full without 1° cost.
+  // medium stops after 5° refine — experiment proxy for full without 0.1° cost.
   if (
     opts.depth === 'coarse' ||
     opts.depth === 'orthogonal' ||
@@ -960,13 +964,15 @@ function placeSequence(
   const sheets: SheetState[] = []
   const unplaced: string[] = []
   const total = sequence.length || 1
+  const fullStockSearch = freeCascade && freeDepth === 'full'
+  const stockFitAngles = fullStockSearch ? fullFreeAngles() : undefined
   const freeDimensionCache = new Map<PreparedPart, FitDimensions[]>()
   const fitsStock = (entry: SequenceEntry, stock: SheetStock): boolean => {
     let dimensions: FitDimensions[] | undefined
-    if (freeCascade && entry.variant === 'best') {
+    if (freeCascade && (entry.variant === 'best' || fullStockSearch)) {
       dimensions = freeDimensionCache.get(entry.part)
       if (!dimensions) {
-        dimensions = freeAngleDimensions(entry.part)
+        dimensions = freeAngleDimensions(entry.part, stockFitAngles)
         freeDimensionCache.set(entry.part, dimensions)
       }
     }
@@ -1007,7 +1013,7 @@ function placeSequence(
       }
       if (
         freeCascade &&
-        (freeDepth === 'seed' || freeDepth === 'refine')
+        (freeDepth === 'full' || freeDepth === 'seed' || freeDepth === 'refine')
       ) {
         return pickBestVariant(
           part,
@@ -1019,7 +1025,7 @@ function placeSequence(
           {
             freeCascade: true,
             depth: freeDepth,
-            seedRotation: variant.rotation,
+            seedRotation: freeDepth === 'full' ? undefined : variant.rotation,
             exactNfp: useExactNfp,
             onAttempt,
           },
