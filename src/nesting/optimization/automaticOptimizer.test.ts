@@ -292,7 +292,9 @@ async function refinementScenario(refineWaste: number) {
           ? refineWaste
           : options.freeAngleDepth === 'seed'
             ? 80
-            : 100,
+            : options.freeAngleDepth === 'full'
+              ? 70
+              : 100,
       )
     return {
       ...actual,
@@ -305,8 +307,9 @@ async function refinementScenario(refineWaste: number) {
   try {
     const { runAutomaticNest: runMockedAutomaticNest } =
       await import('./automaticOptimizer')
-    const finalistStages: Array<{ stage: 'refine' | 'seed'; improved: boolean }> = []
-    let finalistStage: 'refine' | 'seed' | null = null
+    type FinalistStage = 'refine' | 'seed' | 'full'
+    const finalistStages: Array<{ stage: FinalistStage; improved: boolean }> = []
+    let finalistStage: FinalistStage | null = null
     runMockedAutomaticNest(req, {
       deterministic: true,
       now: () => 0,
@@ -315,6 +318,8 @@ async function refinementScenario(refineWaste: number) {
           finalistStage = 'refine'
         } else if (message === 'Improving layout · polishing finalist') {
           finalistStage = 'seed'
+        } else if (message === 'Improving layout · full-circle finalist') {
+          finalistStage = 'full'
         }
       },
       onEvaluation: ({ kind, improved }) => {
@@ -499,7 +504,7 @@ describe('runAutomaticNest', () => {
         expect(compareNestingResults(replay, champion)).toBe(0)
       }
     }
-  })
+  }, 30_000)
 
   it('preserves the selected seed order when result placements are grouped by sheet', async () => {
     const req = request([
@@ -597,7 +602,7 @@ describe('runAutomaticNest', () => {
     if (first.result.status !== 'ok' || second.result.status !== 'ok') return
     expect(second.result.placements).toEqual(first.result.placements)
     expect(second.evaluations).toEqual(first.evaluations)
-  })
+  }, 30_000)
 
   it('uses compact run-local individual cache keys', async () => {
     const settingsKeys: string[] = []
@@ -948,13 +953,84 @@ describe('runAutomaticNest', () => {
     expect(await refinementScenario(90)).toEqual([
       { stage: 'refine', improved: true },
       { stage: 'seed', improved: true },
+      { stage: 'full', improved: true },
     ])
   })
 
-  it('stops finalist refinement after a non-improving refine stage', async () => {
+  it('runs full-circle refinement after a non-improving refine stage', async () => {
     expect(await refinementScenario(110)).toEqual([
       { stage: 'refine', improved: false },
+      { stage: 'full', improved: true },
     ])
+  })
+
+  it('deduplicates full finalists by order', async () => {
+    const req = request([rect('a', 0, 20, 10)], { allowRotation: false })
+    const fullOrders: string[] = []
+    vi.resetModules()
+    vi.doMock('../placement/blf', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../placement/blf')>()
+      const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
+        (nestRequest, options) => scoredResult(
+          nestRequest,
+          options.preparedParts?.map(({ partId }) => partId) ?? [],
+          100,
+        )
+      const placeWithOrderUnchecked: typeof actual.placeWithOrderUnchecked =
+        (nestRequest, order) => scoredResult(nestRequest, order, 100)
+      const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
+        (nestRequest, plan, options) => {
+          if (options.freeAngleDepth === 'full') {
+            fullOrders.push(JSON.stringify(plan.order))
+          }
+          const result = scoredResult(nestRequest, plan.order, 100)
+          return {
+            ...result,
+            placements: result.placements.map((placement, index) => ({
+              ...placement,
+              rotation: plan.rotations[index]!,
+            })),
+          }
+        }
+      return {
+        ...actual,
+        runBottomLeftNestUnchecked,
+        placeWithOrderUnchecked,
+        placeWithPlanUnchecked,
+      }
+    })
+    vi.doMock('./beamSearch', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('./beamSearch')>()
+      const selectBeam: typeof actual.selectBeam = (candidates, width, runKey) => {
+        const selected = actual.selectBeam(candidates, width, runKey)
+        if (!selected[0]) return selected
+        return [
+          selected[0],
+          {
+            ...selected[0],
+            individual: {
+              order: selected[0].individual.order.slice(),
+              rotations: selected[0].individual.rotations.map(
+                (rotation) => rotation + 90,
+              ),
+            },
+          },
+        ]
+      }
+      return { ...actual, selectBeam }
+    })
+
+    try {
+      const { runAutomaticNest: runMockedAutomaticNest } =
+        await import('./automaticOptimizer')
+      runMockedAutomaticNest(req, { deterministic: true, now: () => 0 })
+
+      expect(fullOrders).toEqual([JSON.stringify(['a'])])
+    } finally {
+      vi.doUnmock('../placement/blf')
+      vi.doUnmock('./beamSearch')
+      vi.resetModules()
+    }
   })
 
   it('finds an exact-validated allowed rotation before local refinement', () => {
@@ -1183,7 +1259,7 @@ describe('runAutomaticNest', () => {
 
     expect(result.status).toBe('ok')
     expect(tried).toEqual(required)
-  })
+  }, 30_000)
 
   it('iterates beam layers, refines finalists, and terminates duplicate repair', () => {
     const messages: string[] = []

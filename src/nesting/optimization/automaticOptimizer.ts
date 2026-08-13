@@ -51,8 +51,12 @@ export type AutomaticOptions = {
   }) => void
 }
 
-type ExactStage = 'fixed' | 'coarse' | 'refine' | 'seed'
+type ExactStage = 'fixed' | 'coarse' | 'refine' | 'seed' | 'full'
+type ExactDepth = Extract<FreeAngleDepth, 'refine' | 'seed' | 'full'>
 type ProgressActivity = NonNullable<NestProgress['activity']>
+
+const orderKey = (individual: Individual): string =>
+  JSON.stringify(individual.order)
 
 function individualFromResult(
   result: NestingSuccess,
@@ -268,9 +272,11 @@ export function runAutomaticNest(
     individual: Individual,
     stage: ExactStage,
     activity: ProgressActivity,
-    depth?: Extract<FreeAngleDepth, 'refine' | 'seed'>,
+    depth?: ExactDepth,
   ): ExactOutcome => {
-    const key = `${stage}:${individualKey(individual, runKey)}`
+    const key = stage === 'full'
+      ? `full:${orderKey(individual)}`
+      : `${stage}:${individualKey(individual, runKey)}`
     if (exactCache.has(key)) {
       const result = exactCache.get(key) ?? null
       return {
@@ -415,7 +421,7 @@ export function runAutomaticNest(
     individual: Individual,
     stage: ExactStage,
     activity: ProgressActivity,
-    depth?: Extract<FreeAngleDepth, 'refine' | 'seed'>,
+    depth?: ExactDepth,
   ): ExactOutcome => {
     const outcome = evaluateExact(individual, stage, activity, depth)
     if (!outcome.improved || !championGene) return outcome
@@ -551,6 +557,22 @@ export function runAutomaticNest(
   }
 
   type RefinementState = 'done' | 'halted' | 'cancelled'
+  const runFullFinalist = (
+    individual: Individual,
+    source: 'finalist' | 'repair',
+    activity: ProgressActivity,
+  ): RefinementState => {
+    emit({
+      ratio: 0.65,
+      phase: 'optimize',
+      activity,
+      message: source === 'repair'
+        ? 'Improving layout · full-circle repair champion'
+        : 'Improving layout · full-circle finalist',
+    })
+    const full = evaluateExact(individual, 'full', activity, 'full')
+    return full.cancelled || options.signal?.aborted ? 'cancelled' : 'done'
+  }
   const refineFinalist = (
     individual: Individual,
     source: 'finalist' | 'repair',
@@ -604,7 +626,9 @@ export function runAutomaticNest(
       'refine',
     )
     if (refined.cancelled || options.signal?.aborted) return 'cancelled'
-    if (!refined.improved || !refined.gene) return 'done'
+    if (!refined.improved || !refined.gene) {
+      return runFullFinalist(refinementGene, source, activity)
+    }
     if (halted()) {
       return options.signal?.aborted ? 'cancelled' : 'halted'
     }
@@ -622,13 +646,14 @@ export function runAutomaticNest(
       activity,
       'seed',
     )
-    return polished.cancelled || options.signal?.aborted ? 'cancelled' : 'done'
+    if (polished.cancelled || options.signal?.aborted) return 'cancelled'
+    return runFullFinalist(polished.gene ?? refined.gene, source, activity)
   }
 
   const finalistKeys = new Set<string>()
   const finalists = [championGene, ...beam.map(({ individual }) => individual)]
     .filter((individual) => {
-      const key = individualKey(individual, runKey)
+      const key = orderKey(individual)
       if (finalistKeys.has(key)) return false
       finalistKeys.add(key)
       return true
@@ -638,6 +663,7 @@ export function runAutomaticNest(
     if (state === 'cancelled') return cancelled()
     if (state === 'halted') return finish()
   }
+  if (!refreshCheapThreshold()) return cancelled()
 
   emit({
     ratio: 0.65,
