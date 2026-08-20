@@ -551,6 +551,28 @@ describe('Stage 8 — SVG export', () => {
     expect(exportNestingToSvg(result, parts).ok).toBe(false)
   })
 
+  it('audits retained sheet margins and requested spacing', () => {
+    const parts = [rect('a', 0, 10, 10), rect('b', 1, 10, 10)]
+    const result = success(
+      parts,
+      [
+        { partId: 'a', sheetIndex: 0, x: 0, y: 0, rotation: 0 },
+        { partId: 'b', sheetIndex: 0, x: 10, y: 0, rotation: 0 },
+      ],
+      [sheet(0)],
+    )
+    result.sheets[0]!.marginMm = 5
+    result.spacingMm = 3
+
+    const validation = validateNestExport(result, parts)
+    expect(validation.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'margin_violation' }),
+        expect.objectContaining({ code: 'spacing_violation' }),
+      ]),
+    )
+  })
+
   it('rejects malformed source rings before export', () => {
     const malformed = {
       ...rect('a', 0, 20, 20),

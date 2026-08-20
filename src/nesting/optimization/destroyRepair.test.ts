@@ -11,7 +11,7 @@ import {
 import type { Individual } from './individual'
 import type { Rng } from './rng'
 
-const operators: RepairOperator[] = ['random', 'bounds', 'sheet', 'unplaced']
+const operators: RepairOperator[] = ['random', 'bounds', 'sheet', 'unplaced', 'rotation']
 
 function rng(first: number, rest = 0): Rng {
   let initial = true
@@ -110,19 +110,29 @@ function expectValid(before: Individual, after: Individual): void {
 
 describe('repair state', () => {
   it('starts each operator at weight one', () => {
-    expect(createRepairState().weights).toEqual({ random: 1, bounds: 1, sheet: 1, unplaced: 1 })
+    expect(createRepairState().weights).toEqual({
+      random: 1,
+      bounds: 1,
+      sheet: 1,
+      unplaced: 1,
+      rotation: 1,
+    })
   })
 
   it('increments rewards and decays every weight exactly when one reaches 16', () => {
-    const state: RepairState = { weights: { random: 15, bounds: 7, sheet: 2, unplaced: 1 } }
+    const state: RepairState = {
+      weights: { random: 15, bounds: 7, sheet: 2, unplaced: 1, rotation: 1 },
+    }
     rewardRepairOperator(state, 'random')
-    expect(state.weights).toEqual({ random: 8, bounds: 3, sheet: 1, unplaced: 1 })
+    expect(state.weights).toEqual({ random: 8, bounds: 3, sheet: 1, unplaced: 1, rotation: 1 })
   })
 
   it('uses weights while keeping every positive operator reachable', () => {
-    const state: RepairState = { weights: { random: 1, bounds: 3, sheet: 1, unplaced: 1 } }
+    const state: RepairState = {
+      weights: { random: 1, bounds: 3, sheet: 1, unplaced: 1, rotation: 1 },
+    }
     const empty = individual([])
-    const seen = [0.01, 0.2, 0.7, 0.9].map(
+    const seen = [0.01, 0.2, 0.6, 0.75, 0.9].map(
       (roll) => proposeRepair(empty, [], result(), new Map(), rng(roll), state).operator,
     )
     expect(seen).toEqual(operators)
@@ -152,7 +162,14 @@ describe('repair proposals', () => {
       state,
     )
 
-    expectValid(start, proposal.individual)
+    if (operator === 'rotation') {
+      expect(proposal.individual.rotations).not.toEqual(start.rotations)
+      expect(proposal.individual.rotations.every((value, index) =>
+        value === start.rotations[index] || [0, 90].includes(value),
+      )).toBe(true)
+    } else {
+      expectValid(start, proposal.individual)
+    }
     expect(proposal.operator).toBe(
       operator === 'bounds' || operator === 'sheet' ? 'random' : operator,
     )
@@ -265,7 +282,7 @@ describe('repair proposals', () => {
     rewardRepairOperator(state, proposal.operator)
     expect(proposal.operator).toBe('random')
     expect(proposal.individual.order).toEqual(start.order)
-    expect(state.weights).toEqual({ random: 2, bounds: 1, sheet: 1, unplaced: 1 })
+    expect(state.weights).toEqual({ random: 2, bounds: 1, sheet: 1, unplaced: 1, rotation: 1 })
     expectValid(start, proposal.individual)
   })
 
@@ -285,6 +302,12 @@ describe('repair proposals', () => {
   it('reward mutates only repair state', () => {
     const state = createRepairState()
     rewardRepairOperator(state, 'bounds')
-    expect(state.weights).toEqual({ random: 1, bounds: 2, sheet: 1, unplaced: 1 })
+    expect(state.weights).toEqual({
+      random: 1,
+      bounds: 2,
+      sheet: 1,
+      unplaced: 1,
+      rotation: 1,
+    })
   })
 })

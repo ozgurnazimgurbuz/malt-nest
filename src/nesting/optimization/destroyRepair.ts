@@ -4,13 +4,21 @@ import type { NestingSuccess } from '../types'
 import { cloneIndividual, type Individual } from './individual'
 import type { Rng } from './rng'
 
-export type RepairOperator = 'random' | 'bounds' | 'sheet' | 'unplaced'
+export type RepairOperator = 'random' | 'bounds' | 'sheet' | 'unplaced' | 'rotation'
 export type RepairState = { weights: Record<RepairOperator, number> }
 
-const operators: readonly RepairOperator[] = ['random', 'bounds', 'sheet', 'unplaced']
+const operators: readonly RepairOperator[] = [
+  'random',
+  'bounds',
+  'sheet',
+  'unplaced',
+  'rotation',
+]
 
 export function createRepairState(): RepairState {
-  return { weights: { random: 1, bounds: 1, sheet: 1, unplaced: 1 } }
+  return {
+    weights: { random: 1, bounds: 1, sheet: 1, unplaced: 1, rotation: 1 },
+  }
 }
 
 export function rewardRepairOperator(state: RepairState, op: RepairOperator): void {
@@ -146,6 +154,19 @@ function repair(
   return individual
 }
 
+function rerotate(
+  start: Individual,
+  indices: number[],
+  allowedRotations: readonly number[],
+  rng: Rng,
+): Individual {
+  const individual = cloneIndividual(start)
+  for (const index of indices) {
+    individual.rotations[index] = rng.pick(allowedRotations)
+  }
+  return individual
+}
+
 export function proposeRepair(
   start: Individual,
   allowedRotations: readonly number[],
@@ -156,6 +177,18 @@ export function proposeRepair(
 ): { individual: Individual; operator: RepairOperator } {
   let operator = chooseRepairOperator(state, rng)
   if (start.order.length < 2) return { individual: cloneIndividual(start), operator }
+
+  if (operator === 'rotation' && allowedRotations.length > 0) {
+    const indices = boundedIndices(
+      Array.from({ length: start.order.length }, (_, index) => index),
+      start.order.length,
+      rng,
+    )
+    return {
+      individual: rerotate(start, indices, allowedRotations, rng),
+      operator,
+    }
+  }
 
   let indices: number[] = []
   if (operator === 'bounds') indices = boundsIndices(start, result, preparedById, rng)
@@ -170,7 +203,5 @@ export function proposeRepair(
     indices = randomIndices(start.order.length, count, rng)
   }
 
-  // Rerotation is deliberately optional; preserving rotations keeps ID/rotation pairs aligned.
-  void allowedRotations
   return { individual: repair(start, indices, operator !== 'random', rng), operator }
 }

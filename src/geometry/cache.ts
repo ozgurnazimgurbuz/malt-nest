@@ -18,14 +18,19 @@ function keyString(k: NfpCacheKey): string {
   return [
     k.stationaryPartId,
     k.movingPartId,
-    String(k.rotationA),
-    String(k.rotationB),
+    String(canonicalRotation(k.rotationA)),
+    String(canonicalRotation(k.rotationB)),
     String(k.spacing),
     k.geometryVersion,
     k.backend ?? '',
     k.fidelity ?? 'simplified',
     (k.tolerance ?? 0).toExponential(),
   ].join('|')
+}
+
+function canonicalRotation(rotation: number): number {
+  const normalized = rotation % 360
+  return normalized === 0 ? 0 : normalized < 0 ? normalized + 360 : normalized
 }
 
 /**

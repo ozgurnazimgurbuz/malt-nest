@@ -106,4 +106,5 @@ export {
   type SeparationKind,
 } from './distance'
 export { convexDecompose, isConvexPolygon } from './convex'
+export { UniformGridIndex } from './collisionIndex'
 export { convexHull, minkowskiDifferenceConvex, minkowskiSumConvex } from './minkowski'

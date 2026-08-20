@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   anglesAround,
   coarseFreeAngles,
+  eventAnglesFromPoints,
   freeAngleCascadeStages,
   fullFreeAngles,
   resolveAllowedAngles,
@@ -10,6 +11,20 @@ import {
 import type { NestingSettings } from '../types'
 
 describe('free-angle cascade helpers', () => {
+  it('keeps production event angles bounded', () => {
+    const angles = eventAnglesFromPoints([
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 1 },
+      { x: 0, y: 1 },
+    ])
+
+    expect(angles.length).toBeLessThanOrEqual(32)
+    expect(angles).toContain(0)
+    expect(angles).toContain(90)
+    expect(angles.length).toBeLessThan(3_600)
+  })
+
   it('builds the canonical 0.1° full-circle grid', () => {
     const angles = fullFreeAngles()
     expect(angles).toHaveLength(3_600)
