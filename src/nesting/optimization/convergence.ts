@@ -6,6 +6,7 @@ export type ConvergenceState = {
   evaluations: number
   evaluationsSinceImprovement: number
   evaluationLimit: number
+  timeLimitMs: number
   requiredOrdersComplete: boolean
 }
 
@@ -13,16 +14,21 @@ export function createConvergenceState({
   partCount,
   deterministic,
   startedAtMs,
+  timeLimitMs = 5_000,
 }: {
   partCount: number
   deterministic: boolean
   startedAtMs: number
+  timeLimitMs?: number
 }): ConvergenceState {
   if (!Number.isSafeInteger(partCount) || partCount < 0) {
     throw new RangeError('Part count must be a nonnegative safe integer')
   }
   if (!Number.isFinite(startedAtMs)) {
     throw new RangeError('Start time must be finite')
+  }
+  if (!Number.isFinite(timeLimitMs) || timeLimitMs <= 0) {
+    throw new RangeError('Time limit must be positive and finite')
   }
 
   return {
@@ -33,6 +39,7 @@ export function createConvergenceState({
     evaluations: 0,
     evaluationsSinceImprovement: 0,
     evaluationLimit: Math.max(64, partCount * 4),
+    timeLimitMs,
     requiredOrdersComplete: false,
   }
 }
@@ -72,7 +79,7 @@ export function shouldStop(
     )
   }
 
-  if (nowMs - state.startedAtMs >= 5_000) return true
+  if (nowMs - state.startedAtMs >= state.timeLimitMs) return true
 
   if (state.firstChampionMs === null || state.lastImprovementMs === null) {
     return false

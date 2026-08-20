@@ -26,6 +26,8 @@ export type RotationMode = 'orthogonal' | 'balanced' | 'deep' | 'free'
  */
 export type NestingSettings = {
   spacingMm: number
+  /** Cooperative wall-clock budget for non-deterministic production runs. */
+  timeLimitMs?: number
   /** Explicit allowed angles in degrees (e.g. 0/90/180/270). */
   allowedRotations: number[]
   /**
@@ -101,6 +103,7 @@ export type SheetResult = {
   sheetIndex: number
   widthMm: number
   heightMm: number
+  marginMm?: number
   placedCount: number
   utilization: number
   wasteMm2: number
@@ -132,6 +135,8 @@ export type NestingSuccess = {
   wasteMm2: number
   calculationTimeMs: number
   statistics: NestingStatistics
+  /** Request geometry metadata retained for independent export validation. */
+  spacingMm?: number
   engineId: string
 }
 

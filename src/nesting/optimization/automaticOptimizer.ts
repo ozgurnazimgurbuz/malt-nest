@@ -35,6 +35,10 @@ import { individualKey, type Individual } from './individual'
 import { buildOrderCandidates } from './orderSearch'
 import { BALANCED_ANGLES } from './rotations'
 import { createRng } from './rng'
+import {
+  DEFAULT_NESTING_TIME_LIMIT_MS,
+  NestingDeadline,
+} from './deadline'
 
 export type AutomaticOptions = {
   onProgress?: (progress: NestProgress) => void
@@ -51,8 +55,8 @@ export type AutomaticOptions = {
   }) => void
 }
 
-type ExactStage = 'fixed' | 'coarse' | 'refine' | 'seed' | 'full'
-type ExactDepth = Extract<FreeAngleDepth, 'refine' | 'seed' | 'full'>
+type ExactStage = 'fixed' | 'coarse' | 'refine' | 'seed' | 'event'
+type ExactDepth = Extract<FreeAngleDepth, 'refine' | 'seed' | 'event'>
 type ProgressActivity = NonNullable<NestProgress['activity']>
 
 const orderKey = (individual: Individual): string =>
@@ -106,11 +110,20 @@ export function runAutomaticNest(
 
   const deterministic =
     options.deterministic ?? request.settings.deterministic ?? false
+  const deadline = deterministic
+    ? null
+    : new NestingDeadline(
+        request.settings.timeLimitMs ?? DEFAULT_NESTING_TIME_LIMIT_MS,
+        now,
+        options.signal,
+      )
   const rng = createRng(seed)
   const convergence = createConvergenceState({
     partCount: request.parts.length,
     deterministic,
     startedAtMs: t0,
+    timeLimitMs:
+      request.settings.timeLimitMs ?? DEFAULT_NESTING_TIME_LIMIT_MS,
   })
   let lastProgressRatio = 0
   const emit = (progress: NestProgress): void => {
@@ -199,11 +212,18 @@ export function runAutomaticNest(
     return true
   }
 
-  const cancelled = (): NestingResult => ({
-    status: 'cancelled',
-    message: 'Stopped — returning best so far',
-    bestSoFar: champion ? timed(champion) : null,
-  })
+  const cancelled = (): NestingResult => {
+    if (
+      options.signal?.aborted !== true &&
+      deadline?.expired() === true &&
+      champion
+    ) return finish()
+    return {
+      status: 'cancelled',
+      message: 'Stopped — returning best so far',
+      bestSoFar: champion ? timed(champion) : null,
+    }
+  }
   const finish = (): NestingResult => {
     if (!champion) return cancelled()
     emit({
@@ -220,7 +240,8 @@ export function runAutomaticNest(
     })
     return timed(champion)
   }
-  const aborted = (): boolean => options.signal?.aborted === true
+  const aborted = (): boolean =>
+    options.signal?.aborted === true || deadline?.expired() === true
   const converged = (): boolean => shouldStop(convergence, now(), false)
 
   emit({
@@ -232,6 +253,7 @@ export function runAutomaticNest(
   })
   const seedResult = runBottomLeftNestUnchecked(request, {
     signal: options.signal,
+    deadline: deadline ?? undefined,
     onAttempt: options.onAttempt,
     onAttemptFlush: options.onAttemptFlush,
     freeAngleDepth: 'orthogonal',
@@ -272,8 +294,8 @@ export function runAutomaticNest(
     activity: ProgressActivity,
     depth?: ExactDepth,
   ): ExactOutcome => {
-    const key = stage === 'full'
-      ? `full:${orderKey(individual)}`
+    const key = stage === 'event'
+      ? `event:${orderKey(individual)}`
       : `${stage}:${individualKey(individual, runKey)}`
     if (exactCache.has(key)) {
       const result = exactCache.get(key) ?? null
@@ -291,6 +313,7 @@ export function runAutomaticNest(
     const started = now()
     const replay = placeWithPlanUnchecked(request, individual, {
       signal: options.signal,
+      deadline: deadline ?? undefined,
       nfpFidelity: 'exact',
       preparedParts,
       engineId: champion ? 'automatic-anytime-v1' : 'automatic-blf-v1',
@@ -367,6 +390,7 @@ export function runAutomaticNest(
     const started = now()
     const rankOptions = {
       signal: options.signal,
+      deadline: deadline ?? undefined,
       freeAngleDepth: depth,
       nfpFidelity: 'simplified' as const,
       preparedParts,
@@ -563,7 +587,7 @@ export function runAutomaticNest(
   }
 
   type RefinementState = 'done' | 'full-improved' | 'cancelled'
-  const runFullFinalist = (
+  const runTerminalFinalist = (
     individual: Individual,
     source: 'finalist' | 'repair',
     activity: ProgressActivity,
@@ -573,12 +597,12 @@ export function runAutomaticNest(
       phase: 'optimize',
       activity,
       message: source === 'repair'
-        ? 'Improving layout · full-circle repair champion'
-        : 'Improving layout · full-circle finalist',
+        ? 'Improving layout · bounded-angle repair champion'
+        : 'Improving layout · bounded-angle finalist',
     })
-    const full = evaluateExact(individual, 'full', activity, 'full')
-    if (full.cancelled || aborted()) return 'cancelled'
-    return full.improved ? 'full-improved' : 'done'
+    const terminal = evaluateExact(individual, 'event', activity, 'event')
+    if (terminal.cancelled || aborted()) return 'cancelled'
+    return terminal.improved ? 'full-improved' : 'done'
   }
   const refineFinalist = (
     individual: Individual,
@@ -587,7 +611,7 @@ export function runAutomaticNest(
     const activity: ProgressActivity =
       source === 'repair' ? 'repair' : 'refine'
     if (aborted()) return 'cancelled'
-    if (converged()) return runFullFinalist(individual, source, activity)
+    if (converged()) return runTerminalFinalist(individual, source, activity)
     emit({
       ratio: 0.65,
       phase: 'optimize',
@@ -598,7 +622,7 @@ export function runAutomaticNest(
     })
     const coarsened = rank(individual, 'coarse')
     if (coarsened.cancelled || aborted()) return 'cancelled'
-    if (converged()) return runFullFinalist(individual, source, activity)
+    if (converged()) return runTerminalFinalist(individual, source, activity)
     let refinementGene = individual
     if (
       coarsened.candidate &&
@@ -612,7 +636,7 @@ export function runAutomaticNest(
       if (exact.cancelled || aborted()) return 'cancelled'
       if (exact.improved && exact.gene) refinementGene = exact.gene
       if (converged()) {
-        return runFullFinalist(refinementGene, source, activity)
+        return runTerminalFinalist(refinementGene, source, activity)
       }
     }
     emit({
@@ -631,11 +655,11 @@ export function runAutomaticNest(
     )
     if (refined.cancelled || aborted()) return 'cancelled'
     if (!refined.improved || !refined.gene) {
-      return runFullFinalist(refinementGene, source, activity)
+      return runTerminalFinalist(refinementGene, source, activity)
     }
     refinementGene = refined.gene
     if (converged()) {
-      return runFullFinalist(refinementGene, source, activity)
+      return runTerminalFinalist(refinementGene, source, activity)
     }
     emit({
       ratio: 0.65,
@@ -652,7 +676,7 @@ export function runAutomaticNest(
       'seed',
     )
     if (polished.cancelled || aborted()) return 'cancelled'
-    return runFullFinalist(polished.gene ?? refinementGene, source, activity)
+    return runTerminalFinalist(polished.gene ?? refinementGene, source, activity)
   }
 
   const finalistKeys = new Set<string>()

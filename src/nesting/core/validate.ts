@@ -183,6 +183,13 @@ export function validateNestingRequest(request: NestingRequest): void {
   if (request.settings.spacingMm < 0) {
     throw new RangeError('Part spacing must be nonnegative')
   }
+  if (
+    request.settings.timeLimitMs != null &&
+    (!Number.isFinite(request.settings.timeLimitMs) ||
+      request.settings.timeLimitMs <= 0)
+  ) {
+    throw new RangeError('Nesting time limit must be positive and finite')
+  }
   if (request.settings.seed != null) {
     finite(request.settings.seed, 'Nesting seed')
   }

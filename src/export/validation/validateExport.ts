@@ -1,6 +1,6 @@
 import {
   solidFromRings,
-  solidsOverlap,
+  solidsCollide,
   type GeometryPart,
   type Solid,
 } from '../../geometry'
@@ -21,6 +21,8 @@ export type ExportValidationIssue = {
     | 'out_of_bounds'
     | 'invalid_geometry'
     | 'overlap'
+    | 'spacing_violation'
+    | 'margin_violation'
     | 'inconsistent_counts'
   message: string
 }
@@ -125,6 +127,12 @@ export function validateNestExport(
         message: `Invalid sheet ${sheet.sheetIndex} dimensions`,
       })
     }
+    if (sheet.marginMm != null && (!finite(sheet.marginMm) || sheet.marginMm < 0)) {
+      issues.push({
+        code: 'bad_sheet',
+        message: `Invalid margin for sheet ${sheet.sheetIndex}`,
+      })
+    }
 
     const actualCount = placementCountBySheet.get(sheet.sheetIndex) ?? 0
     if (
@@ -206,26 +214,34 @@ export function validateNestExport(
       sheet &&
       points.some(
         (point) =>
-          point.x < -1e-6 ||
-          point.y < -1e-6 ||
-          point.x > sheet.widthMm + 1e-6 ||
-          point.y > sheet.heightMm + 1e-6,
+          point.x < (sheet.marginMm ?? 0) - 1e-6 ||
+          point.y < (sheet.marginMm ?? 0) - 1e-6 ||
+          point.x > sheet.widthMm - (sheet.marginMm ?? 0) + 1e-6 ||
+          point.y > sheet.heightMm - (sheet.marginMm ?? 0) + 1e-6,
       )
     ) {
       issues.push({
-        code: 'out_of_bounds',
-        message: `Placement for ${pl.partId} is outside sheet ${pl.sheetIndex}`,
+        code: sheet.marginMm ? 'margin_violation' : 'out_of_bounds',
+        message: sheet.marginMm
+          ? `Placement for ${pl.partId} violates sheet ${pl.sheetIndex} margin`
+          : `Placement for ${pl.partId} is outside sheet ${pl.sheetIndex}`,
       })
     }
 
     if (sheet && validGeometryIds.has(pl.partId)) {
       const solid = solidFromRings(placed.outer, placed.holes)
       const prior = solidsBySheet.get(pl.sheetIndex) ?? []
-      const collision = prior.find((entry) => solidsOverlap(entry.solid, solid))
+      const spacingMm = Math.max(0, result.spacingMm ?? 0)
+      const collision = prior.find((entry) =>
+        solidsCollide(entry.solid, solid, spacingMm),
+      )
       if (collision) {
         issues.push({
-          code: 'overlap',
-          message: `Placements ${collision.partId} and ${pl.partId} overlap on sheet ${pl.sheetIndex}`,
+          code: spacingMm > 0 ? 'spacing_violation' : 'overlap',
+          message:
+            spacingMm > 0
+              ? `Placements ${collision.partId} and ${pl.partId} violate spacing on sheet ${pl.sheetIndex}`
+              : `Placements ${collision.partId} and ${pl.partId} overlap on sheet ${pl.sheetIndex}`,
         })
       }
       prior.push({ partId: pl.partId, solid })

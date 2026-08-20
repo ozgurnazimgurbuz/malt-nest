@@ -111,6 +111,7 @@ export function nfpCandidateTranslations(
   },
   signal?: AbortSignal,
   boundarySegments?: TranslationSegment[],
+  deadline?: { expired(): boolean },
 ): Translation[] {
   const out: Translation[] = []
   const seen = new Set<string>()
@@ -134,7 +135,12 @@ export function nfpCandidateTranslations(
 
   const aOuter = placed.outer.points
   const bOuter = orbitingLocal.outer.points
-  if (aOuter.length === 0 || bOuter.length === 0) return out
+  if (
+    aOuter.length === 0 ||
+    bOuter.length === 0 ||
+    signal?.aborted === true ||
+    deadline?.expired() === true
+  ) return out
 
   const spacing = Math.max(0, spacingMm)
   const cache = getSharedNfpCache()
@@ -223,6 +229,7 @@ export function nfpCandidateTranslations(
   const poseY = localA.y - localB.y
   if (boundarySegments) {
     for (const region of nfp.regions) {
+      if (signal?.aborted || deadline?.expired()) break
       for (const ring of [region.outer, ...region.holes]) {
         for (let i = 0; i < ring.points.length; i++) {
           const a = ring.points[i]!
@@ -236,6 +243,7 @@ export function nfpCandidateTranslations(
     }
   }
   for (const t of nfpBoundaryTranslations(nfp)) {
+    if (signal?.aborted || deadline?.expired()) break
     push(t.x + poseX, t.y + poseY, 'nfpBoundary')
   }
   const boundaryUnique = out.length
@@ -249,6 +257,7 @@ export function nfpCandidateTranslations(
     [],
     signal,
   )) {
+    if (signal?.aborted || deadline?.expired()) break
     if (fit.translation) {
       push(-fit.translation.x, -fit.translation.y, 'nfpBoundary')
     }
@@ -259,8 +268,10 @@ export function nfpCandidateTranslations(
   const stepA = Math.max(1, Math.ceil(aOuter.length / sampleCap))
   const stepB = Math.max(1, Math.ceil(bOuter.length / sampleCap))
   for (let i = 0; i < aOuter.length; i += stepA) {
+    if (signal?.aborted || deadline?.expired()) break
     const a = aOuter[i]!
     for (let j = 0; j < bOuter.length; j += stepB) {
+      if (signal?.aborted || deadline?.expired()) break
       const b = bOuter[j]!
       push(a.x - b.x, a.y - b.y, 'vertexPairs')
     }
@@ -268,6 +279,7 @@ export function nfpCandidateTranslations(
   // ponytail: Stage 10B — full edge×vertex was ~93% of candidates / multi-second BLF stalls.
   // Skip edge flood when NFP boundary already provides dense contacts; else subsample ≤24×24.
   if (boundaryUnique < 64) {
+    if (signal?.aborted || deadline?.expired()) return out
     addEdgeVertexContacts(
       aOuter,
       bOuter,
@@ -392,6 +404,7 @@ function boundaryIntersection(
 function crossObstacleBoundaryIntersections(
   groups: TranslationSegment[][],
   signal?: AbortSignal,
+  deadline?: { expired(): boolean },
 ): Translation[] {
   type SweepSegment = TranslationSegment & {
     owner: number
@@ -416,7 +429,10 @@ function crossObstacleBoundaryIntersections(
   const eps = geomEps()
   let comparisons = 0
   for (const segment of segments) {
-    if ((comparisons & 255) === 0 && signal?.aborted) break
+    if (
+      (comparisons & 255) === 0 &&
+      (signal?.aborted || deadline?.expired())
+    ) break
     active = active.filter((candidate) => candidate.maxX >= segment.minX - eps)
     for (const candidate of active) {
       if (candidate.owner === segment.owner) continue
@@ -444,6 +460,7 @@ export function collectPlacementCandidates(
   signal?: AbortSignal,
   packBias?: Partial<PackBias> | null,
   exactNfp = false,
+  deadline?: { expired(): boolean },
 ): Translation[] {
   const list: Translation[] = []
   const seen = new Set<string>()
@@ -462,7 +479,7 @@ export function collectPlacementCandidates(
   add({ x: ifp.maxX, y: ifp.minY })
 
   for (let i = 0; i < placedSolids.length; i++) {
-    if (signal?.aborted) break
+    if (signal?.aborted || deadline?.expired()) break
     const placed = placedSolids[i]!
     const meta = placedMeta?.[i]
     const boundarySegments: TranslationSegment[] = []
@@ -479,6 +496,7 @@ export function collectPlacementCandidates(
       },
       signal,
       exactNfp ? boundarySegments : undefined,
+      deadline,
     )) {
       add(t)
     }
@@ -489,6 +507,7 @@ export function collectPlacementCandidates(
     for (const point of crossObstacleBoundaryIntersections(
       boundaryGroups,
       signal,
+      deadline,
     )) {
       add(point)
     }

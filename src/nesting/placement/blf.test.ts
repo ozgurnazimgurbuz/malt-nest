@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { GeometryPart } from '../../geometry'
 import {
   boundingBox,
@@ -24,6 +24,24 @@ import type {
   Placement,
 } from '../types'
 import { prepareParts } from '../core/prepare'
+
+vi.mock('../nfp/candidates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../nfp/candidates')>()
+  return {
+    ...actual,
+    collectPlacementCandidates: (
+      ...args: Parameters<typeof actual.collectPlacementCandidates>
+    ) => {
+      if (args[0].partId === 'ranked') {
+        return [
+          { x: 100, y: 0 },
+          { x: 0, y: 1 },
+        ]
+      }
+      return actual.collectPlacementCandidates(...args)
+    },
+  }
+})
 
 const baseSettings: NestingSettings = {
   spacingMm: 0,
@@ -138,6 +156,27 @@ function denseContactFixture(stepped = false, denseCount = 117) {
 }
 
 describe('runBottomLeftNest', () => {
+  it('chooses a compact envelope over an earlier top-left candidate', () => {
+    const result = placeWithOrder(
+      request(
+        [
+          rectPart('base', 0, 0, 0, 100, 1),
+          rectPart('ranked', 1, 0, 0, 10, 20),
+        ],
+        {
+          sheet: { widthMm: 120, heightMm: 30, marginMm: 0, quantity: 1 },
+          settings: { dayamaX: true, dayamaY: false },
+        },
+      ),
+      ['base', 'ranked'],
+    )
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements.find(({ partId }) => partId === 'ranked'))
+      .toMatchObject({ x: 0, y: 1 })
+  })
+
   it('emits ordered candidate verdicts without changing the result', () => {
     const req = request(
       [
@@ -831,6 +870,17 @@ describe('runBottomLeftNest', () => {
 
     expect(result.status).toBe('cancelled')
     expect(performance.now() - started).toBeLessThan(3_000)
+  })
+
+  it('returns a cancelled snapshot when the cooperative deadline is already expired', () => {
+    const result = runBottomLeftNest(
+      request([rectPart('deadline', 0, 0, 0, 2, 2)]),
+      { deadline: { expired: () => true } },
+    )
+
+    expect(result.status).toBe('cancelled')
+    if (result.status !== 'cancelled') return
+    expect(result.bestSoFar).toBeNull()
   })
 
   it('16g. lookahead accounts for multiple future parts sharing one sheet', () => {

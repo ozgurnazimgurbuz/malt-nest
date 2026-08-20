@@ -161,6 +161,7 @@ async function fidelityPromotionScenario(
     rect('l', 11, 63, 32),
   ])
   req.sheets = [{ widthMm: 500, heightMm: 500, marginMm: 0, quantity: 1 }]
+  req.settings.timeLimitMs = 10_000
   const prepared = prepareParts(req.parts, req.settings, { sortByArea: true })
   const required = buildOrderCandidates(prepared, createRng(7), {
     includeRandom: false,
@@ -177,7 +178,7 @@ async function fidelityPromotionScenario(
   )
   let championOrderKey = JSON.stringify(seedOrder)
   let defaultTargetExactCalls = 0
-  const fullOrderKeys: string[] = []
+  const eventOrderKeys: string[] = []
   let terminalBeamOrderKeys: string[] = []
   const requiredKeys = new Set(required.map(({ order }) => order.join(',')))
   const cheapWaste = new Map<string, number>([
@@ -208,9 +209,9 @@ async function fidelityPromotionScenario(
       (nestRequest, plan, placementOptions) => {
         if (
           placementOptions.nfpFidelity === 'exact' &&
-          placementOptions.freeAngleDepth === 'full'
+          placementOptions.freeAngleDepth === 'event'
         ) {
-          fullOrderKeys.push(JSON.stringify(plan.order))
+          eventOrderKeys.push(JSON.stringify(plan.order))
         }
         if (
           placementOptions.nfpFidelity === 'exact' &&
@@ -287,7 +288,7 @@ async function fidelityPromotionScenario(
       beamLayers,
       championOrderKey,
       defaultTargetExactCalls,
-      fullOrderKeys,
+      eventOrderKeys,
       publishedChampions,
       stableBeamLayers,
       terminalBeamOrderKeys,
@@ -322,7 +323,7 @@ async function refinementScenario(refineWaste: number) {
           ? refineWaste
           : options.freeAngleDepth === 'seed'
             ? 80
-            : options.freeAngleDepth === 'full'
+            : options.freeAngleDepth === 'event'
               ? 70
               : 100,
       )
@@ -337,7 +338,7 @@ async function refinementScenario(refineWaste: number) {
   try {
     const { runAutomaticNest: runMockedAutomaticNest } =
       await import('./automaticOptimizer')
-    type FinalistStage = 'refine' | 'seed' | 'full'
+    type FinalistStage = 'refine' | 'seed' | 'event'
     const finalistStages: Array<{ stage: FinalistStage; improved: boolean }> = []
     let finalistStage: FinalistStage | null = null
     runMockedAutomaticNest(req, {
@@ -348,8 +349,8 @@ async function refinementScenario(refineWaste: number) {
           finalistStage = 'refine'
         } else if (message === 'Improving layout · polishing finalist') {
           finalistStage = 'seed'
-        } else if (message === 'Improving layout · full-circle finalist') {
-          finalistStage = 'full'
+        } else if (message === 'Improving layout · bounded-angle finalist') {
+          finalistStage = 'event'
         }
       },
       onEvaluation: ({ kind, improved }) => {
@@ -371,6 +372,7 @@ async function repairImprovementScenario(repairExactWaste = 50) {
     rect('b', 1, 40, 30),
   ], { allowRotation: false })
   req.sheets = [{ widthMm: 500, heightMm: 500, marginMm: 0, quantity: 1 }]
+  req.settings.timeLimitMs = 10_000
   const seedOrder = prepareParts(req.parts, req.settings, {
     sortByArea: true,
   }).map(({ partId }) => partId)
@@ -405,7 +407,7 @@ async function repairImprovementScenario(repairExactWaste = 50) {
           : phase === 'repair'
             ? options.freeAngleDepth === 'refine'
               ? 40
-              : options.freeAngleDepth === 'full'
+              : options.freeAngleDepth === 'event'
                 ? 30
                 : repairExactWaste
           : options.freeAngleDepth === 'refine' ? 110 : 100,
@@ -471,7 +473,7 @@ async function repairImprovementScenario(repairExactWaste = 50) {
     const controller = new AbortController()
     let clock = 0
     let inRepair = false
-    let repairStage: 'candidate' | 'coarse' | 'refine' | 'seed' | 'full' =
+    let repairStage: 'candidate' | 'coarse' | 'refine' | 'seed' | 'event' =
       'candidate'
     const result = runMockedAutomaticNest(req, {
       deterministic: false,
@@ -498,15 +500,15 @@ async function repairImprovementScenario(repairExactWaste = 50) {
         } else if (message === 'Improving layout · polishing repair champion') {
           repairStage = 'seed'
           sequence.push('repair:seed:start')
-        } else if (message === 'Improving layout · full-circle repair champion') {
-          repairStage = 'full'
-          sequence.push('repair:full:start')
+        } else if (message === 'Improving layout · bounded-angle repair champion') {
+          repairStage = 'event'
+          sequence.push('repair:event:start')
         }
       },
       onEvaluation: ({ kind, improved }) => {
         if (!inRepair) return
         sequence.push(`${kind}:${repairStage}:${improved}`)
-        if (kind === 'exact' && repairStage === 'full') controller.abort()
+        if (kind === 'exact' && repairStage === 'event') controller.abort()
         if (kind === 'exact') repairStage = 'candidate'
       },
     })
@@ -750,8 +752,9 @@ describe('runAutomaticNest', () => {
 
   it('cancels a full replay without publishing its partial result', async () => {
     const req = request([rect('a', 0, 20, 10)], { allowRotation: false })
+    req.settings.timeLimitMs = 10_000
     const controller = new AbortController()
-    let fullCalls = 0
+    let eventCalls = 0
     vi.resetModules()
     vi.doMock('../placement/blf', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../placement/blf')>()
@@ -765,8 +768,8 @@ describe('runAutomaticNest', () => {
         (nestRequest, order) => scoredResult(nestRequest, order, 100)
       const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
         (nestRequest, plan, options) => {
-          if (options.freeAngleDepth === 'full') {
-            fullCalls++
+          if (options.freeAngleDepth === 'event') {
+            eventCalls++
             controller.abort()
             return {
               status: 'cancelled',
@@ -800,7 +803,7 @@ describe('runAutomaticNest', () => {
         },
       })
 
-      expect(fullCalls).toBe(1)
+      expect(eventCalls).toBe(1)
       expect(result.status).toBe('cancelled')
       if (result.status !== 'cancelled') return
       expect(result.bestSoFar).toBeTruthy()
@@ -1080,14 +1083,14 @@ describe('runAutomaticNest', () => {
     expect(publishedChampions).toBe(1)
   })
 
-  it('preserves convergence terminal orders through full finalists', async () => {
+  it('preserves convergence terminal orders through bounded-angle finalists', async () => {
     const {
       championOrderKey,
-      fullOrderKeys,
+      eventOrderKeys,
       terminalBeamOrderKeys,
     } = await fidelityPromotionScenario(75, { stopAtFirstLayer: true })
 
-    expect(new Set(fullOrderKeys)).toEqual(
+    expect(new Set(eventOrderKeys)).toEqual(
       new Set([championOrderKey, ...terminalBeamOrderKeys]),
     )
   })
@@ -1096,21 +1099,21 @@ describe('runAutomaticNest', () => {
     expect(await refinementScenario(90)).toEqual([
       { stage: 'refine', improved: true },
       { stage: 'seed', improved: true },
-      { stage: 'full', improved: true },
+      { stage: 'event', improved: true },
     ])
   })
 
-  it('runs full-circle refinement after a non-improving refine stage', async () => {
+  it('runs bounded-angle refinement after a non-improving refine stage', async () => {
     expect(await refinementScenario(110)).toEqual([
       { stage: 'refine', improved: false },
-      { stage: 'full', improved: true },
+      { stage: 'event', improved: true },
     ])
   })
 
-  it('deduplicates full finalists by order', async () => {
+  it('deduplicates bounded-angle finalists by order', async () => {
     const req = request([rect('a', 0, 20, 10)], { allowRotation: false })
     let finalistRefinements = 0
-    const fullOrders: string[] = []
+    const eventOrders: string[] = []
     vi.resetModules()
     vi.doMock('../placement/blf', async (importOriginal) => {
       const actual = await importOriginal<typeof import('../placement/blf')>()
@@ -1124,8 +1127,8 @@ describe('runAutomaticNest', () => {
         (nestRequest, order) => scoredResult(nestRequest, order, 100)
       const placeWithPlanUnchecked: typeof actual.placeWithPlanUnchecked =
         (nestRequest, plan, options) => {
-          if (options.freeAngleDepth === 'full') {
-            fullOrders.push(JSON.stringify(plan.order))
+          if (options.freeAngleDepth === 'event') {
+            eventOrders.push(JSON.stringify(plan.order))
           }
           const result = scoredResult(nestRequest, plan.order, 100)
           return {
@@ -1178,7 +1181,7 @@ describe('runAutomaticNest', () => {
       })
 
       expect(finalistRefinements).toBe(1)
-      expect(fullOrders).toEqual([JSON.stringify(['a'])])
+      expect(eventOrders).toEqual([JSON.stringify(['a'])])
     } finally {
       vi.doUnmock('../placement/blf')
       vi.doUnmock('./beamSearch')
@@ -1302,13 +1305,13 @@ describe('runAutomaticNest', () => {
     }
   })
 
-  it('preserves a repair champion through full before another repair', async () => {
+  it('preserves a repair champion through bounded-angle search before another repair', async () => {
     const { sequence } = await repairImprovementScenario()
     const repairRank = sequence.indexOf('rank:candidate:true')
     const repairChampion = sequence.indexOf('repair:champion')
     const repairExact = sequence.indexOf('exact:candidate:true')
-    const repairFullStart = sequence.indexOf('repair:full:start')
-    const repairFull = sequence.indexOf('exact:full:true')
+    const repairEventStart = sequence.indexOf('repair:event:start')
+    const repairEvent = sequence.indexOf('exact:event:true')
     const nextRepairRankOrFinish = sequence.findIndex(
       (event, index) =>
         index > repairExact &&
@@ -1318,10 +1321,10 @@ describe('runAutomaticNest', () => {
     expect(repairRank).toBeGreaterThan(-1)
     expect(repairChampion).toBeGreaterThan(repairRank)
     expect(repairExact).toBeGreaterThan(repairChampion)
-    expect(repairFullStart).toBeGreaterThan(repairExact)
-    expect(repairFull).toBeGreaterThan(repairFullStart)
+    expect(repairEventStart).toBeGreaterThan(repairExact)
+    expect(repairEvent).toBeGreaterThan(repairEventStart)
     expect(
-      nextRepairRankOrFinish === -1 || nextRepairRankOrFinish > repairFull,
+      nextRepairRankOrFinish === -1 || nextRepairRankOrFinish > repairEvent,
     ).toBe(true)
   })
 

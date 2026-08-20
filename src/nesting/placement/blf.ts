@@ -1,7 +1,9 @@
 import {
   beginNestingGeometrySession,
+  expandBounds,
   findPartInPartPlacement,
   geomEps,
+  UniformGridIndex,
   solidInsideRect,
   solidsCollide,
   type Solid,
@@ -23,6 +25,7 @@ import {
 } from '../core/prepare'
 import {
   BALANCED_ANGLES,
+  eventAnglesFromPoints,
   ORTHOGONAL_ANGLES,
   coarseFreeAngles,
   freeAngleCascadeStages,
@@ -59,12 +62,17 @@ import {
   resolvePackBias,
   type PackBias,
 } from './packBias'
+import {
+  DEFAULT_NESTING_TIME_LIMIT_MS,
+  NestingDeadline,
+} from '../optimization/deadline'
 
 export type FreeAngleDepth =
   | 'orthogonal'
   | 'quick'
   | 'coarse'
   | 'medium'
+  | 'event'
   | 'full'
   | 'refine'
   | 'seed'
@@ -74,6 +82,8 @@ export type BlfOptions = {
   onAttempt?: (attempt: NestAttempt) => void
   onAttemptFlush?: () => void
   signal?: AbortSignal
+  /** Shared cooperative deadline supplied by the automatic controller. */
+  deadline?: { expired(): boolean }
   /** Override result.engineId */
   engineId?: string
   /** Stage 10B: enable BLF profiler (console report). */
@@ -88,7 +98,7 @@ export type BlfOptions = {
    * - refine: 5° window around a plan angle (no 1° final)
    * - seed: refine around a gene angle (final polish)
    * Default for free mode: coarse (avoid exhaustive search on every eval).
-   * Automatic search uses full for terminal and repair finalists;
+   * Automatic search uses event for terminal and repair finalists;
    * 'medium' remains an opt-in diagnostic mode.
    */
   freeAngleDepth?: FreeAngleDepth
@@ -128,6 +138,7 @@ type SheetState = {
   heightMm: number
   marginMm: number
   placed: Array<{ placement: Placement; solid: Solid; area: number }>
+  collisionIndex: UniformGridIndex
 }
 
 type SheetStock = {
@@ -135,6 +146,40 @@ type SheetStock = {
   heightMm: number
   marginMm: number
   remaining: number
+}
+
+function createSheetState(
+  index: number,
+  widthMm: number,
+  heightMm: number,
+  marginMm: number,
+): SheetState {
+  return {
+    index,
+    widthMm,
+    heightMm,
+    marginMm,
+    placed: [],
+    collisionIndex: new UniformGridIndex(
+      { minX: 0, minY: 0, maxX: widthMm, maxY: heightMm },
+      Math.max(geomEps() * 100, Math.max(widthMm, heightMm) / 32),
+    ),
+  }
+}
+
+function cloneSheetState(sheet: SheetState): SheetState {
+  return {
+    ...sheet,
+    placed: sheet.placed.slice(),
+    collisionIndex: sheet.collisionIndex.clone(),
+  }
+}
+
+function placementStopped(
+  signal?: AbortSignal,
+  deadline?: { expired(): boolean },
+): boolean {
+  return signal?.aborted === true || deadline?.expired() === true
 }
 
 function buildSheetStock(request: NestingRequest): SheetStock[] {
@@ -415,7 +460,12 @@ function isValidPlacement(
   if (!solidInsideRect(solid, m, m, sheet.widthMm - m, sheet.heightMm - m)) {
     return false
   }
-  for (const other of sheet.placed) {
+  const possible = sheet.collisionIndex.query(
+    expandBounds(solid.bounds, Math.max(0, spacingMm)),
+  )
+  for (const index of possible) {
+    const other = sheet.placed[index]
+    if (!other) continue
     if (solidsCollide(solid, other.solid, spacingMm)) return false
   }
   return true
@@ -427,11 +477,12 @@ function tryPlaceOnSheet(
   spacingMm: number,
   allowPartInPart: boolean,
   signal?: AbortSignal,
+  deadline?: { expired(): boolean },
   packBias?: PackBias,
   exactNfp = false,
   onAttempt?: (attempt: Omit<NestAttempt, 'sequence'>) => void,
 ): { x: number; y: number } | null {
-  if (signal?.aborted) return null
+  if (placementStopped(signal, deadline)) return null
 
   const profiling = isBlfProfiling()
   if (profiling) blfProfileBeginRotation(variant.rotation)
@@ -465,15 +516,66 @@ function tryPlaceOnSheet(
     signal,
     packBias,
     exactNfp,
+    deadline,
   )
   const candidateGenMs = performance.now() - tCand
 
+  let currentBounds: Solid['bounds'] | null = null
+  for (const placed of sheet.placed) {
+    const b = placed.solid.bounds
+    currentBounds = currentBounds
+      ? {
+          minX: Math.min(currentBounds.minX, b.minX),
+          minY: Math.min(currentBounds.minY, b.minY),
+          maxX: Math.max(currentBounds.maxX, b.maxX),
+          maxY: Math.max(currentBounds.maxY, b.maxY),
+          width: 0,
+          height: 0,
+        }
+      : { ...b }
+  }
+  if (currentBounds) {
+    currentBounds.width = currentBounds.maxX - currentBounds.minX
+    currentBounds.height = currentBounds.maxY - currentBounds.minY
+  }
+
+  const envelopeArea = (t: { x: number; y: number }): number => {
+    const b = variant.solid.bounds
+    const minX = Math.min(currentBounds?.minX ?? t.x + b.minX, t.x + b.minX)
+    const minY = Math.min(currentBounds?.minY ?? t.y + b.minY, t.y + b.minY)
+    const maxX = Math.max(currentBounds?.maxX ?? t.x + b.maxX, t.x + b.maxX)
+    const maxY = Math.max(currentBounds?.maxY ?? t.y + b.maxY, t.y + b.maxY)
+    return Math.max(0, maxX - minX) * Math.max(0, maxY - minY)
+  }
+  const bias = resolvePackBias(packBias)
+  const usesPackBias = bias.dayamaX || bias.dayamaY
+  const rankedCandidates = candidates
+    .map((translation, index) => ({
+      translation,
+      index,
+      envelope: envelopeArea(translation),
+    }))
+    .sort(
+      (a, b) =>
+        compareByPackBias(a.translation, b.translation, bias) ||
+        (usesPackBias ? a.envelope - b.envelope : 0) ||
+        a.index - b.index,
+    )
+
+  // ponytail: validate a bounded ranked pool first; scan the rest only when
+  // every cheap favorite is invalid, so concave cases retain a safe fallback.
+  const rankedPoolSize = 64
+  const maxValidated = sheet.placed.length === 0 ? 1 : 12
   let accepted: { x: number; y: number } | null = null
-  for (let ci = 0; ci < candidates.length; ci++) {
-    if (ci % 32 === 0 && signal?.aborted) break
-    const t = candidates[ci]!
+  let acceptedEnvelope = Infinity
+  let validated = 0
+  for (let ci = 0; ci < rankedCandidates.length; ci++) {
+    if (ci % 32 === 0 && placementStopped(signal, deadline)) break
+    if (ci >= rankedPoolSize && accepted) break
+    const t = rankedCandidates[ci]!.translation
     const world = variantWorldSolid(variant, t.x, t.y)
     const valid = isValidPlacement(world, sheet, spacingMm)
+    if (placementStopped(signal, deadline)) break
     onAttempt?.({
       partId: variant.partId,
       sheetIndex: sheet.index,
@@ -483,15 +585,27 @@ function tryPlaceOnSheet(
       verdict: valid ? 'accepted' : 'rejected',
     })
     if (valid) {
-      accepted = { x: t.x, y: t.y }
-      break
+      const score = rankedCandidates[ci]!
+      const acceptedBias = accepted
+        ? compareByPackBias(t, accepted, bias)
+        : -1
+      if (
+        accepted == null ||
+        acceptedBias < 0 ||
+        (acceptedBias === 0 && usesPackBias && score.envelope < acceptedEnvelope)
+      ) {
+        accepted = { x: t.x, y: t.y }
+        acceptedEnvelope = score.envelope
+      }
+      validated++
+      if (validated >= maxValidated) break
     }
   }
 
   // Optional part-in-part: try fitting into holes of already-placed parts
   if (!accepted && allowPartInPart) {
     for (const other of sheet.placed) {
-      if (signal?.aborted) break
+      if (placementStopped(signal, deadline)) break
       const fit = findPartInPartPlacement(
         other.solid,
         variant.solid,
@@ -506,6 +620,7 @@ function tryPlaceOnSheet(
         fit.translation.y,
       )
       const valid = isValidPlacement(world, sheet, spacingMm)
+      if (placementStopped(signal, deadline)) break
       onAttempt?.({
         partId: variant.partId,
         sheetIndex: sheet.index,
@@ -557,6 +672,7 @@ function evaluateAngles(
   spacingMm: number,
   allowPartInPart: boolean,
   signal: AbortSignal | undefined,
+  deadline: { expired(): boolean } | undefined,
   bias: PackBias,
   exactNfp: boolean,
   onAttempt: ((attempt: Omit<NestAttempt, 'sequence'>) => void) | undefined,
@@ -565,7 +681,7 @@ function evaluateAngles(
   const ok: PlaceCand[] = []
   const seen = new Set<number>()
   for (const ang of angles) {
-    if (signal?.aborted) break
+    if (placementStopped(signal, deadline)) break
     const remainder = ang % 360
     const key = remainder < 0 ? remainder + 360 : remainder || 0
     if (seen.has(key)) continue
@@ -577,6 +693,7 @@ function evaluateAngles(
       spacingMm,
       allowPartInPart,
       signal,
+      deadline,
       bias,
       exactNfp,
       onAttempt,
@@ -669,7 +786,7 @@ function boundedAllowedCoarseAngles(
 
 /**
  * Pick rotation + translation for a part.
- * Free depths: coarse (15°) / full (exhaustive 0.1°) / seed (refine around gene).
+ * Free depths: coarse / event (bounded terminal) / full (explicit diagnostic).
  */
 function pickBestVariant(
   part: PreparedPart,
@@ -677,6 +794,7 @@ function pickBestVariant(
   spacingMm: number,
   allowPartInPart: boolean,
   signal: AbortSignal | undefined,
+  deadline: { expired(): boolean } | undefined,
   packBias: PackBias | undefined,
   opts: {
     freeCascade: boolean
@@ -717,6 +835,7 @@ function pickBestVariant(
       spacingMm,
       allowPartInPart,
       signal,
+      deadline,
       bias,
       exactNfp,
       opts.onAttempt,
@@ -732,6 +851,7 @@ function pickBestVariant(
       spacingMm,
       allowPartInPart,
       signal,
+      deadline,
       bias,
       exactNfp,
       opts.onAttempt,
@@ -744,6 +864,37 @@ function pickBestVariant(
   )
   const topK = 3
 
+  if (opts.depth === 'event') {
+    const candidates = evaluateAngles(
+      part,
+      eventAnglesFromPoints(part.sourceOuter),
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      deadline,
+      bias,
+      exactNfp,
+      opts.onAttempt,
+      topK,
+    )
+    if (!candidates.length) return null
+    const refined = evaluateAngles(
+      part,
+      stages.final(candidates.map((candidate) => candidate.variant.rotation)),
+      sheet,
+      spacingMm,
+      allowPartInPart,
+      signal,
+      deadline,
+      bias,
+      exactNfp,
+      opts.onAttempt,
+      topK,
+    )
+    return refined[0] ?? candidates[0]!
+  }
+
   let ok: PlaceCand[]
   if (opts.depth === 'refine' && opts.seedRotation != null) {
     ok = evaluateAngles(
@@ -753,6 +904,7 @@ function pickBestVariant(
       spacingMm,
       allowPartInPart,
       signal,
+      deadline,
       bias,
       exactNfp,
       opts.onAttempt,
@@ -765,6 +917,7 @@ function pickBestVariant(
       spacingMm,
       allowPartInPart,
       signal,
+      deadline,
       bias,
       exactNfp,
       opts.onAttempt,
@@ -777,6 +930,7 @@ function pickBestVariant(
         spacingMm,
         allowPartInPart,
         signal,
+        deadline,
         bias,
         exactNfp,
         opts.onAttempt,
@@ -792,6 +946,7 @@ function pickBestVariant(
         spacingMm,
         allowPartInPart,
         signal,
+        deadline,
         bias,
         exactNfp,
         opts.onAttempt,
@@ -811,6 +966,7 @@ function pickBestVariant(
       spacingMm,
       allowPartInPart,
       signal,
+      deadline,
       bias,
       exactNfp,
       opts.onAttempt,
@@ -827,6 +983,7 @@ function pickBestVariant(
         spacingMm,
         allowPartInPart,
         signal,
+        deadline,
         bias,
         exactNfp,
         opts.onAttempt,
@@ -855,6 +1012,7 @@ function pickBestVariant(
     spacingMm,
     allowPartInPart,
     signal,
+    deadline,
     bias,
     exactNfp,
     opts.onAttempt,
@@ -881,6 +1039,7 @@ function commit(
     solid: world,
     area,
   })
+  sheet.collisionIndex.insert(sheet.placed.length - 1, world.bounds)
 }
 
 function placeSequence(
@@ -907,6 +1066,8 @@ function placeSequence(
     options.nfpFidelity === 'exact' ||
     (options.nfpFidelity == null && (freeDepth === 'full' || !freeCascade))
   const signal = options.signal
+  const deadline = options.deadline
+  const stopped = (): boolean => placementStopped(signal, deadline)
   const partCount = sequence.length
   let attemptSequence = 0
   const emitAttempt = options.onAttempt
@@ -941,7 +1102,7 @@ function placeSequence(
     )
   }
 
-  if (signal?.aborted) {
+  if (placementStopped(signal, deadline)) {
     return {
       status: 'cancelled',
       message: 'Cancelled',
@@ -965,14 +1126,21 @@ function placeSequence(
   const unplaced: string[] = []
   const total = sequence.length || 1
   const fullStockSearch = freeCascade && freeDepth === 'full'
+  const eventStockSearch = freeCascade && freeDepth === 'event'
   const stockFitAngles = fullStockSearch ? fullFreeAngles() : undefined
   const freeDimensionCache = new Map<PreparedPart, FitDimensions[]>()
   const fitsStock = (entry: SequenceEntry, stock: SheetStock): boolean => {
     let dimensions: FitDimensions[] | undefined
-    if (freeCascade && (entry.variant === 'best' || fullStockSearch)) {
+    if (
+      freeCascade &&
+      (entry.variant === 'best' || fullStockSearch || eventStockSearch)
+    ) {
       dimensions = freeDimensionCache.get(entry.part)
       if (!dimensions) {
-        dimensions = freeAngleDimensions(entry.part, stockFitAngles)
+        dimensions = freeAngleDimensions(
+          entry.part,
+          stockFitAngles ?? eventAnglesFromPoints(entry.part.sourceOuter),
+        )
         freeDimensionCache.set(entry.part, dimensions)
       }
     }
@@ -1001,6 +1169,7 @@ function placeSequence(
           spacing,
           allowPartInPart,
           signal,
+          deadline,
           packBias,
           {
             freeCascade,
@@ -1013,7 +1182,12 @@ function placeSequence(
       }
       if (
         freeCascade &&
-        (freeDepth === 'full' || freeDepth === 'seed' || freeDepth === 'refine')
+        (
+          freeDepth === 'full' ||
+          freeDepth === 'event' ||
+          freeDepth === 'seed' ||
+          freeDepth === 'refine'
+        )
       ) {
         return pickBestVariant(
           part,
@@ -1021,11 +1195,15 @@ function placeSequence(
           spacing,
           allowPartInPart,
           signal,
+          deadline,
           packBias,
           {
             freeCascade: true,
             depth: freeDepth,
-            seedRotation: freeDepth === 'full' ? undefined : variant.rotation,
+            seedRotation:
+              freeDepth === 'full' || freeDepth === 'event'
+                ? undefined
+                : variant.rotation,
             exactNfp: useExactNfp,
             onAttempt,
           },
@@ -1037,6 +1215,7 @@ function placeSequence(
         spacing,
         allowPartInPart,
         signal,
+        deadline,
         packBias,
         useExactNfp,
         onAttempt,
@@ -1045,7 +1224,12 @@ function placeSequence(
     }
 
     const best = find(exactNfp)
-    if (best || signal?.aborted || exactNfp || !options.exactFallback) {
+    if (
+      best ||
+      placementStopped(signal, deadline) ||
+      exactNfp ||
+      !options.exactFallback
+    ) {
       return best
     }
     try {
@@ -1070,15 +1254,19 @@ function placeSequence(
     initialSheets: SheetState[],
     initialStock: SheetStock[],
   ): { placedCount: number; sheets: SheetState[]; stock: SheetStock[] } => {
-    const simulatedSheets = initialSheets.map((sheet) => ({
-      ...sheet,
-      placed: sheet.placed.slice(),
-    }))
+    const lookaheadEnd = Math.min(
+      sequence.length,
+      start + (sequence.length <= 7 ? 7 : 3),
+    )
+    const simulatedSheets = initialSheets.map(cloneSheetState)
     const simulatedStock = initialStock.map((stock) => ({ ...stock }))
     let placedCount = 0
 
-    for (let partIndex = start; partIndex < sequence.length; partIndex++) {
-      if (signal?.aborted) break
+    // ponytail: cap regret lookahead at seven parts; larger instances use
+    // three, because replaying every remaining part made stock choice grow
+    // quadratically with the instance size.
+    for (let partIndex = start; partIndex < lookaheadEnd; partIndex++) {
+      if (stopped()) break
       const entry = sequence[partIndex]!
       let placed = false
       for (const sheet of simulatedSheets) {
@@ -1089,7 +1277,7 @@ function placeSequence(
         placedCount += 1
         break
       }
-      if (placed || signal?.aborted) continue
+      if (placed || stopped()) continue
 
       const candidates: Array<{
         stockIndex: number
@@ -1102,13 +1290,12 @@ function placeSequence(
       for (let stockIndex = 0; stockIndex < simulatedStock.length; stockIndex++) {
         const stock = simulatedStock[stockIndex]!
         if (stock.remaining <= 0) continue
-        const trial: SheetState = {
-          index: simulatedSheets.length,
-          widthMm: stock.widthMm,
-          heightMm: stock.heightMm,
-          marginMm: stock.marginMm,
-          placed: [],
-        }
+        const trial = createSheetState(
+          simulatedSheets.length,
+          stock.widthMm,
+          stock.heightMm,
+          stock.marginMm,
+        )
         const best = findEntryPlacement(entry, trial, undefined)
         if (!best) continue
         const usableWidth = stock.widthMm - stock.marginMm * 2
@@ -1147,7 +1334,7 @@ function placeSequence(
   }
 
   for (let i = 0; i < sequence.length; i++) {
-    if (signal?.aborted) {
+    if (stopped()) {
       const remaining = sequence.slice(i).map((s) => s.part.partId)
       const bestSoFar = snapshot(sheets, [...unplaced, ...remaining])
       return {
@@ -1183,15 +1370,15 @@ function placeSequence(
       best: PlaceCand
     }> = []
     for (let sheetPosition = 0; sheetPosition < sheets.length; sheetPosition++) {
-      if (signal?.aborted) break
+      if (stopped()) break
       const sheet = sheets[sheetPosition]!
       const best = tryOn(sheet)
-      if (signal?.aborted) break
+      if (stopped()) break
       if (!best) continue
       existingCandidates.push({ sheet, sheetPosition, best })
     }
 
-    if (existingCandidates.length > 0 && !signal?.aborted) {
+    if (existingCandidates.length > 0 && !stopped()) {
       type ExistingOrOpening =
         | { kind: 'existing'; value: (typeof existingCandidates)[number] }
         | {
@@ -1213,13 +1400,12 @@ function placeSequence(
         ) {
           continue
         }
-        const trial: SheetState = {
-          index: sheets.length,
-          widthMm: stock.widthMm,
-          heightMm: stock.heightMm,
-          marginMm: stock.marginMm,
-          placed: [],
-        }
+        const trial = createSheetState(
+          sheets.length,
+          stock.widthMm,
+          stock.heightMm,
+          stock.marginMm,
+        )
         const best = tryOn(trial)
         if (best) {
           choices.push({ kind: 'opening', stockIndex, stock, trial, best })
@@ -1233,11 +1419,8 @@ function placeSequence(
       if (choices.length > 1 && i + 1 < sequence.length) {
         let bestFuture = -1
         for (const choice of choices) {
-          if (signal?.aborted) break
-          const futureSheets = sheets.map((sheet) => ({
-            ...sheet,
-            placed: sheet.placed.slice(),
-          }))
+          if (stopped()) break
+          const futureSheets = sheets.map(cloneSheetState)
           const futureStock = sheetStock.map((stock) => ({ ...stock }))
           if (choice.kind === 'existing') {
             commit(
@@ -1247,7 +1430,7 @@ function placeSequence(
               choice.value.best,
             )
           } else {
-            const opened = { ...choice.trial, placed: choice.trial.placed.slice() }
+            const opened = cloneSheetState(choice.trial)
             commit(opened, part.partId, part.area, choice.best)
             futureSheets.push(opened)
             futureStock[choice.stockIndex]!.remaining -= 1
@@ -1262,7 +1445,7 @@ function placeSequence(
             selected = choice
           }
           if (
-            !signal?.aborted &&
+            !stopped() &&
             simulation.placedCount === sequence.length - (i + 1)
           ) {
             selected = choice
@@ -1282,7 +1465,7 @@ function placeSequence(
         flushAttempts()
         return snapshot(completedSuffix.sheets, unplaced)
       }
-      if (!signal?.aborted) {
+      if (!stopped()) {
         if (selected.kind === 'existing') {
           commit(selected.value.sheet, part.partId, part.area, selected.value.best)
         } else {
@@ -1294,7 +1477,7 @@ function placeSequence(
       }
     }
 
-    if (!placed && !signal?.aborted) {
+    if (!placed && !stopped()) {
       const candidates: Array<{
         stockIndex: number
         stock: SheetStock
@@ -1306,15 +1489,14 @@ function placeSequence(
       for (let stockIndex = 0; stockIndex < sheetStock.length; stockIndex++) {
         const stock = sheetStock[stockIndex]!
         if (stock.remaining <= 0) continue
-        const trial: SheetState = {
-          index: sheets.length,
-          widthMm: stock.widthMm,
-          heightMm: stock.heightMm,
-          marginMm: stock.marginMm,
-          placed: [],
-        }
+        const trial = createSheetState(
+          sheets.length,
+          stock.widthMm,
+          stock.heightMm,
+          stock.marginMm,
+        )
         const best = tryOn(trial)
-        if (signal?.aborted) break
+        if (stopped()) break
         if (!best) continue
         const usableWidth = stock.widthMm - stock.marginMm * 2
         const usableHeight = stock.heightMm - stock.marginMm * 2
@@ -1355,14 +1537,8 @@ function placeSequence(
         )
       ) {
         const scored = candidates.map((candidate, preference) => {
-          const futureSheets = sheets.map((sheet) => ({
-            ...sheet,
-            placed: sheet.placed.slice(),
-          }))
-          const opened = {
-            ...candidate.trial,
-            placed: candidate.trial.placed.slice(),
-          }
+          const futureSheets = sheets.map(cloneSheetState)
+          const opened = cloneSheetState(candidate.trial)
           commit(opened, part.partId, part.area, candidate.best)
           futureSheets.push(opened)
           const futureStock = sheetStock.map((stock) => ({ ...stock }))
@@ -1383,7 +1559,7 @@ function placeSequence(
         )
         selected = scored[0]?.candidate
       }
-      if (selected && !signal?.aborted) {
+      if (selected && !stopped()) {
         commit(selected.trial, part.partId, part.area, selected.best)
         sheets.push(selected.trial)
         selected.stock.remaining -= 1
@@ -1401,7 +1577,7 @@ function placeSequence(
 
     flushAttempts()
 
-    if (signal?.aborted) {
+    if (stopped()) {
       const remaining = sequence
         .slice(i + (placed ? 1 : 0))
         .map((s) => s.part.partId)
@@ -1454,7 +1630,26 @@ export function runBottomLeftNest(
 ): NestingResult {
   const t0 = performance.now()
   validateNestingRequest(request)
-  return runBottomLeftNestUnchecked(request, options, t0)
+  return runBottomLeftNestUnchecked(
+    request,
+    withDeadline(request, options),
+    t0,
+  )
+}
+
+function withDeadline(
+  request: NestingRequest,
+  options: BlfOptions,
+): BlfOptions {
+  if (options.deadline || request.settings.timeLimitMs == null) return options
+  return {
+    ...options,
+    deadline: new NestingDeadline(
+      request.settings.timeLimitMs ?? DEFAULT_NESTING_TIME_LIMIT_MS,
+      () => performance.now(),
+      options.signal,
+    ),
+  }
 }
 
 /** Internal optimizer path; request must already have passed validation. */
@@ -1536,7 +1731,10 @@ export function placeWithOrderUnchecked(
   return placeSequence(
     request,
     sequence,
-    { ...options, engineId: options.engineId ?? 'blf-order-v1' },
+    {
+      ...withDeadline(request, options),
+      engineId: options.engineId ?? 'blf-order-v1',
+    },
     t0,
   )
 }
@@ -1596,7 +1794,10 @@ export function placeWithPlanUnchecked(
   return placeSequence(
     request,
     sequence,
-    { ...options, engineId: options.engineId ?? 'blf-plan-v1' },
+    {
+      ...withDeadline(request, options),
+      engineId: options.engineId ?? 'blf-plan-v1',
+    },
     t0,
   )
 }
@@ -1635,6 +1836,7 @@ export function buildSuccess(
       sheetIndex: s.index,
       widthMm: s.widthMm,
       heightMm: s.heightMm,
+      marginMm: s.marginMm,
       placedCount: s.placed.length,
       utilization,
       wasteMm2: Math.max(0, usable - partArea),
@@ -1680,6 +1882,7 @@ export function buildSuccess(
       overallUtilization: utilization,
       overallWasteMm2: wasteMm2,
     },
+    spacingMm: request.settings.spacingMm,
     engineId,
   }
 }

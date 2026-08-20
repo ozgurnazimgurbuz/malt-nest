@@ -1,5 +1,4 @@
 import type { GeometryPart, Point } from '../../geometry'
-import { signedArea } from '../../geometry'
 import type { NestingSettings, RotationMode } from '../types'
 
 export type { RotationMode }
@@ -99,6 +98,23 @@ export function edgeOrientationAngles(points: Point[], max = 12): number[] {
   return uniqSorted(scored.slice(0, max * 2).map((s) => s.ang)).slice(0, max)
 }
 
+/** Bounded geometry-guided angles for production finalist work. */
+export function eventAnglesFromPoints(
+  points: Point[],
+  max = 32,
+): number[] {
+  if (!Number.isSafeInteger(max) || max <= 0) return []
+  const edges = edgeOrientationAngles(points, 8)
+  const candidates = [
+    ...ORTHOGONAL_ANGLES,
+    ...BALANCED_ANGLES,
+    ...coarseFreeAngles(),
+    ...edges,
+    ...edges.flatMap((angle) => [angle - 5, angle + 5]),
+  ]
+  return uniqSorted(candidates).slice(0, max)
+}
+
 /**
  * Adaptive deep candidates from geometry (bounded).
  * Combines orthogonal + balanced + longest-edge orientations ± small deltas.
@@ -121,7 +137,6 @@ export function adaptiveAnglesFromParts(
     if (b.width > b.height * 1.25 || b.height > b.width * 1.25) {
       out.push(0, 90)
     }
-    void signedArea
   }
   for (const a of ORTHOGONAL_ANGLES) {
     out.push(normDeg(a + 10), normDeg(a - 10))

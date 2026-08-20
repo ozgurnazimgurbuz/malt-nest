@@ -65,6 +65,23 @@ describe('NFP placement candidates', () => {
     expect(cache.hits).toBe(0)
   })
 
+  it('canonicalizes equivalent full-turn rotation cache keys', () => {
+    const cache = new NfpCache()
+    const key = {
+      stationaryPartId: 'a',
+      movingPartId: 'b',
+      rotationA: 0,
+      rotationB: 0,
+      spacing: 0,
+      geometryVersion: 'same',
+    }
+    const value = computeNfp(rectangle(10, 10), rectangle(2, 2))
+    cache.set(key, value)
+
+    expect(cache.get({ ...key, rotationB: 360 })).toBe(value)
+    expect(cache.hits).toBe(1)
+  })
+
   it('rejects a digest-key hit when exact geometry identities differ', () => {
     const cache = new NfpCache()
     const key = {
