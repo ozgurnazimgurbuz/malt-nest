@@ -251,6 +251,10 @@ export function runAutomaticNest(
     message: 'Initial layout',
     attemptPass: 'canonical-blf',
   })
+  const initialSeedGene: Individual = {
+    order: preparedIds.slice(),
+    rotations: preparedParts.map((part) => part.rotations[0]!),
+  }
   const seedResult = runBottomLeftNestUnchecked(request, {
     signal: options.signal,
     deadline: deadline ?? undefined,
@@ -259,17 +263,23 @@ export function runAutomaticNest(
     freeAngleDepth: 'orthogonal',
     nfpFidelity: 'simplified',
     exactFallback: true,
+    completeOnDeadline: true,
+    // ponytail: bounded seed scan; global order/rotation search retries alternatives.
+    candidateScanLimit: 4096,
     preparedParts,
     engineId: 'automatic-blf-v1',
   })
   if (seedResult.status !== 'ok') {
+    if (seedResult.status === 'cancelled' && seedResult.bestSoFar) {
+      publish(seedResult.bestSoFar, initialSeedGene, 'initial')
+    }
     return seedResult.status === 'cancelled' ? cancelled() : seedResult
   }
-
-  const initialSeedGene: Individual = {
-    order: preparedIds.slice(),
-    rotations: preparedParts.map((part) => part.rotations[0]!),
+  if (deadline?.expired() === true) {
+    publish(seedResult, initialSeedGene, 'initial')
+    return options.signal?.aborted ? cancelled() : finish()
   }
+
   const seedGene = individualFromResult(
     seedResult,
     initialSeedGene,

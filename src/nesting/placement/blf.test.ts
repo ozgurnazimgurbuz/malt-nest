@@ -16,6 +16,7 @@ import {
   placeWithPlan,
   placeWithPlanUnchecked,
   runBottomLeftNest,
+  runBottomLeftNestUnchecked,
 } from './blf'
 import type {
   NestAttempt,
@@ -881,6 +882,80 @@ describe('runBottomLeftNest', () => {
     expect(result.status).toBe('cancelled')
     if (result.status !== 'cancelled') return
     expect(result.bestSoFar).toBeNull()
+  })
+
+  it('completes fit parts after the automatic deadline when enabled', () => {
+    const result = runBottomLeftNestUnchecked(
+      request([
+        rectPart('first', 0, 0, 0, 20, 20),
+        rectPart('second', 1, 0, 0, 15, 15),
+      ]),
+      {
+        deadline: { expired: () => true },
+        completeOnDeadline: true,
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements).toHaveLength(2)
+    expect(result.unplacedPartIds).toEqual([])
+  })
+
+  it('uses real completion candidates to fill a host hole', () => {
+    const outer = [
+      { x: 0, y: 0 },
+      { x: 100, y: 0 },
+      { x: 100, y: 100 },
+      { x: 0, y: 100 },
+    ]
+    const hole = [
+      { x: 30, y: 30 },
+      { x: 70, y: 30 },
+      { x: 70, y: 70 },
+      { x: 30, y: 70 },
+    ]
+    const frame: GeometryPart = {
+      id: 'completion-frame',
+      sourceElement: 'path',
+      originalIndex: 0,
+      sourceId: 'completion-frame',
+      outer: { points: outer },
+      holes: [{ points: hole }],
+      boundingBox: boundingBox(outer),
+      area: 8_400,
+      centroid: { x: 50, y: 50 },
+      originalTransform: null,
+    }
+    const result = runBottomLeftNestUnchecked(
+      request([frame, rectPart('completion-guest', 1, 0, 0, 20, 20)], {
+        sheet: { widthMm: 100, heightMm: 100, marginMm: 0, quantity: 2 },
+        settings: { allowPartInPart: true },
+      }),
+      {
+        deadline: { expired: () => true },
+        completeOnDeadline: true,
+      },
+    )
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.sheets).toHaveLength(1)
+    expect(result.placements).toHaveLength(2)
+    const framePlacement = result.placements.find(
+      (placement) => placement.partId === 'completion-frame',
+    )!
+    const guestPlacement = result.placements.find(
+      (placement) => placement.partId === 'completion-guest',
+    )!
+    expect(guestPlacement).toMatchObject({ sheetIndex: 0 })
+    expect(
+      solidsCollide(
+        worldSolid(frame, framePlacement),
+        worldSolid(rectPart('completion-guest', 1, 0, 0, 20, 20), guestPlacement),
+        0,
+      ),
+    ).toBe(false)
   })
 
   it('16g. lookahead accounts for multiple future parts sharing one sheet', () => {

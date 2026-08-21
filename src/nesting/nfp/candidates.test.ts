@@ -156,6 +156,33 @@ describe('NFP placement candidates', () => {
     expect(candidates).toContainEqual({ x: 7, y: 7 })
   })
 
+  it('does not search inverse part-in-part poses when nesting disables them', () => {
+    beginNestingGeometrySession()
+    const stationary = translateSolid(rectangle(2, 2), 10, 10)
+    const frame = solidFromRings(
+      [
+        { x: 0, y: 0 }, { x: 10, y: 0 },
+        { x: 10, y: 10 }, { x: 0, y: 10 },
+      ],
+      [[
+        { x: 3, y: 3 }, { x: 7, y: 3 },
+        { x: 7, y: 7 }, { x: 3, y: 7 },
+      ]],
+    )
+    const candidates = nfpCandidateTranslations(
+      stationary,
+      frame,
+      0,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      false,
+    )
+
+    expect(candidates).not.toContainEqual({ x: 7, y: 7 })
+  })
+
   it('includes an exact pocket formed only by multiple obstacle boundaries', () => {
     beginNestingGeometrySession()
     const guest = rectangle(2, 2)

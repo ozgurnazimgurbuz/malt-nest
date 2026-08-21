@@ -73,6 +73,19 @@ function allEdges(solid: Solid): Array<[Point, Point]> {
   return list
 }
 
+function edgeBoundsOverlap(
+  a: [Point, Point],
+  b: [Point, Point],
+): boolean {
+  const e = EPS()
+  return !(
+    Math.max(a[0].x, a[1].x) + e < Math.min(b[0].x, b[1].x) ||
+    Math.max(b[0].x, b[1].x) + e < Math.min(a[0].x, a[1].x) ||
+    Math.max(a[0].y, a[1].y) + e < Math.min(b[0].y, b[1].y) ||
+    Math.max(b[0].y, b[1].y) + e < Math.min(a[0].y, a[1].y)
+  )
+}
+
 function orient(a: Point, b: Point, c: Point): number {
   return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
 }
@@ -140,6 +153,12 @@ export function segmentsProperlyIntersect(
 function pointOnBoundary(p: Point, solid: Solid): boolean {
   const tol = Math.max(EPS() * 10, 1e-7)
   for (const [a, b] of allEdges(solid)) {
+    if (
+      p.x < Math.min(a.x, b.x) - tol ||
+      p.x > Math.max(a.x, b.x) + tol ||
+      p.y < Math.min(a.y, b.y) - tol ||
+      p.y > Math.max(a.y, b.y) + tol
+    ) continue
     if (distPointSegment(p, a, b) <= tol) return true
   }
   return false
@@ -179,6 +198,7 @@ export function solidsOverlap(a: Solid, b: Solid): boolean {
   const be = allEdges(b)
   for (const [p, q] of ae) {
     for (const [r, s] of be) {
+      if (!edgeBoundsOverlap([p, q], [r, s])) continue
       if (segmentsProperlyIntersect(p, q, r, s)) return true
     }
   }
@@ -230,25 +250,54 @@ function distPointSegment(p: Point, a: Point, b: Point): number {
 }
 
 /** Minimum distance between solid boundaries (0 if overlapping). */
-export function solidsDistance(a: Solid, b: Solid): number {
-  if (solidsOverlap(a, b)) return 0
+export function solidsDistance(
+  a: Solid,
+  b: Solid,
+  stopBelow = Infinity,
+  assumeDisjoint = false,
+): number {
+  if (!assumeDisjoint && solidsOverlap(a, b)) return 0
   let min = Infinity
   const ae = allEdges(a)
   const be = allEdges(b)
+  const pointBoxDistance = (p: Point, q: Point, r: Point): number => {
+    const dx =
+      r.x < Math.min(p.x, q.x)
+        ? Math.min(p.x, q.x) - r.x
+        : r.x > Math.max(p.x, q.x)
+          ? r.x - Math.max(p.x, q.x)
+          : 0
+    const dy =
+      r.y < Math.min(p.y, q.y)
+        ? Math.min(p.y, q.y) - r.y
+        : r.y > Math.max(p.y, q.y)
+          ? r.y - Math.max(p.y, q.y)
+          : 0
+    return Math.hypot(dx, dy)
+  }
+  const consider = (p: Point, q: Point, r: Point): boolean => {
+    if (pointBoxDistance(p, q, r) >= min) return false
+    min = Math.min(min, distPointSegment(r, p, q))
+    return min < stopBelow
+  }
   for (const [p, q] of ae) {
     for (const r of b.outer.points) {
-      min = Math.min(min, distPointSegment(r, p, q))
+      if (consider(p, q, r)) return min
     }
     for (const h of b.holes) {
-      for (const r of h.points) min = Math.min(min, distPointSegment(r, p, q))
+      for (const r of h.points) {
+        if (consider(p, q, r)) return min
+      }
     }
   }
   for (const [p, q] of be) {
     for (const r of a.outer.points) {
-      min = Math.min(min, distPointSegment(r, p, q))
+      if (consider(p, q, r)) return min
     }
     for (const h of a.holes) {
-      for (const r of h.points) min = Math.min(min, distPointSegment(r, p, q))
+      for (const r of h.points) {
+        if (consider(p, q, r)) return min
+      }
     }
   }
   return min
@@ -272,7 +321,7 @@ export function solidsCollideByDistance(
   if (!boundsOverlap(a.bounds, b.bounds, pad)) return false
   if (solidsOverlap(a, b)) return true
   if (pad <= e) return false
-  return solidsDistance(a, b) < pad - e
+  return solidsDistance(a, b, pad - e, true) < pad - e
 }
 
 /**

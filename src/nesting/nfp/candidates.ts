@@ -112,6 +112,7 @@ export function nfpCandidateTranslations(
   signal?: AbortSignal,
   boundarySegments?: TranslationSegment[],
   deadline?: { expired(): boolean },
+  allowPartInPart = true,
 ): Translation[] {
   const out: Translation[] = []
   const seen = new Set<string>()
@@ -250,16 +251,18 @@ export function nfpCandidateTranslations(
 
   // NFP outers alone cannot reveal the inverse case where the moving part is
   // a frame placed around an already-stationary part inside one of its holes.
-  for (const fit of findPartInPartPlacements(
-    orbitingLocal,
-    placed,
-    spacing,
-    [],
-    signal,
-  )) {
-    if (signal?.aborted || deadline?.expired()) break
-    if (fit.translation) {
-      push(-fit.translation.x, -fit.translation.y, 'nfpBoundary')
+  if (allowPartInPart) {
+    for (const fit of findPartInPartPlacements(
+      orbitingLocal,
+      placed,
+      spacing,
+      [],
+      signal,
+    )) {
+      if (signal?.aborted || deadline?.expired()) break
+      if (fit.translation) {
+        push(-fit.translation.x, -fit.translation.y, 'nfpBoundary')
+      }
     }
   }
 
@@ -461,6 +464,7 @@ export function collectPlacementCandidates(
   packBias?: Partial<PackBias> | null,
   exactNfp = false,
   deadline?: { expired(): boolean },
+  allowPartInPart = true,
 ): Translation[] {
   const list: Translation[] = []
   const seen = new Set<string>()
@@ -497,6 +501,7 @@ export function collectPlacementCandidates(
       signal,
       exactNfp ? boundarySegments : undefined,
       deadline,
+      allowPartInPart,
     )) {
       add(t)
     }

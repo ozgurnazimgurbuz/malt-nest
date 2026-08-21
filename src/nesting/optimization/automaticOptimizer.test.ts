@@ -728,6 +728,62 @@ describe('runAutomaticNest', () => {
     expect(compareNestingResults(result.bestSoFar!, published.at(-1)!)).toBe(0)
   })
 
+  it('keeps a valid partial seed when the constructive pass is cancelled', async () => {
+    const req = request([rect('a', 0, 30, 20), rect('b', 1, 25, 25)])
+    vi.resetModules()
+    vi.doMock('../placement/blf', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('../placement/blf')>()
+      const runBottomLeftNestUnchecked: typeof actual.runBottomLeftNestUnchecked =
+        (nestRequest, options) => {
+          const firstPart = options.preparedParts?.[0]?.partId
+          const partial = scoredResult(
+            nestRequest,
+            firstPart ? [firstPart] : [],
+            10,
+          )
+          partial.unplacedPartIds = nestRequest.parts
+            .map(({ id }) => id)
+            .filter((id) => id !== firstPart)
+          partial.statistics.placedCount = partial.placements.length
+          partial.statistics.unplacedCount = partial.unplacedPartIds.length
+          return {
+            status: 'cancelled' as const,
+            message: 'Cancelled',
+            bestSoFar: partial,
+          }
+        }
+      return { ...actual, runBottomLeftNestUnchecked }
+    })
+
+    try {
+      const { runAutomaticNest: runMockedAutomaticNest } =
+        await import('./automaticOptimizer')
+      const result = runMockedAutomaticNest(req, { deterministic: true })
+
+      expect(result.status).toBe('cancelled')
+      if (result.status !== 'cancelled') return
+      expect(result.bestSoFar?.placements).toHaveLength(1)
+    } finally {
+      vi.doUnmock('../placement/blf')
+      vi.resetModules()
+    }
+  })
+
+  it('completes a physically placeable seed after the automatic deadline', () => {
+    const req = request([
+      rect('a', 0, 20, 20),
+      rect('b', 1, 15, 15),
+    ])
+    req.settings.timeLimitMs = 0.001
+
+    const result = runAutomaticNest(req)
+
+    expect(result.status).toBe('ok')
+    if (result.status !== 'ok') return
+    expect(result.placements).toHaveLength(2)
+    expect(result.unplacedPartIds).toEqual([])
+  })
+
   it('returns the seed champion when aborted during finalist refinement', () => {
     const controller = new AbortController()
     let exactEvaluations = 0
