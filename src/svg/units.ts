@@ -4,6 +4,7 @@ import type { ParserWarning } from './warnings'
 const PX_PER_IN = 96
 const MM_PER_IN = 25.4
 const MM_PER_PX = MM_PER_IN / PX_PER_IN
+const MM_PER_PT = MM_PER_IN / 72
 
 export type Length = {
   value: number
@@ -65,7 +66,8 @@ export type UserToMm = {
 
 /**
  * Map SVG user units → mm using width/height + viewBox.
- * If physical size is omitted, treat user units as CSS px (96dpi).
+ * If physical size is omitted, treat user units as CSS px (96dpi), unless the
+ * source explicitly identifies Adobe Illustrator's point-based export.
  */
 export function resolveUserToMm(
   widthAttr: string | null,
@@ -73,7 +75,9 @@ export function resolveUserToMm(
   viewBoxAttr: string | null,
   warnings: ParserWarning[],
   preserveAspectRatioAttr: string | null = null,
+  defaultUserUnit: 'px' | 'pt' = 'px',
 ): UserToMm {
+  const defaultUserUnitMm = defaultUserUnit === 'pt' ? MM_PER_PT : MM_PER_PX
   const viewBox = parseViewBox(viewBoxAttr)
   const wLen = parseLength(widthAttr)
   const hLen = parseLength(heightAttr)
@@ -112,15 +116,15 @@ export function resolveUserToMm(
       : null
 
   if (widthMm == null && heightMm == null && viewBox) {
-    // No physical size: user unit = px
+    // No physical size: use the source application's user-unit convention.
     return {
-      sx: MM_PER_PX,
-      sy: MM_PER_PX,
+      sx: defaultUserUnitMm,
+      sy: defaultUserUnitMm,
       offsetXMm: 0,
       offsetYMm: 0,
       supported: true,
-      widthMm: viewBox.width * MM_PER_PX,
-      heightMm: viewBox.height * MM_PER_PX,
+      widthMm: viewBox.width * defaultUserUnitMm,
+      heightMm: viewBox.height * defaultUserUnitMm,
       viewBox,
     }
   }
@@ -145,8 +149,8 @@ export function resolveUserToMm(
     if (heightMm == null && widthMm != null) {
       heightMm = (viewBox.height / viewBox.width) * widthMm
     }
-    if (widthMm == null) widthMm = viewBox.width * MM_PER_PX
-    if (heightMm == null) heightMm = viewBox.height * MM_PER_PX
+    if (widthMm == null) widthMm = viewBox.width * defaultUserUnitMm
+    if (heightMm == null) heightMm = viewBox.height * defaultUserUnitMm
     const rawSx = widthMm / viewBox.width
     const rawSy = heightMm / viewBox.height
     const preserve = parsePreserveAspectRatio(preserveAspectRatioAttr)

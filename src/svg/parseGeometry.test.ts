@@ -23,6 +23,19 @@ describe('parseSvgGeometry', () => {
     expect(() => validateGeometryPart(doc.parts[0]!)).not.toThrow()
   })
 
+  it('uses point units for Adobe Illustrator viewBox-only exports', () => {
+    const doc = parseSvgGeometry(
+      `<!-- Generator: Adobe Illustrator 30.7.0 -->
+       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 72 72">
+         <rect width="72" height="72"/>
+       </svg>`,
+    )
+
+    expect(doc.widthMm).toBeCloseTo(25.4, 6)
+    expect(doc.heightMm).toBeCloseTo(25.4, 6)
+    expect(doc.parts[0]!.boundingBox.width).toBeCloseTo(25.4, 6)
+  })
+
   it('1. rect', () => {
     const doc = parseSvgGeometry(svg('<rect x="10" y="20" width="30" height="40"/>'))
     expect(doc.partCount).toBe(1)

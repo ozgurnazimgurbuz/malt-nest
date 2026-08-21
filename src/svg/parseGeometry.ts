@@ -172,12 +172,16 @@ export function parseSvgGeometry(
     ])
   }
 
+  // ponytail: only marked Illustrator exports get the legacy point convention;
+  // add an explicit source-unit option if another unmarked producer needs it.
+  const defaultUserUnit = /Adobe Illustrator/i.test(raw) ? 'pt' : 'px'
   const scale = resolveUserToMm(
     svg.getAttribute('width'),
     svg.getAttribute('height'),
     svg.getAttribute('viewBox'),
     warnings,
     svg.getAttribute('preserveAspectRatio'),
+    defaultUserUnit,
   )
   if (!scale.supported) return emptyDoc(warnings)
 
